@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -63,6 +64,9 @@ func TestNewDemoUsesIsolatedTempDataDir(t *testing.T) {
 }
 
 func TestNewEnforcesPrivateDataModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not enforced on Windows")
+	}
 	dataDir := filepath.Join(t.TempDir(), "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(): %v", err)

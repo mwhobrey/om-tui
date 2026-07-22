@@ -8,6 +8,7 @@
 package localapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +80,66 @@ type DaemonStatus struct {
 	Auth      struct {
 		DataDir string `json:"data_dir"`
 	} `json:"auth"`
+	Google GoogleStatus `json:"google"`
+}
+
+// GoogleStatus is the Google Messages block inside /api/status.
+type GoogleStatus struct {
+	Connected       bool   `json:"connected"`
+	Paired          bool   `json:"paired"`
+	NeedsPairing    bool   `json:"needs_pairing"`
+	NeedsRepair     bool   `json:"needs_repair,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+	AuthExpired     bool   `json:"auth_expired,omitempty"`
+	PhoneResponding bool   `json:"phone_responding"`
+}
+
+// Conversation is a thread summary from GET /api/conversations.
+type Conversation struct {
+	ConversationID     string `json:"ConversationID"`
+	Name               string `json:"Name"`
+	IsGroup            bool   `json:"IsGroup"`
+	LastMessageTS      int64  `json:"LastMessageTS"`
+	UnreadCount        int    `json:"UnreadCount"`
+	SourcePlatform     string `json:"source_platform,omitempty"`
+	LastMessagePreview string `json:"last_message_preview,omitempty"`
+}
+
+// Message is one chat message from the conversations messages endpoint.
+type Message struct {
+	MessageID      string `json:"MessageID"`
+	ConversationID string `json:"ConversationID"`
+	SenderName     string `json:"SenderName"`
+	SenderNumber   string `json:"SenderNumber"`
+	Body           string `json:"Body"`
+	TimestampMS    int64  `json:"TimestampMS"`
+	Status         string `json:"Status"`
+	IsFromMe       bool   `json:"IsFromMe"`
+	MediaID        string `json:"MediaID,omitempty"`
+	MimeType       string `json:"MimeType,omitempty"`
+	SourcePlatform string `json:"source_platform,omitempty"`
+}
+
+// HasMedia reports whether the message carries a downloadable attachment.
+func (m Message) HasMedia() bool {
+	return strings.TrimSpace(m.MediaID) != "" || strings.TrimSpace(m.MimeType) != ""
+}
+
+// SearchHit is one result from GET /api/search.
+type SearchHit struct {
+	ConversationID string `json:"ConversationID"`
+	Name           string `json:"Name"`
+	Preview        string `json:"preview,omitempty"`
+	UnreadCount    int    `json:"UnreadCount"`
+	SourcePlatform string `json:"source_platform,omitempty"`
+	LastMessageTS  int64  `json:"LastMessageTS"`
+}
+
+// StreamEvent mirrors web.StreamEvent invalidation payloads from /api/events.
+type StreamEvent struct {
+	Type           string `json:"type"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Connected      *bool  `json:"connected,omitempty"`
 }
 
 // SendsViaOutbox reports whether the daemon expects sends on the durable
@@ -473,4 +535,203 @@ func IsAuthError(err error) bool {
 		return false
 	}
 	return responseErr.StatusCode == http.StatusUnauthorized || responseErr.StatusCode == http.StatusForbidden
+}
+
+// ListConversations fetches GET /api/conversations.
+func (c *Client) ListConversations(ctx context.Context, limit int) ([]Conversation, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []Conversation
+	if _, err := c.getJSON(ctx, fmt.Sprintf("/api/conversations?limit=%d", limit), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Conversation{}
+	}
+	return out, nil
+}
+
+// ListSMSConversations returns Google Messages (sms) threads only.
+func (c *Client) ListSMSConversations(ctx context.Context, limit int) ([]Conversation, error) {
+	all, err := c.ListConversations(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]Conversation, 0, len(all))
+	for _, conv := range all {
+		platform := strings.ToLower(strings.TrimSpace(conv.SourcePlatform))
+		if platform == "" || platform == "sms" || platform == "rcs" {
+			filtered = append(filtered, conv)
+		}
+	}
+	return filtered, nil
+}
+
+// ConversationMessages fetches recent messages for a conversation (newest-first from API).
+func (c *Client) ConversationMessages(ctx context.Context, conversationID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/api/conversations/%s/messages?limit=%d", conversationID, limit)
+	var out []Message
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Message{}
+	}
+	return out, nil
+}
+
+// SearchMessages hits GET /api/search?q=.
+func (c *Client) SearchMessages(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	path := fmt.Sprintf("/api/search?q=%s&limit=%d", url.QueryEscape(query), limit)
+	var out []SearchHit
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []SearchHit{}
+	}
+	return out, nil
+}
+
+// MarkRead posts POST /api/mark-read.
+func (c *Client) MarkRead(ctx context.Context, conversationID string) error {
+	return c.postJSON(ctx, "/api/mark-read", map[string]string{
+		"conversation_id": conversationID,
+	}, &map[string]any{})
+}
+
+// ReconnectGoogle posts POST /api/google/reconnect.
+func (c *Client) ReconnectGoogle(ctx context.Context) (DaemonStatus, error) {
+	var status DaemonStatus
+	if err := c.postJSON(ctx, "/api/google/reconnect", map[string]any{}, &status); err != nil {
+		return DaemonStatus{}, err
+	}
+	return status, nil
+}
+
+// DownloadMedia fetches GET /api/media/{messageID} and returns the raw bytes
+// plus the response Content-Type (may be octet-stream for non-inline types).
+func (c *Client) DownloadMedia(ctx context.Context, messageID string) ([]byte, string, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return nil, "", fmt.Errorf("message_id is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/media/"+messageID, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	c.authorize(request)
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, "", &ResponseError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
+	}
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	contentType := strings.TrimSpace(response.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return data, contentType, nil
+}
+
+// Events opens GET /api/events and streams invalidation events until ctx ends.
+// The returned channel is closed when the subscription ends.
+func (c *Client) Events(ctx context.Context) (<-chan StreamEvent, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/events", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.authorize(request)
+	request.Header.Set("Accept", "text/event-stream")
+
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	// Streaming must not inherit the short default client timeout.
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+
+	response, err := streamClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer response.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, &ResponseError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
+	}
+
+	out := make(chan StreamEvent, 16)
+	go func() {
+		defer close(out)
+		defer response.Body.Close()
+		reader := bufio.NewReader(response.Body)
+		var eventType string
+		var data strings.Builder
+		flush := func() {
+			if data.Len() == 0 {
+				eventType = ""
+				return
+			}
+			raw := strings.TrimSpace(data.String())
+			data.Reset()
+			sseType := eventType
+			eventType = ""
+			evt := StreamEvent{Type: sseType}
+			if raw != "" {
+				_ = json.Unmarshal([]byte(raw), &evt)
+				if evt.Type == "" {
+					evt.Type = sseType
+				}
+			}
+			if evt.Type == "" {
+				return
+			}
+			select {
+			case out <- evt:
+			case <-ctx.Done():
+			}
+		}
+		for {
+			line, err := reader.ReadString('\n')
+			if len(line) > 0 {
+				line = strings.TrimRight(line, "\r\n")
+				switch {
+				case line == "":
+					flush()
+				case strings.HasPrefix(line, "event:"):
+					eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+				case strings.HasPrefix(line, "data:"):
+					if data.Len() > 0 {
+						data.WriteByte('\n')
+					}
+					data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+			if err != nil {
+				flush()
+				return
+			}
+		}
+	}()
+	return out, nil
 }

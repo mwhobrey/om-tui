@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
@@ -84,7 +83,7 @@ func runQRPairing(logger zerolog.Logger, cli *client.Client, sessionPath string)
 
 	// Handle Ctrl+C
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, interruptSignals()...)
 	go func() {
 		<-sigCh
 		fmt.Println("\nAborted.")

@@ -87,6 +87,7 @@ type UnpairFunc func() error
 // APIOptions holds optional callbacks for the API handler.
 type APIOptions struct {
 	Auth                  *ControlAuth
+	ServeStatic           bool
 	V2                    *V2Options
 	V2IngestCounters      func() map[string]ingest.CounterSnapshot
 	Reads                 readsource.ReadSource
@@ -157,6 +158,7 @@ func APIHandler(store *db.Store, cli *client.Client, logger zerolog.Logger, mcpH
 	}
 	return APIHandlerWithOptions(store, cli, logger, mcpHandler, APIOptions{
 		StartDeepBackfill: cb,
+		ServeStatic:       true,
 	})
 }
 
@@ -2893,28 +2895,30 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
 
-	// Serve embedded static files at root
-	staticContent, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to create static sub-filesystem")
-	}
-	staticHandler := http.FileServer(http.FS(staticContent))
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/manifest.webmanifest":
-			w.Header().Set("Content-Type", "application/manifest+json")
-			w.Header().Set("Cache-Control", "no-cache")
-		case "/sw.js":
-			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache")
-		default:
-			if strings.HasSuffix(r.URL.Path, ".png") {
-				w.Header().Set("Content-Type", "image/png")
-				w.Header().Set("Cache-Control", "public, max-age=31536000")
-			}
+	// Serve embedded static files at root (web UI). Headless --api daemons skip this.
+	if opts.ServeStatic {
+		staticContent, err := fs.Sub(staticFS, "static")
+		if err != nil {
+			logger.Fatal().Err(err).Msg("Failed to create static sub-filesystem")
 		}
-		staticHandler.ServeHTTP(w, r)
-	}))
+		staticHandler := http.FileServer(http.FS(staticContent))
+		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/manifest.webmanifest":
+				w.Header().Set("Content-Type", "application/manifest+json")
+				w.Header().Set("Cache-Control", "no-cache")
+			case "/sw.js":
+				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+			default:
+				if strings.HasSuffix(r.URL.Path, ".png") {
+					w.Header().Set("Content-Type", "image/png")
+					w.Header().Set("Cache-Control", "public, max-age=31536000")
+				}
+			}
+			staticHandler.ServeHTTP(w, r)
+		}))
+	}
 
 	// Wrap the mux to intercept MCP requests before the mux's catch-all.
 	var handler http.Handler = mux

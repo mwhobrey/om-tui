@@ -11,15 +11,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -572,7 +571,7 @@ func probeBackend(ctx context.Context, client *http.Client, probeURL string) (bo
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		if errors.Is(err, syscall.ECONNREFUSED) {
+		if isConnectionRefused(err) {
 			return false, nil
 		}
 		return false, err
@@ -612,8 +611,8 @@ func acquireInstanceLock(path string, record instanceLockRecord) (*instanceLock,
 	if err := os.Chmod(path, 0o600); err != nil {
 		return closeWithError(err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+	if err := tryLockFile(file); err != nil {
+		if errors.Is(err, errInstanceLockHeld) {
 			return closeWithError(fmt.Errorf("%w: %s", errInstanceLockHeld, path))
 		}
 		return closeWithError(err)
@@ -621,24 +620,24 @@ func acquireInstanceLock(path string, record instanceLockRecord) (*instanceLock,
 
 	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	payload = append(payload, '\n')
 	if err := file.Truncate(0); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if _, err := file.Write(payload); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	if err := file.Sync(); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(file)
 		return closeWithError(err)
 	}
 	return &instanceLock{file: file}, nil
@@ -648,23 +647,10 @@ func (l *instanceLock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockFile(l.file)
 	closeErr := l.file.Close()
 	l.file = nil
 	return errors.Join(unlockErr, closeErr)
-}
-
-func filesystemAvailableBytes(path string) (uint64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	blockSize := uint64(stat.Bsize)
-	availableBlocks := uint64(stat.Bavail)
-	if blockSize == 0 || availableBlocks > math.MaxUint64/blockSize {
-		return 0, fmt.Errorf("filesystem free-space value overflows uint64")
-	}
-	return availableBlocks * blockSize, nil
 }
 
 func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {

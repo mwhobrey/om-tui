@@ -2,6 +2,8 @@
 
 OpenMessage is a local-first messaging workspace for Google Messages, WhatsApp, and Signal. Use it from the native macOS app, the localhost web UI, or any MCP-compatible client.
 
+**Windows:** Google Messages CLI + terminal UI — see [docs/windows-tui.md](docs/windows-tui.md).
+
 Built on [mautrix/gmessages](https://github.com/mautrix/gmessages) (libgm) for the Google Messages protocol and [mcp-go](https://github.com/mark3labs/mcp-go) for the MCP server.
 
 ## What it does

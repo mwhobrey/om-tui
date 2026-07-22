@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -269,6 +270,11 @@ func (a *App) GooglePhoneResponding() bool {
 func DefaultDataDir() string {
 	if dir := os.Getenv("OPENMESSAGES_DATA_DIR"); dir != "" {
 		return dir
+	}
+	if runtime.GOOS == "windows" {
+		if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+			return filepath.Join(local, "OpenMessage")
+		}
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "openmessage")

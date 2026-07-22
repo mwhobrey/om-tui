@@ -392,6 +392,26 @@ func TestParseServeOptions(t *testing.T) {
 		}
 	})
 
+	t.Run("api flag enables API without web", func(t *testing.T) {
+		opts, err := parseServeOptions([]string{"--api"})
+		if err != nil {
+			t.Fatalf("parseServeOptions(): %v", err)
+		}
+		if opts.web || !opts.api || opts.mcpSSE || opts.mcpStdio {
+			t.Fatalf("unexpected serve options: %+v", opts)
+		}
+	})
+
+	t.Run("api and no-web is valid", func(t *testing.T) {
+		opts, err := parseServeOptions([]string{"--api", "--no-web"})
+		if err != nil {
+			t.Fatalf("parseServeOptions(): %v", err)
+		}
+		if opts.web || !opts.api {
+			t.Fatalf("unexpected serve options: %+v", opts)
+		}
+	})
+
 	t.Run("rejects empty transport set", func(t *testing.T) {
 		if _, err := parseServeOptions([]string{"--no-web", "--no-mcp-sse"}); err == nil {
 			t.Fatal("expected error when every transport is disabled")

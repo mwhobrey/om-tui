@@ -14,7 +14,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -44,6 +43,7 @@ import (
 type serveOptions struct {
 	demo     bool
 	web      bool
+	api      bool
 	mcpSSE   bool
 	mcpStdio bool
 
@@ -61,7 +61,7 @@ type serveOptions struct {
 // process holding the same WhatsApp device credentials or signal-cli account
 // logs the real daemon out ("401: logged out from another device").
 func (o serveOptions) mcpClientShape() bool {
-	return o.mcpStdio && !o.web && !o.mcpSSE
+	return o.mcpStdio && !o.web && !o.api && !o.mcpSSE
 }
 
 // transportsEnabled reports whether this process may start transport
@@ -126,8 +126,7 @@ func Version() string {
 }
 
 func RunServe(logger zerolog.Logger, args ...string) error {
-	previousUmask := syscall.Umask(0o077)
-	defer syscall.Umask(previousUmask)
+	defer setRestrictiveUmask()()
 
 	opts, err := parseServeOptions(args)
 	if err != nil {
@@ -663,16 +662,17 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	v2Options := v2SendWebOptions(stack, v2Send)
 	v2IngestCounters := v2IngestCountersProvider(stack)
 
-	httpEnabled := opts.web || opts.mcpSSE
+	httpEnabled := opts.web || opts.api || opts.mcpSSE
 	if httpEnabled {
 		controlAuth, err := web.NewControlAuth(a.DataDir, logger)
 		if err != nil {
 			return fmt.Errorf("initialize local control authentication: %w", err)
 		}
 		httpHandler := http.Handler(nil)
-		if opts.web {
+		if opts.web || opts.api {
 			httpHandler = web.APIHandlerWithOptions(a.Store, nil, logger, mcpHTTPHandler, web.APIOptions{
 				Auth:                  controlAuth,
+				ServeStatic:           opts.web,
 				V2:                    v2Options,
 				V2IngestCounters:      v2IngestCounters,
 				Reads:                 reads,
@@ -735,6 +735,8 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 			if opts.web {
 				logger.Info().Str("addr", listenAddr).Msg("Web UI available at " + baseURL)
 				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize the web UI (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
+			} else if opts.api {
+				logger.Info().Str("addr", listenAddr).Msg("Local API available at " + baseURL)
 			}
 			if opts.mcpSSE {
 				logger.Info().Str("addr", listenAddr).Msg("MCP SSE available at " + baseURL + "/mcp/sse")
@@ -772,7 +774,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	// Block until signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, interruptSignals()...)
 	<-sigCh
 	logger.Info().Msg("Shutting down")
 	return nil
@@ -949,6 +951,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		}
 		transportFlagsSeen = true
 		opts.web = false
+		opts.api = false
 		opts.mcpSSE = false
 		opts.mcpStdio = false
 	}
@@ -962,6 +965,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		case "--no-web":
 			enableExplicitTransportMode()
 			opts.web = false
+		case "--api":
+			enableExplicitTransportMode()
+			opts.api = true
+		case "--no-api":
+			enableExplicitTransportMode()
+			opts.api = false
 		case "--mcp-sse":
 			enableExplicitTransportMode()
 			opts.mcpSSE = true
@@ -985,8 +994,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 			return serveOptions{}, fmt.Errorf("unknown serve option: %s", arg)
 		}
 	}
-	if !opts.web && !opts.mcpSSE && !opts.mcpStdio {
-		return serveOptions{}, fmt.Errorf("serve requires at least one enabled transport: web, mcp-sse, or mcp-stdio")
+	if !opts.web && !opts.api && !opts.mcpSSE && !opts.mcpStdio {
+		return serveOptions{}, fmt.Errorf("serve requires at least one enabled transport: web, api, mcp-sse, or mcp-stdio")
 	}
 	return opts, nil
 }
