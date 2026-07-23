@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
@@ -28,7 +30,8 @@ const (
 )
 
 type convItem struct {
-	conv localapi.Conversation
+	conv     localapi.Conversation
+	selected bool
 }
 
 func (i convItem) Title() string {
@@ -37,9 +40,12 @@ func (i convItem) Title() string {
 		name = i.conv.ConversationID
 	}
 	if i.conv.UnreadCount > 0 {
-		return fmt.Sprintf("%s (%d)", name, i.conv.UnreadCount)
+		name = fmt.Sprintf("%s (%d)", name, i.conv.UnreadCount)
 	}
-	return name
+	if i.selected {
+		return "* " + name
+	}
+	return "  " + name
 }
 
 func (i convItem) Description() string {
@@ -92,6 +98,11 @@ type (
 		action string // "open" or "save"
 		path   string
 	}
+	reactDoneMsg struct {
+		conversationID string
+		emoji          string
+		action         string
+	}
 )
 
 // Model is the Bubble Tea TUI root.
@@ -108,14 +119,20 @@ type Model struct {
 	list     list.Model
 	search   list.Model
 	viewport viewport.Model
-	compose  textinput.Model
+	compose  textarea.Model
 	query    textinput.Model
 
-	activeID      string
-	activeName    string
-	messages      []localapi.Message
-	msgGeneration uint64
-	viewportWidth int
+	activeID           string
+	activeName         string
+	activeParticipants string
+	messages           []localapi.Message
+	msgGeneration      uint64
+	viewportWidth      int
+	composeHeight      int
+	drafts             map[string]string
+	broadcastIDs       map[string]string // conversationID -> display name
+	selectedMsg        int               // index into messages; clamped to latest when out of range
+	reactPalette       bool              // thread-focus emoji picker open
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -137,10 +154,15 @@ func NewModel(session *Session) Model {
 	searchList.SetFilteringEnabled(false)
 	searchList.DisableQuitKeybindings()
 
-	compose := textinput.New()
+	compose := textarea.New()
 	compose.Placeholder = "Write a message…"
 	compose.CharLimit = 4000
 	compose.Prompt = "> "
+	compose.ShowLineNumbers = false
+	compose.SetHeight(3)
+	compose.MaxHeight = 6
+	compose.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	compose.BlurredStyle.Prompt = mutedStyle
 
 	query := textinput.New()
 	query.Placeholder = "Search messages…"
@@ -151,13 +173,15 @@ func NewModel(session *Session) Model {
 	vp.SetContent("Select a conversation.")
 
 	return Model{
-		session:  session,
-		focus:    focusList,
-		list:     convList,
-		search:   searchList,
-		viewport: vp,
-		compose:  compose,
-		query:    query,
+		session:       session,
+		focus:         focusList,
+		list:          convList,
+		search:        searchList,
+		viewport:      vp,
+		compose:       compose,
+		query:         query,
+		drafts:        make(map[string]string),
+		composeHeight: 3,
 	}
 }
 
@@ -177,7 +201,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		m.ready = true
 		if m.activeID != "" && len(m.messages) > 0 {
-			m.setThreadContent(renderMessages(m.messages, m.viewportWidth))
+			m.setThreadContent(m.renderActiveThread())
 		}
 		return m, nil
 
@@ -192,7 +216,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		items := make([]list.Item, 0, len(msg))
 		for _, c := range msg {
-			items = append(items, convItem{conv: c})
+			_, selected := m.broadcastIDs[c.ConversationID]
+			items = append(items, convItem{conv: c, selected: selected})
+			if m.activeID != "" && c.ConversationID == m.activeID {
+				m.activeName = c.Name
+				m.activeParticipants = c.Participants
+			}
 		}
 		m.list.SetItems(items)
 		if selectedID != "" {
@@ -203,14 +232,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		m.syncComposePlaceholder()
 		return m, nil
+
+	case broadcastSentMsg:
+		m.compose.SetValue("")
+		if msg.failed == 0 {
+			m.info = fmt.Sprintf("Sent to %d chats", msg.ok)
+			m.err = ""
+			m.clearBroadcast()
+			m.restampConversationList()
+			m.syncComposePlaceholder()
+		} else {
+			m.info = fmt.Sprintf("Sent to %d/%d chats", msg.ok, msg.ok+msg.failed)
+			if msg.lastErr != "" {
+				m.err = msg.lastErr
+			}
+		}
+		return m, m.refreshConversationsCmd()
 
 	case messagesMsg:
 		if msg.conversationID != m.activeID || msg.generation != m.msgGeneration {
 			return m, nil
 		}
 		m.messages = msg.messages
-		m.setThreadContent(renderMessages(msg.messages, m.viewportWidth))
+		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
+		m.setThreadContent(m.renderActiveThread())
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -229,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sentMsg:
 		m.info = "Sent"
 		m.compose.SetValue("")
+		delete(m.drafts, msg.conversationID)
 		return m, tea.Batch(m.refreshMessagesCmd(msg.conversationID, m.msgGeneration), m.refreshConversationsCmd())
 
 	case markedReadMsg:
@@ -246,6 +294,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.info = "Opened " + filepath.Base(msg.path)
 		}
+		return m, nil
+
+	case reactDoneMsg:
+		m.err = ""
+		if msg.action == "remove" {
+			m.info = "Removed " + msg.emoji
+		} else {
+			m.info = "Reacted " + msg.emoji
+		}
+		return m, m.refreshMessagesCmd(msg.conversationID, m.msgGeneration)
+
+	case attachResolvedMsg:
+		if msg.conversationID == "" || strings.TrimSpace(msg.path) == "" {
+			return m, nil
+		}
+		if !m.canSend() {
+			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			return m, nil
+		}
+		m.err = ""
+		m.info = "Sending media…"
+		return m, m.sendMediaCmd(msg.conversationID, msg.path, msg.caption)
+
+	case attachCancelledMsg:
+		m.info = "Attach cancelled"
+		return m, nil
+
+	case clipboardTextFallbackMsg:
+		text, err := clipboardText()
+		if err != nil {
+			m.err = err.Error()
+			return m, nil
+		}
+		if text == "" {
+			m.info = "Clipboard has no media"
+			return m, nil
+		}
+		m.info = ""
+		m.compose.SetValue(m.compose.Value() + text)
 		return m, nil
 
 	case sseReadyMsg:
@@ -267,9 +354,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "conversations":
 			cmds = append(cmds, m.refreshConversationsCmd())
 		case "messages":
-			cmds = append(cmds, m.refreshConversationsCmd())
 			if m.activeID != "" && (msg.ConversationID == "" || msg.ConversationID == m.activeID) {
-				cmds = append(cmds, m.refreshMessagesCmd(m.activeID, m.msgGeneration))
+				cmds = append(cmds,
+					m.refreshMessagesCmd(m.activeID, m.msgGeneration),
+					tea.Sequence(m.markReadCmd(m.activeID), m.refreshConversationsCmd()),
+				)
+			} else {
+				cmds = append(cmds, m.refreshConversationsCmd())
 			}
 		case "sse_restart":
 			cmds = []tea.Cmd{m.ensureSSECmd()}
@@ -288,6 +379,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.focus == focusCompose {
 			return m.updateComposeKeys(msg)
+		}
+		if m.focus == focusThread {
+			return m.updateThreadKeys(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -311,18 +405,72 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.info = "Saving media…"
 				return m, m.mediaActionCmd(true)
 			}
+		case "a":
+			if m.activeID != "" {
+				if !m.canSend() {
+					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					return m, nil
+				}
+				m.info = "Attach file…"
+				return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+			}
+		case "ctrl+v":
+			if m.activeID != "" {
+				if !m.canSend() {
+					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					return m, nil
+				}
+				m.info = "Checking clipboard…"
+				return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+			}
 		case "tab":
-			m.cycleFocus(1)
-			return m, nil
+			return m, m.cycleFocus(1)
 		case "shift+tab":
-			m.cycleFocus(-1)
-			return m, nil
+			return m, m.cycleFocus(-1)
+		case " ":
+			if m.focus == focusList {
+				if item, ok := m.list.SelectedItem().(convItem); ok {
+					m.toggleBroadcast(item.conv.ConversationID, item.conv.Name)
+					m.restampConversationList()
+					m.syncComposePlaceholder()
+					n := m.broadcastCount()
+					if n == 0 {
+						m.info = "Broadcast cleared"
+					} else {
+						m.info = fmt.Sprintf("%d chats selected — type message, Enter sends to all", n)
+					}
+					return m, nil
+				}
+			}
+		case "c":
+			if m.focus == focusList && m.broadcastCount() > 0 {
+				m.clearBroadcast()
+				m.restampConversationList()
+				m.syncComposePlaceholder()
+				m.info = "Broadcast cleared"
+				return m, nil
+			}
+		case "m":
+			if m.focus == focusList && m.broadcastCount() > 0 {
+				m.focus = focusCompose
+				m.syncComposePlaceholder()
+				return m, m.compose.Focus()
+			}
 		case "enter":
 			if m.focus == focusList {
 				return m.openSelectedConversation()
 			}
 		case "esc":
+			if m.broadcastCount() > 0 {
+				m.clearBroadcast()
+				m.restampConversationList()
+				m.syncComposePlaceholder()
+				m.info = "Broadcast cleared"
+				m.err = ""
+				return m, nil
+			}
 			m.focus = focusList
+			m.reactPalette = false
 			m.err = ""
 			m.info = ""
 			return m, nil
@@ -330,12 +478,128 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	switch m.focus {
-	case focusList:
+	if m.focus == focusList {
 		m.list, cmd = m.list.Update(msg)
-	case focusThread:
-		m.viewport, cmd = m.viewport.Update(msg)
 	}
+	return m, cmd
+}
+
+func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if m.reactPalette {
+		switch key {
+		case "esc":
+			m.reactPalette = false
+			m.info = ""
+			return m, nil
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			idx := int(key[0] - '1')
+			if idx < 0 || idx >= len(reactPaletteEmojis) {
+				return m, nil
+			}
+			target, ok := selectedMessage(m.messages, m.selectedMsg)
+			if !ok || strings.TrimSpace(target.MessageID) == "" || m.activeID == "" {
+				m.err = "no message selected"
+				m.reactPalette = false
+				return m, nil
+			}
+			if !m.canSend() {
+				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				return m, nil
+			}
+			emoji := reactPaletteEmojis[idx]
+			action := reactionAction(target.Reactions, emoji)
+			m.reactPalette = false
+			m.info = "Sending reaction…"
+			return m, m.reactCmd(m.activeID, target.MessageID, emoji, action)
+		}
+		return m, nil
+	}
+
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc":
+		m.focus = focusList
+		m.err = ""
+		m.info = ""
+		return m, nil
+	case "tab":
+		return m, m.cycleFocus(1)
+	case "shift+tab":
+		return m, m.cycleFocus(-1)
+	case "j", "down":
+		if len(m.messages) == 0 {
+			return m, nil
+		}
+		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
+		if m.selectedMsg < len(m.messages)-1 {
+			m.selectedMsg++
+		}
+		m.setThreadContent(m.renderActiveThread())
+		return m, nil
+	case "k", "up":
+		if len(m.messages) == 0 {
+			return m, nil
+		}
+		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
+		if m.selectedMsg > 0 {
+			m.selectedMsg--
+		}
+		m.setThreadContent(m.renderActiveThread())
+		return m, nil
+	case "e":
+		if _, ok := selectedMessage(m.messages, m.selectedMsg); !ok {
+			m.err = "no message to react to"
+			return m, nil
+		}
+		m.reactPalette = true
+		m.err = ""
+		m.info = "React: " + reactPaletteHelp()
+		return m, nil
+	case "o":
+		if m.activeID != "" {
+			m.info = "Opening media…"
+			return m, m.mediaActionCmd(false)
+		}
+	case "s":
+		if m.activeID != "" {
+			m.info = "Saving media…"
+			return m, m.mediaActionCmd(true)
+		}
+	case "a":
+		if m.activeID != "" {
+			if !m.canSend() {
+				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				return m, nil
+			}
+			m.info = "Attach file…"
+			return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+		}
+	case "ctrl+v":
+		if m.activeID != "" {
+			if !m.canSend() {
+				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				return m, nil
+			}
+			m.info = "Checking clipboard…"
+			return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+		}
+	case "r":
+		m.info = "Reconnecting…"
+		return m, m.reconnectCmd()
+	case "/":
+		m.focus = focusSearch
+		m.query.SetValue("")
+		m.query.Focus()
+		m.compose.Blur()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
 }
 
@@ -347,24 +611,50 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.info = ""
 		return m, nil
-	case "o":
-		if strings.TrimSpace(m.compose.Value()) == "" && m.activeID != "" {
-			m.info = "Opening media…"
-			return m, m.mediaActionCmd(false)
-		}
-	case "s":
-		if strings.TrimSpace(m.compose.Value()) == "" && m.activeID != "" {
-			m.info = "Saving media…"
-			return m, m.mediaActionCmd(true)
-		}
-	case "enter":
-		body := strings.TrimSpace(m.compose.Value())
-		if body == "" || m.activeID == "" {
+	case "ctrl+a":
+		// Bare "a" must remain typable in the composer; Ctrl+A attaches.
+		if m.activeID == "" {
 			return m, nil
 		}
 		if !m.canSend() {
 			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
 			return m, nil
+		}
+		m.info = "Attach file…"
+		return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+	case "ctrl+v":
+		if m.activeID == "" {
+			break
+		}
+		if !m.canSend() {
+			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			return m, nil
+		}
+		m.info = "Checking clipboard…"
+		return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+	case "enter":
+		body := strings.TrimSpace(m.compose.Value())
+		if body == "" {
+			return m, nil
+		}
+		if !m.canSend() {
+			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			return m, nil
+		}
+		if ids := m.broadcastIDList(); len(ids) > 0 {
+			if _, isPath := looksLikeExistingFile(body); isPath {
+				m.err = "broadcast is text-only — clear multi-select (c) to send media"
+				return m, nil
+			}
+			m.info = fmt.Sprintf("Sending to %d chats…", len(ids))
+			return m, m.sendBroadcastCmd(ids, body)
+		}
+		if m.activeID == "" {
+			return m, nil
+		}
+		if path, ok := looksLikeExistingFile(body); ok {
+			m.info = "Sending media…"
+			return m, m.sendMediaCmd(m.activeID, path, "")
 		}
 		return m, m.sendCmd(m.activeID, body)
 	case "ctrl+c":
@@ -386,7 +676,7 @@ func (m Model) updateSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item, ok := m.search.SelectedItem().(searchItem); ok {
 			m.focus = focusThread
 			m.query.Blur()
-			return m.openConversation(item.hit.ConversationID, item.hit.Name)
+			return m.openConversation(item.hit.ConversationID, item.hit.Name, "")
 		}
 		q := strings.TrimSpace(m.query.Value())
 		if q == "" {
@@ -405,7 +695,7 @@ func (m Model) updateSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *Model) cycleFocus(dir int) {
+func (m *Model) cycleFocus(dir int) tea.Cmd {
 	order := []focusPane{focusList, focusThread, focusCompose}
 	idx := 0
 	for i, p := range order {
@@ -416,10 +706,12 @@ func (m *Model) cycleFocus(dir int) {
 	}
 	idx = (idx + dir + len(order)) % len(order)
 	m.focus = order[idx]
+	m.reactPalette = false
 	m.compose.Blur()
 	if m.focus == focusCompose {
-		m.compose.Focus()
+		return m.compose.Focus()
 	}
+	return nil
 }
 
 func (m Model) openSelectedConversation() (tea.Model, tea.Cmd) {
@@ -427,25 +719,49 @@ func (m Model) openSelectedConversation() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	return m.openConversation(item.conv.ConversationID, item.conv.Name)
+	return m.openConversation(item.conv.ConversationID, item.conv.Name, item.conv.Participants)
 }
 
-func (m Model) openConversation(id, name string) (tea.Model, tea.Cmd) {
+func (m Model) openConversation(id, name, participants string) (tea.Model, tea.Cmd) {
+	m.saveComposeDraft()
 	m.msgGeneration++
 	gen := m.msgGeneration
 	m.activeID = id
 	m.activeName = name
+	m.activeParticipants = participants
 	m.messages = nil
+	m.selectedMsg = -1
+	m.reactPalette = false
 	m.focus = focusCompose
-	m.compose.Focus()
-	m.setThreadContent(mutedStyle.Width(max(1, m.viewportWidth)).Render("Loading…"))
+	m.compose.SetValue(m.drafts[id])
+	focusCmd := m.compose.Focus()
+	m.setThreadContent(mutedStyle.Render("Loading…"))
 	return m, tea.Batch(
+		focusCmd,
+		tea.ClearScreen,
 		m.refreshMessagesCmd(id, gen),
 		m.markReadCmd(id),
 	)
 }
 
+func (m *Model) saveComposeDraft() {
+	if m.drafts == nil {
+		m.drafts = make(map[string]string)
+	}
+	id := strings.TrimSpace(m.activeID)
+	if id == "" {
+		return
+	}
+	text := m.compose.Value()
+	if strings.TrimSpace(text) == "" {
+		delete(m.drafts, id)
+		return
+	}
+	m.drafts[id] = text
+}
+
 func (m *Model) setThreadContent(content string) {
+	content = padLines(content, m.viewport.Height, max(1, m.viewportWidth))
 	m.viewport.SetYOffset(0)
 	m.viewport.SetContent(content)
 }
@@ -455,7 +771,7 @@ func (m Model) View() string {
 		return "Starting OpenMessage TUI…"
 	}
 	status := renderStatus(m.status, m.err, m.info)
-	help := mutedStyle.Render("q quit  / search  o open media  s save media  r reconnect  tab focus  enter open/send  esc back")
+	help := "q quit  space multi-select  m compose  c clear  e react  enter send  esc back"
 
 	mainH := m.height - 2
 	if mainH < 5 {
@@ -467,28 +783,33 @@ func (m Model) View() string {
 		rightW = 20
 	}
 
-	left := borderStyle.Width(leftW).Height(mainH).Render(m.list.View())
+	left := borderStyle.Width(leftW).Height(mainH).MaxHeight(mainH).Render(m.list.View())
 	threadTitle := m.activeName
 	if threadTitle == "" {
 		threadTitle = "Thread"
 	}
+	innerW := max(1, rightW-2)
+	composeH := m.composeHeight
+	if composeH < 1 {
+		composeH = 3
+	}
 	threadBody := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Width(rightW-2).Render(truncate(threadTitle, rightW-4)),
+		paintLine(titleStyle, truncate(threadTitle, innerW), innerW),
 		m.viewport.View(),
-		m.compose.View(),
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Height(composeH).MaxHeight(composeH).Render(m.compose.View()),
 	)
-	right := borderStyle.Width(rightW).Height(mainH).Render(threadBody)
+	right := borderStyle.Width(rightW).Height(mainH).MaxHeight(mainH).Render(threadBody)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if m.focus == focusSearch {
 		searchPane := lipgloss.JoinVertical(lipgloss.Left, m.query.View(), m.search.View())
-		main = borderStyle.Width(m.width).Height(mainH).Render(searchPane)
+		main = borderStyle.Width(m.width).Height(mainH).MaxHeight(mainH).Render(searchPane)
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Render(status),
+		lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(1).MaxHeight(1).Render(status),
 		main,
-		lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Render(help),
+		paintLine(mutedStyle, help, m.width),
 	)
 	// Fill the whole terminal so Windows Terminal doesn't leave ghost cells
 	// from the previous conversation's taller/wrapped content.
@@ -515,12 +836,17 @@ func (m *Model) layout() {
 	}
 	m.viewportWidth = threadW
 	m.viewport.Width = threadW
-	// Title (1) + compose (1) + padding inside border.
-	m.viewport.Height = listH - 3
+	composeH := m.composeHeight
+	if composeH < 1 {
+		composeH = 3
+	}
+	// Title (1) + compose (composeH) inside border.
+	m.viewport.Height = listH - 1 - composeH
 	if m.viewport.Height < 3 {
 		m.viewport.Height = 3
 	}
-	m.compose.Width = threadW - 2
+	m.compose.SetWidth(max(1, threadW-2))
+	m.compose.SetHeight(composeH)
 }
 
 func leftWidth(total int) int {
@@ -655,6 +981,18 @@ func (m Model) sendCmd(conversationID, body string) tea.Cmd {
 	}
 }
 
+func (m Model) reactCmd(conversationID, messageID, emoji, action string) tea.Cmd {
+	client := m.session.Client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := client.React(ctx, conversationID, messageID, emoji, action); err != nil {
+			return errMsg{err: err}
+		}
+		return reactDoneMsg{conversationID: conversationID, emoji: emoji, action: action}
+	}
+}
+
 func (m Model) mediaActionCmd(export bool) tea.Cmd {
 	msgs := m.messages
 	client := m.session.Client
@@ -721,15 +1059,22 @@ func (m Model) waitSSECmd() tea.Cmd {
 	}
 }
 
-func renderMessages(msgs []localapi.Message, width int) string {
+func (m Model) renderActiveThread() string {
+	resolve := reactionResolver(m.activeParticipants, m.activeName, m.messages)
+	peer := reactionPeerFallback(m.activeParticipants, m.activeName)
+	return renderMessages(m.messages, m.viewportWidth, m.selectedMsg, resolve, peer)
+}
+
+func renderMessages(msgs []localapi.Message, width, selected int, resolve func(string) string, peerName string) string {
 	if width < 16 {
 		width = 16
 	}
 	if len(msgs) == 0 {
-		return mutedStyle.Width(width).Render("No messages yet.")
+		return paintLine(mutedStyle, "No messages yet.", width)
 	}
+	selected = clampMessageIndex(len(msgs), selected)
 	var b strings.Builder
-	for _, msg := range msgs {
+	for i, msg := range msgs {
 		ts := time.UnixMilli(msg.TimestampMS).Local().Format("Jan 2 15:04")
 		who := "them"
 		if msg.IsFromMe {
@@ -745,20 +1090,78 @@ func renderMessages(msgs []localapi.Message, width int) string {
 		case body == "":
 			body = "[empty]"
 		}
-		line := fmt.Sprintf("%s  %s: %s", ts, who, body)
-		style := themStyle
-		if msg.IsFromMe {
-			style = meStyle
+		if rx := formatReactions(msg.Reactions, resolve, peerName); rx != "" {
+			body = body + "  " + rx
 		}
+		marker := " "
+		if i == selected {
+			marker = ">"
+		}
+		prefix := fmt.Sprintf("%s %s  %s: ", marker, ts, who)
+		prefixW := runewidth.StringWidth(prefix)
+		bodyWidth := width - prefixW
+		if bodyWidth < 8 {
+			bodyWidth = width
+			prefix = ""
+			prefixW = 0
+		}
+		chunks := wrapText(body, bodyWidth)
+		style := participantStyle(msg)
 		if hasMedia {
 			style = style.Bold(true)
 		}
-		// Width-constrain before paint so ANSI styles don't wrap mid-sequence
-		// (a common Windows Terminal ghosting source).
-		b.WriteString(style.Width(width).MaxWidth(width).Render(line))
-		b.WriteByte('\n')
+		if i == selected {
+			// Avoid Reverse(): it ghosts badly on Windows Terminal with emoji
+			// (reactions) and variable-width glyphs.
+			style = style.Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("238"))
+		}
+		for li, chunk := range chunks {
+			var line string
+			if li == 0 && prefix != "" {
+				line = prefix + chunk
+			} else if prefixW > 0 {
+				line = strings.Repeat(" ", prefixW) + chunk
+			} else {
+				line = chunk
+			}
+			b.WriteString(paintLine(style, line, width))
+			b.WriteByte('\n')
+		}
 	}
 	return b.String()
+}
+
+// paintLine truncates and space-pads to an exact terminal cell width before
+// applying styles, so Windows Terminal differential redraws don't leave tails.
+func paintLine(style lipgloss.Style, text string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", "")
+	text = runewidth.Truncate(text, width, "…")
+	if pad := width - runewidth.StringWidth(text); pad > 0 {
+		text += strings.Repeat(" ", pad)
+	}
+	return style.Render(text)
+}
+
+func padLines(content string, height, width int) string {
+	if height < 1 {
+		return content
+	}
+	content = strings.TrimRight(content, "\n")
+	var lines []string
+	if content == "" {
+		lines = nil
+	} else {
+		lines = strings.Split(content, "\n")
+	}
+	blank := strings.Repeat(" ", max(0, width))
+	for len(lines) < height {
+		lines = append(lines, blank)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func max(a, b int) int {
@@ -835,5 +1238,4 @@ var (
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	meStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
-	themStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 )

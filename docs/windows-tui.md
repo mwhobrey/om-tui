@@ -39,27 +39,66 @@ and stops that child when you quit the TUI. A daemon you started yourself is lef
 
 | Key | Action |
 |---|---|
-| `j` / `k` / arrows | Move in the conversation list |
-| `Enter` | Open thread / send compose / run search |
+| `j` / `k` / arrows | Move in the conversation list; in **thread** focus, select a message |
+| `Space` | Multi-select conversations for broadcast (`*` mark) |
+| `m` | Focus composer to message all selected chats |
+| `c` | Clear multi-select |
+| `Enter` | Open thread / send text (to all selected chats if multi-select is active) / send file path / run search |
 | `Tab` | Cycle list → thread → composer |
 | `/` | Search |
-| `o` | Open latest media in the thread (default Windows app) |
-| `s` | Save latest media under Documents (or `OPENMESSAGES_EXPORT_DIR`) |
+| `e` | React (thread focus): open emoji palette, then `1`–`9` to add/remove |
+| `a` | Attach file (Windows picker). In the composer use `Ctrl+A` so you can still type `a`. Composer text becomes the caption. |
+| `Ctrl+V` | Paste media from the OS clipboard (Explorer file copy or screenshot/image) and send; falls back to pasting text into the composer |
+| `o` | Open latest media (list/thread focus — not while typing in the composer) |
+| `s` | Save latest media (list/thread focus — not while typing in the composer) |
 | `r` | Reconnect Google Messages |
 | `Esc` | Back to conversation list / leave search |
 | `q` / `Ctrl+C` | Quit |
 
-Unread counts show in the list; opening a thread marks it read.
+Unread counts show in the list; opening a thread marks it read. Inbound senders get distinct colors (your messages stay cyan). Composer drafts are kept per conversation while the TUI is open (switching threads restores them; send clears that draft). Long message bodies and the composer wrap within the thread pane (`Enter` still sends; use `Alt+Enter` for a newline if your terminal maps it through).
+
+### Broadcast (multi-send)
+
+In the **conversation list**:
+
+1. **`Space`** — toggle the highlighted chat (`*` prefix)
+2. Select as many as you want
+3. **`m`** (or `Tab` to composer) — write one message
+4. **`Enter`** — sends that text to every selected chat
+5. **`c`** or **`Esc`** — clear the selection
+
+Broadcast is text-only in v1 (clear selection to send media to a single open thread).
 
 ## Media
 
 Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[file]`, plus any caption text.
 
+### Receive / open
+
 - **`o`** downloads via `GET /api/media/{message_id}` into a temp cache and opens with the default app (`cmd /c start` on Windows).
 - **`s`** downloads to `%USERPROFILE%\Documents\OpenMessage\media\` (override root with `OPENMESSAGES_EXPORT_DIR`). The status line shows the saved path.
 - Target is the **latest media message** in the loaded thread (no picker yet).
 
-Inline terminal previews and media *send* are out of scope for this path.
+### Send
+
+Uses the daemon's media send (`/api/v1/outbox/media` or legacy `/api/send-media`).
+
+- **`a` / `Ctrl+A`** — Windows file picker; optional caption = current composer text.
+- **Path + Enter** — if the composer is an existing local file path (quotes/`~`/`%USERPROFILE%` ok), Enter sends that file.
+- **`Ctrl+V`** — reads the OS clipboard: Explorer-copied file first, else image/screenshot saved to a temp PNG, else text inserted into the composer.
+
+Inline terminal previews remain out of scope.
+
+### Reactions
+
+In **thread** focus (`Tab` onto the message pane):
+
+- **`j` / `k`** — select a message (highlighted with `>`)
+- **`e`** — open the Google Messages emoji palette (status line shows `1👍 2❤️ …`)
+- **`1`–`9`** — add that reaction; press the same slot again to remove
+- **`Esc`** — close the palette
+
+Existing reactions render inline with reactor names when known (e.g. `👍 Alice ❤️ you`); otherwise they keep the compact count form (`👍2`).
 
 ## Smoke checklist
 
@@ -71,15 +110,24 @@ Inline terminal previews and media *send* are out of scope for this path.
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
 7. Press `r` when disconnected; unpaired state tells you to run `openmessage pair`
 8. In a thread with an image: `o` opens Photos (or default viewer); `s` writes under Documents\OpenMessage\media
+9. Attach: `a` (or `Ctrl+A` in composer) opens a file picker and sends; paste a path and Enter; or copy a file/screenshot and `Ctrl+V`
+10. Thread focus: `k`/`j` select a message, `e` then `1` reacts; same digit again removes
 
-## Next up (backlog)
+## Notifications
 
-- **Windows toast notifications** for incoming messages (macOS already has `internal/notify`). Prefer daemon-side toasts from `serve --api` so they work without the TUI focused; respect conversation mute / `notification_mode`. Hook via existing SSE `messages` events or the Google event handler.
+`serve --api` shows Windows toast notifications for fresh inbound Google Messages (daemon-side, so they work even when the TUI is unfocused or closed).
+
+- Respects per-conversation `notification_mode` (`all` / `mentions` / `muted`)
+- Skips outgoing messages and duplicates by message id
+- Default **on** on Windows; set `OPENMESSAGES_WINDOWS_NOTIFICATIONS=0` to disable, or `=1` to force on
+- Optional `OPENMESSAGES_WINDOWS_TOAST_APP_ID` overrides the toast AppUserModelID (defaults to PowerShell's registered AUMID so toasts actually show; unregistered IDs like `OpenMessage.Cli` often silently no-op)
+- Restart the API daemon after rebuilding so it picks up notifier changes (`tui` will respawn an owned child)
+
+Unread badges in the conversation list come from `unread_count`. Fresh inbound Google messages increment it; opening a thread (or receiving while that thread is open) clears it via `/api/mark-read`.
 
 ## Non-goals on Windows
 
 - Native GUI / tray app
 - iMessage, WhatsApp live, Signal
 - Inline Kitty/sixel/ASCII media thumbs (for now)
-- Media send from the TUI
 - Signed MSI installer

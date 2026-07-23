@@ -176,6 +176,19 @@ func (s *Store) MarkConversationRead(id string) error {
 	return err
 }
 
+// IncrementConversationUnread bumps unread_count for a live inbound message.
+// Google Messages conversation snapshots often arrive at the same timestamp as
+// the message after AdvanceConversationRecency, so ApplyConversationSnapshot
+// alone cannot be relied on to set unread for fresh traffic.
+func (s *Store) IncrementConversationUnread(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE conversations SET unread_count = unread_count + 1 WHERE conversation_id = ?`, id)
+	return err
+}
+
 func (s *Store) SetConversationNotificationMode(id, mode string) error {
 	normalized, err := parseNotificationMode(mode)
 	if err != nil {

@@ -234,6 +234,11 @@ func (h *EventHandler) handleMessage(evt *libgm.WrappedMessage) {
 	if !dbMsg.IsFromMe && !evt.IsOld && h.OnIncomingMessage != nil {
 		h.OnIncomingMessage(dbMsg)
 	}
+	if !dbMsg.IsFromMe && !evt.IsOld {
+		if err := h.Store.IncrementConversationUnread(dbMsg.ConversationID); err != nil {
+			h.Logger.Warn().Err(err).Str("conv_id", dbMsg.ConversationID).Msg("Failed to increment unread")
+		}
+	}
 	if !dbMsg.IsFromMe && !evt.IsOld && h.OnPhoneRespondingChange != nil {
 		h.OnPhoneRespondingChange(true)
 	}

@@ -196,10 +196,15 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	}
 	identityName := app.LocalIdentityName()
 	macNotifier := notify.NewMacOSNotifier(logger, macOSNotificationsEnabled(interactiveTerminal), baseURL, a.Store, identityName)
-	if macNotifier.Enabled() {
+	winNotifier := notify.NewWindowsNotifier(logger, windowsNotificationsEnabled(), a.Store, identityName)
+	switch {
+	case macNotifier.Enabled():
 		logger.Info().Msg("Native macOS notifications enabled for fresh inbound messages")
+		a.OnIncomingMessage = macNotifier.NotifyIncomingMessage
+	case winNotifier.Enabled():
+		logger.Info().Msg("Native Windows toast notifications enabled for fresh inbound messages")
+		a.OnIncomingMessage = winNotifier.NotifyIncomingMessage
 	}
-	a.OnIncomingMessage = macNotifier.NotifyIncomingMessage
 
 	var googleLifecycle *googleadapter.Adapter
 	var googleSupervisor *bridge.Supervisor
@@ -1107,6 +1112,24 @@ func macOSNotificationsEnabled(interactive bool) bool {
 		return false
 	}
 	return isDarwin()
+}
+
+// windowsNotificationsEnabled defaults on for Windows serve (including the
+// headless --api daemon the TUI spawns). Override with
+// OPENMESSAGES_WINDOWS_NOTIFICATIONS=0/1.
+func windowsNotificationsEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("OPENMESSAGES_WINDOWS_NOTIFICATIONS")))
+	switch mode {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return isWindows()
+}
+
+func isWindows() bool {
+	return strings.EqualFold(runtimeGOOS(), "windows")
 }
 
 func iMessageSyncSupported() bool {

@@ -121,7 +121,7 @@ To let a client connect over HTTP, start OpenMessage with `--mcp-sse` (or `--web
 - **Image/media display** — inline images, video, audio, and fullscreen viewer
 - **Contact workspace** — grouped people across routes, contact metadata, tags, reach-out cadence, and relationship summaries
 - **Google repair flows** — detects expired Google cookies, stuck sessions, and dead credentials, then offers guided reconnect or re-pair flows
-- **Desktop notifications** — native macOS notifications for fresh inbound messages
+- **Desktop notifications** — native macOS notifications and Windows toasts for fresh inbound messages
 - **Web UI + macOS app** — real-time conversation view at localhost:7007 and a native wrapper
 - **MCP tools** — conversation lookup, route-aware text/media/reaction sends, media download, import helpers, and story/viz tools
 - **Local storage** — SQLite database, your data stays on your machine
@@ -208,6 +208,8 @@ The macOS app target lives under `OpenMessage/`.
 | `OPENMESSAGES_KLIPY_API_KEY` | unset | Optional Klipy API key for the web compose GIF picker. GIF search is unavailable until this is set. `KLIPY_API_KEY` is also accepted as a fallback. |
 | `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` | unset | Optional command run before reconnect when Google session cookies expire. If unset, OpenMessage backs off and prompts for manual re-pair instead of hammering Google's auth endpoint. |
 | `OPENMESSAGES_MACOS_NOTIFICATIONS` | interactive macOS `serve` sessions only | Enable/disable native macOS notifications for fresh inbound live messages (`1`/`0`). Click-through opens the matching thread when `terminal-notifier` is available. The macOS app sets this to `0` and posts its own notifications (with tap-to-open and active-thread suppression) instead. |
+| `OPENMESSAGES_WINDOWS_NOTIFICATIONS` | on for Windows `serve` | Enable/disable Windows toast notifications for fresh inbound live messages (`1`/`0`). Daemon-side (including `serve --api` / TUI-spawned daemon). Respects conversation mute / mentions mode. |
+| `OPENMESSAGES_WINDOWS_TOAST_APP_ID` | PowerShell's registered AUMID | Windows toast AppUserModelID. Unregistered IDs often show nothing; default uses PowerShell's AUMID so toasts actually appear (branded as PowerShell). |
 | `OPENMESSAGES_SIGNAL_TMP_SWEEP` | enabled | Set to `0` to disable the cleanup of stale signal-cli temp directories (the app-owned run dirs plus `libsignal*` dirs older than 24h that pre-v0.2.10 builds leaked into the system temp dir — see #27). |
 | `OPENMESSAGES_SIGNAL_CLI` | auto-detected `signal-cli` | Optional path to a specific `signal-cli` binary. |
 | `OPENMESSAGES_GOOGLE_AVATAR_SYNC` | enabled | Set to `0` to disable Google contact avatar sync. The older singular `OPENMESSAGE_GOOGLE_AVATAR_SYNC` name is also accepted. |

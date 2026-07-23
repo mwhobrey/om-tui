@@ -746,6 +746,31 @@ func TestApplyConversationSnapshotGuardsStaleState(t *testing.T) {
 	})
 }
 
+func TestIncrementConversationUnread(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.UpsertConversation(&Conversation{
+		ConversationID: "conv-inc",
+		Name:           "Alice",
+		LastMessageTS:  1000,
+		UnreadCount:    0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IncrementConversationUnread("conv-inc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IncrementConversationUnread("conv-inc"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetConversation("conv-inc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UnreadCount != 2 {
+		t.Fatalf("unread = %d, want 2", got.UnreadCount)
+	}
+}
+
 func TestConversationDisplayProtocolPersistsFromMessages(t *testing.T) {
 	store := newTestStore(t)
 

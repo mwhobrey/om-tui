@@ -99,6 +99,7 @@ type Conversation struct {
 	ConversationID     string `json:"ConversationID"`
 	Name               string `json:"Name"`
 	IsGroup            bool   `json:"IsGroup"`
+	Participants       string `json:"Participants,omitempty"` // JSON array; resolves reaction actors
 	LastMessageTS      int64  `json:"LastMessageTS"`
 	UnreadCount        int    `json:"UnreadCount"`
 	SourcePlatform     string `json:"source_platform,omitempty"`
@@ -117,6 +118,7 @@ type Message struct {
 	IsFromMe       bool   `json:"IsFromMe"`
 	MediaID        string `json:"MediaID,omitempty"`
 	MimeType       string `json:"MimeType,omitempty"`
+	Reactions      string `json:"Reactions,omitempty"`
 	SourcePlatform string `json:"source_platform,omitempty"`
 }
 
