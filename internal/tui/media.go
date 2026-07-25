@@ -42,13 +42,7 @@ func mediaLabel(msg localapi.Message) string {
 
 func latestMediaMessage(msgs []localapi.Message) (localapi.Message, bool) {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.TrimSpace(msgs[i].MediaID) != "" {
-			return msgs[i], true
-		}
-	}
-	// Fall back to mime-only rows (some payloads omit MediaID in JSON edge cases).
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.TrimSpace(msgs[i].MimeType) != "" && strings.TrimSpace(msgs[i].Body) == "" {
+		if msgs[i].HasMedia() {
 			return msgs[i], true
 		}
 	}
@@ -158,12 +152,14 @@ func writeMediaFile(dir string, msg localapi.Message, data []byte, contentType s
 }
 
 func openFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
 	switch runtime.GOOS {
 	case "windows":
-		cmd := exec.Command("cmd", "/c", "start", "", path)
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-		return cmd.Start()
+		// rundll32 handles spaces; cmd `start` is easy to break and can leave a console flash.
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
 	default:

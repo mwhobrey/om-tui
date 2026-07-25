@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
@@ -68,32 +67,7 @@ func (m *Model) syncComposePlaceholder() {
 }
 
 func (m *Model) restampConversationList() {
-	items := m.list.Items()
-	if len(items) == 0 {
-		return
-	}
-	next := make([]list.Item, 0, len(items))
-	selectedID := ""
-	if cur, ok := m.list.SelectedItem().(convItem); ok {
-		selectedID = cur.conv.ConversationID
-	}
-	for _, it := range items {
-		ci, ok := it.(convItem)
-		if !ok {
-			continue
-		}
-		_, ci.selected = m.broadcastIDs[ci.conv.ConversationID]
-		next = append(next, ci)
-	}
-	m.list.SetItems(next)
-	if selectedID != "" {
-		for i, it := range next {
-			if it.(convItem).conv.ConversationID == selectedID {
-				m.list.Select(i)
-				break
-			}
-		}
-	}
+	m.list.restampBroadcast(m.broadcastIDs)
 }
 
 func (m Model) sendBroadcastCmd(ids []string, body string) tea.Cmd {

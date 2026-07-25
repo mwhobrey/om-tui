@@ -3,8 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-
-	"github.com/mattn/go-runewidth"
 )
 
 func TestWrapTextBasic(t *testing.T) {
@@ -13,8 +11,8 @@ func TestWrapTextBasic(t *testing.T) {
 		t.Fatalf("expected multiple wrapped lines, got %#v", got)
 	}
 	for _, line := range got {
-		if runewidth.StringWidth(line) > 12 {
-			t.Fatalf("line too wide %q (%d)", line, runewidth.StringWidth(line))
+		if cellWidth(line) > 12 {
+			t.Fatalf("line too wide %q (%d)", line, cellWidth(line))
 		}
 	}
 	joined := strings.Join(got, " ")
@@ -29,7 +27,7 @@ func TestWrapTextHardBreak(t *testing.T) {
 		t.Fatalf("expected hard wrap, got %#v", got)
 	}
 	for _, line := range got {
-		if runewidth.StringWidth(line) > 4 {
+		if cellWidth(line) > 4 {
 			t.Fatalf("line too wide %q", line)
 		}
 	}
@@ -46,5 +44,14 @@ func TestWrapTextEmpty(t *testing.T) {
 	got := wrapText("", 10)
 	if len(got) != 1 || got[0] != "" {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestWrapTextHeartEmoji(t *testing.T) {
+	got := wrapText("say ❤️ please", 8)
+	for _, line := range got {
+		if cellWidth(line) > 8 {
+			t.Fatalf("line too wide %q (%d)", line, cellWidth(line))
+		}
 	}
 }

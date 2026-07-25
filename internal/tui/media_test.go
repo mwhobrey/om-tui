@@ -34,6 +34,18 @@ func TestLatestMediaMessage(t *testing.T) {
 	}
 }
 
+func TestLatestMediaMessageMimeOnlyWithCaption(t *testing.T) {
+	// MimeType + caption body must still count as media (HasMedia).
+	msgs := []localapi.Message{
+		{MessageID: "1", Body: "text only"},
+		{MessageID: "2", MimeType: "image/jpeg", Body: "look at this"},
+	}
+	got, ok := latestMediaMessage(msgs)
+	if !ok || got.MessageID != "2" {
+		t.Fatalf("got %#v ok=%v", got, ok)
+	}
+}
+
 func TestExtensionForMIME(t *testing.T) {
 	if extensionForMIME("image/jpeg") != ".jpg" {
 		t.Fatal(extensionForMIME("image/jpeg"))

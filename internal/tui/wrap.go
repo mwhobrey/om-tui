@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 )
 
 // wrapText word-wraps text to width terminal cells. Empty input yields {""}.
@@ -25,7 +25,7 @@ func wrapText(text string, width int) []string {
 			continue
 		}
 		rest := para
-		for runewidth.StringWidth(rest) > width {
+		for cellWidth(rest) > width {
 			cut := breakOffset(rest, width)
 			if cut <= 0 {
 				cut = 1
@@ -51,14 +51,17 @@ func breakOffset(s string, width int) int {
 	accum := 0
 	lastSpace := -1
 	cut := 0
-	for i, r := range s {
-		w := runewidth.RuneWidth(r)
+	gr := uniseg.NewGraphemes(s)
+	for gr.Next() {
+		cluster := gr.Str()
+		w := cellWidth(cluster)
 		if accum+w > width {
 			break
 		}
 		accum += w
-		cut = i + len(string(r))
-		if r == ' ' {
+		_, to := gr.Positions()
+		cut = to
+		if cluster == " " {
 			lastSpace = cut
 		}
 	}
@@ -71,13 +74,16 @@ func breakOffset(s string, width int) int {
 func hardCut(s string, width int) int {
 	accum := 0
 	cut := 0
-	for i, r := range s {
-		w := runewidth.RuneWidth(r)
+	gr := uniseg.NewGraphemes(s)
+	for gr.Next() {
+		cluster := gr.Str()
+		w := cellWidth(cluster)
 		if cut > 0 && accum+w > width {
 			break
 		}
 		accum += w
-		cut = i + len(string(r))
+		_, to := gr.Positions()
+		cut = to
 	}
 	if cut == 0 {
 		return len(s)

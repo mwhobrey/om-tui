@@ -1,6 +1,8 @@
-# Windows: Google Messages TUI
+# Windows: om-tui (Rivers)
 
-OpenMessage on Windows targets **Google Messages** with a terminal UI. There is no macOS app, iMessage, or React web UI on this path.
+OpenMessage on Windows targets a terminal UI with **rivers** (account/workspace
+instances). Google Messages is the built-in river; Slack workspaces are
+additional rivers. There is no macOS app or React web UI on this path.
 
 ## Data directory
 
@@ -10,6 +12,10 @@ Default store location:
 
 Override with `OPENMESSAGES_DATA_DIR`. Pairing, `serve`, and `tui` must share the same directory.
 
+River credentials live under `rivers/<river_id>/credentials.enc`, sealed with
+**Windows DPAPI** (tied to your Windows user). Restoring a backup on another
+machine/user will not decrypt those blobs.
+
 ## Quick start
 
 ```powershell
@@ -17,6 +23,21 @@ go build -o openmessage.exe .
 .\openmessage.exe pair
 .\openmessage.exe tui
 ```
+
+### Slack river
+
+```powershell
+.\openmessage.exe pair slack --token xoxp-... --name "Acme"
+.\openmessage.exe serve --api --no-web   # or restart tui so it respawns the daemon
+```
+
+Use a Slack **user token** with scopes sufficient to list channels/DMs, read
+history, and `chat:write` (e.g. `channels:history`, `channels:read`,
+`groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`,
+`mpim:read`, `chat:write`, `users:read`). Tokens are stored only in the vault.
+
+In the TUI, press `[` / `]` to switch rivers. Streams (DMs / `#channels`) appear
+in the list for the active river.
 
 `tui` attaches to a local API daemon on `http://127.0.0.1:7007` (or `OPENMESSAGES_PORT`). If none is running, it starts:
 
@@ -33,26 +54,29 @@ and stops that child when you quit the TUI. A daemon you started yourself is lef
 .\openmessage.exe tui   # attaches; does not spawn a second daemon
 ```
 
-`--api` exposes REST + SSE (`/api/status`, `/api/conversations`, `/api/events`, …) without the React static UI.
+`--api` exposes REST + SSE (`/api/status`, `/api/conversations?river_id=…`, `/api/rivers`, `/api/events`, …) without the React static UI.
 
 ## TUI keys
 
 | Key | Action |
 |---|---|
+| `[` / `]` | Switch river (Messages, Slack workspaces, …) |
 | `j` / `k` / arrows | Move in the conversation list; in **thread** focus, select a message |
+| mouse wheel | Scroll the pane under the cursor (list or thread). Mouse capture also prevents Windows Terminal from smearing the alt-screen buffer. |
+| `/` | Jump: filter the left column by name / `#channel` / contact / id; **Enter** opens; **Esc** clears |
+| `Ctrl+F` | Search message text (full-pane results; Enter opens the hit’s thread) |
 | `Space` | Multi-select conversations for broadcast (`*` mark) |
 | `m` | Focus composer to message all selected chats |
 | `c` | Clear multi-select |
-| `Enter` | Open thread / send text (to all selected chats if multi-select is active) / send file path / run search |
+| `Enter` | Open thread / send text (to all selected chats if multi-select is active) / send file path / run message search |
 | `Tab` | Cycle list → thread → composer |
-| `/` | Search |
 | `e` | React (thread focus): open emoji palette, then `1`–`9` to add/remove |
 | `a` | Attach file (Windows picker). In the composer use `Ctrl+A` so you can still type `a`. Composer text becomes the caption. |
 | `Ctrl+V` | Paste media from the OS clipboard (Explorer file copy or screenshot/image) and send; falls back to pasting text into the composer |
-| `o` | Open latest media (list/thread focus — not while typing in the composer) |
-| `s` | Save latest media (list/thread focus — not while typing in the composer) |
+| `o` / `Ctrl+O` | Open latest media (or the selected message in thread focus). Works from list/thread; in the composer when the draft is empty (or always via Ctrl+O). |
+| `s` / `Ctrl+S` | Save media (same focus rules as open). |
 | `r` | Reconnect Google Messages |
-| `Esc` | Back to conversation list / leave search |
+| `Esc` | Back to conversation list / clear jump filter / leave search |
 | `q` / `Ctrl+C` | Quit |
 
 Unread counts show in the list; opening a thread marks it read. Inbound senders get distinct colors (your messages stay cyan). Composer drafts are kept per conversation while the TUI is open (switching threads restores them; send clears that draft). Long message bodies and the composer wrap within the thread pane (`Enter` still sends; use `Alt+Enter` for a newline if your terminal maps it through).

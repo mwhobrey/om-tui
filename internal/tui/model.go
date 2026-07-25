@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
@@ -57,7 +56,7 @@ func (i convItem) Description() string {
 }
 
 func (i convItem) FilterValue() string {
-	return i.conv.Name + " " + i.conv.ConversationID
+	return conversationFilterValue(i.conv)
 }
 
 type searchItem struct {
@@ -82,6 +81,7 @@ func (i searchItem) FilterValue() string {
 
 type (
 	statusMsg        localapi.DaemonStatus
+	riversMsg        []localapi.River
 	conversationsMsg []localapi.Conversation
 	messagesMsg      struct {
 		conversationID string
@@ -103,6 +103,7 @@ type (
 		emoji          string
 		action         string
 	}
+	debouncedConvRefreshMsg uint64
 )
 
 // Model is the Bubble Tea TUI root.
@@ -116,7 +117,7 @@ type Model struct {
 	err    string
 	info   string
 
-	list     list.Model
+	list     convList
 	search   list.Model
 	viewport viewport.Model
 	compose  textarea.Model
@@ -125,6 +126,8 @@ type Model struct {
 	activeID           string
 	activeName         string
 	activeParticipants string
+	activeRiverID      string
+	rivers             []localapi.River
 	messages           []localapi.Message
 	msgGeneration      uint64
 	viewportWidth      int
@@ -133,6 +136,9 @@ type Model struct {
 	broadcastIDs       map[string]string // conversationID -> display name
 	selectedMsg        int               // index into messages; clamped to latest when out of range
 	reactPalette       bool              // thread-focus emoji picker open
+	convRefreshGen     uint64            // debounce token for conversation list reloads
+	pendingConvs       []localapi.Conversation
+	pendingConvsSet    bool              // hold list Apply while jump-filter is open
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -142,12 +148,6 @@ type Model struct {
 // NewModel builds the initial TUI model bound to a daemon session.
 func NewModel(session *Session) Model {
 	delegate := list.NewDefaultDelegate()
-	convList := list.New(nil, delegate, 20, 20)
-	convList.Title = "Conversations"
-	convList.SetShowHelp(false)
-	convList.SetFilteringEnabled(false)
-	convList.DisableQuitKeybindings()
-
 	searchList := list.New(nil, delegate, 20, 10)
 	searchList.Title = "Search"
 	searchList.SetShowHelp(false)
@@ -163,11 +163,17 @@ func NewModel(session *Session) Model {
 	compose.MaxHeight = 6
 	compose.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	compose.BlurredStyle.Prompt = mutedStyle
+	// Default focused CursorLine uses a near-black background that can swallow
+	// the placeholder on Windows Terminal; keep the line unstyled.
+	compose.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	compose.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	compose.FocusedStyle.Placeholder = mutedStyle
+	compose.BlurredStyle.Placeholder = mutedStyle
 
 	query := textinput.New()
-	query.Placeholder = "Search messages…"
+	query.Placeholder = "Search message text…"
 	query.CharLimit = 200
-	query.Prompt = "/ "
+	query.Prompt = "ctrl+f "
 
 	vp := viewport.New(40, 10)
 	vp.SetContent("Select a conversation.")
@@ -175,19 +181,21 @@ func NewModel(session *Session) Model {
 	return Model{
 		session:       session,
 		focus:         focusList,
-		list:          convList,
+		list:          convList{title: "Conversations"},
 		search:        searchList,
 		viewport:      vp,
 		compose:       compose,
 		query:         query,
 		drafts:        make(map[string]string),
 		composeHeight: 3,
+		activeRiverID: "messages-default",
 	}
 }
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.refreshStatusCmd(),
+		m.refreshRiversCmd(),
 		m.refreshConversationsCmd(),
 		m.ensureSSECmd(),
 	)
@@ -205,35 +213,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+
 	case statusMsg:
 		m.status = localapi.DaemonStatus(msg)
 		return m, nil
 
+	case riversMsg:
+		m.rivers = msg
+		if m.activeRiverID == "" && len(msg) > 0 {
+			m.activeRiverID = msg[0].ID
+		}
+		found := false
+		for _, r := range msg {
+			if r.ID == m.activeRiverID {
+				found = true
+				m.list.title = r.DisplayName
+				break
+			}
+		}
+		if !found && len(msg) > 0 {
+			m.activeRiverID = msg[0].ID
+			m.list.title = msg[0].DisplayName
+		}
+		return m, m.refreshConversationsCmd()
+
 	case conversationsMsg:
-		selectedID := ""
-		if item, ok := m.list.SelectedItem().(convItem); ok {
-			selectedID = item.conv.ConversationID
+		if m.list.filtering {
+			m.pendingConvs = append([]localapi.Conversation(nil), msg...)
+			m.pendingConvsSet = true
+			return m, nil
 		}
-		items := make([]list.Item, 0, len(msg))
-		for _, c := range msg {
-			_, selected := m.broadcastIDs[c.ConversationID]
-			items = append(items, convItem{conv: c, selected: selected})
-			if m.activeID != "" && c.ConversationID == m.activeID {
-				m.activeName = c.Name
-				m.activeParticipants = c.Participants
-			}
-		}
-		m.list.SetItems(items)
-		if selectedID != "" {
-			for i, it := range items {
-				if it.(convItem).conv.ConversationID == selectedID {
-					m.list.Select(i)
-					break
-				}
-			}
-		}
-		m.syncComposePlaceholder()
+		m.applyConversations(msg)
 		return m, nil
+
+	case debouncedConvRefreshMsg:
+		if uint64(msg) != m.convRefreshGen {
+			return m, nil
+		}
+		return m, m.refreshConversationsCmd()
 
 	case broadcastSentMsg:
 		m.compose.SetValue("")
@@ -257,16 +276,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messages = msg.messages
 		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
-		m.setThreadContent(m.renderActiveThread())
-		m.viewport.GotoBottom()
+		m.setThreadContentFollow(m.renderActiveThread())
 		return m, nil
 
 	case searchMsg:
 		items := make([]list.Item, 0, len(msg))
+		provider := m.activeRiverProvider()
 		for _, hit := range msg {
 			platform := strings.ToLower(hit.SourcePlatform)
-			if platform != "" && platform != "sms" && platform != "rcs" {
-				continue
+			switch provider {
+			case "slack":
+				if platform != "slack" {
+					continue
+				}
+			default:
+				if platform != "" && platform != "sms" && platform != "rcs" {
+					continue
+				}
 			}
 			items = append(items, searchItem{hit: hit})
 		}
@@ -280,7 +306,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshMessagesCmd(msg.conversationID, m.msgGeneration), m.refreshConversationsCmd())
 
 	case markedReadMsg:
-		return m, m.refreshConversationsCmd()
+		return m, m.scheduleConversationsRefresh()
 
 	case reconnectMsg:
 		m.status = localapi.DaemonStatus(msg)
@@ -352,15 +378,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.refreshStatusCmd())
 			}
 		case "conversations":
-			cmds = append(cmds, m.refreshConversationsCmd())
+			cmds = append(cmds, m.scheduleConversationsRefresh())
 		case "messages":
 			if m.activeID != "" && (msg.ConversationID == "" || msg.ConversationID == m.activeID) {
+				// Refresh the open thread immediately; debounce the list so
+				// unread badges don't thrash the left pane mid-navigation.
 				cmds = append(cmds,
 					m.refreshMessagesCmd(m.activeID, m.msgGeneration),
-					tea.Sequence(m.markReadCmd(m.activeID), m.refreshConversationsCmd()),
+					m.markReadCmd(m.activeID),
+					m.scheduleConversationsRefresh(),
 				)
 			} else {
-				cmds = append(cmds, m.refreshConversationsCmd())
+				cmds = append(cmds, m.scheduleConversationsRefresh())
 			}
 		case "sse_restart":
 			cmds = []tea.Cmd{m.ensureSSECmd()}
@@ -383,10 +412,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focus == focusThread {
 			return m.updateThreadKeys(msg)
 		}
+		// Jump-to filter: keep typing in the left-column list filter.
+		if m.focus == focusList && m.list.filtering {
+			return m.updateListFilterKeys(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "/":
+			return m.startJumpFilter()
+		case "ctrl+f":
 			m.focus = focusSearch
 			m.query.SetValue("")
 			m.query.Focus()
@@ -427,9 +462,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.cycleFocus(1)
 		case "shift+tab":
 			return m, m.cycleFocus(-1)
+		case "[":
+			if m.focus == focusList {
+				return m.cycleRiver(-1)
+			}
+		case "]":
+			if m.focus == focusList {
+				return m.cycleRiver(1)
+			}
+		case "j", "down":
+			if m.focus == focusList {
+				m.list.move(1)
+				return m, nil
+			}
+		case "k", "up":
+			if m.focus == focusList {
+				m.list.move(-1)
+				return m, nil
+			}
+		case "pgdown":
+			if m.focus == focusList {
+				m.list.move(m.list.pageSize())
+				return m, nil
+			}
+		case "pgup":
+			if m.focus == focusList {
+				m.list.move(-m.list.pageSize())
+				return m, nil
+			}
 		case " ":
 			if m.focus == focusList {
-				if item, ok := m.list.SelectedItem().(convItem); ok {
+				if item, ok := m.list.selected(); ok {
 					m.toggleBroadcast(item.conv.ConversationID, item.conv.Name)
 					m.restampConversationList()
 					m.syncComposePlaceholder()
@@ -461,6 +524,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.openSelectedConversation()
 			}
 		case "esc":
+			if m.list.filtering || m.list.filter != "" {
+				m.list.clearFilter()
+				m.flushPendingConversations()
+				m.info = ""
+				return m, nil
+			}
 			if m.broadcastCount() > 0 {
 				m.clearBroadcast()
 				m.restampConversationList()
@@ -471,17 +540,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.focus = focusList
 			m.reactPalette = false
+			m.compose.Blur()
 			m.err = ""
 			m.info = ""
 			return m, nil
 		}
 	}
 
+	// Forward non-key messages (cursor blink, etc.) to the focused pane.
 	var cmd tea.Cmd
-	if m.focus == focusList {
-		m.list, cmd = m.list.Update(msg)
+	switch m.focus {
+	case focusCompose:
+		m.compose, cmd = m.compose.Update(msg)
+		return m, cmd
+	case focusThread:
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
 	}
-	return m, cmd
+	return m, nil
 }
 
 func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -523,6 +599,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.focus = focusList
+		m.compose.Blur()
 		m.err = ""
 		m.info = ""
 		return m, nil
@@ -591,6 +668,8 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.info = "Reconnecting…"
 		return m, m.reconnectCmd()
 	case "/":
+		return m.startJumpFilter()
+	case "ctrl+f":
 		m.focus = focusSearch
 		m.query.SetValue("")
 		m.query.Focus()
@@ -611,6 +690,27 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.info = ""
 		return m, nil
+	case "o", "ctrl+o":
+		// Opening a thread focuses the composer; bare `o` used to type into the
+		// draft instead of opening media. Allow it when the draft is empty, and
+		// always allow Ctrl+O.
+		if msg.String() == "o" && strings.TrimSpace(m.compose.Value()) != "" {
+			break
+		}
+		if m.activeID == "" {
+			return m, nil
+		}
+		m.info = "Opening media…"
+		return m, m.mediaActionCmd(false)
+	case "s", "ctrl+s":
+		if msg.String() == "s" && strings.TrimSpace(m.compose.Value()) != "" {
+			break
+		}
+		if m.activeID == "" {
+			return m, nil
+		}
+		m.info = "Saving media…"
+		return m, m.mediaActionCmd(true)
 	case "ctrl+a":
 		// Bare "a" must remain typable in the composer; Ctrl+A attaches.
 		if m.activeID == "" {
@@ -695,6 +795,95 @@ func (m Model) updateSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) startJumpFilter() (tea.Model, tea.Cmd) {
+	m.focus = focusList
+	m.compose.Blur()
+	m.query.Blur()
+	m.reactPalette = false
+	m.err = ""
+	m.info = "Type to jump — Enter opens, Esc clears"
+	m.list.startFilter()
+	return m, nil
+}
+
+func (m Model) updateListFilterKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		item, ok := m.list.selected()
+		if !ok {
+			return m, nil
+		}
+		m.list.clearFilter()
+		m.flushPendingConversations()
+		m.info = ""
+		return m.openConversation(item.conv.ConversationID, item.conv.Name, item.conv.Participants)
+	case "esc":
+		m.list.clearFilter()
+		m.flushPendingConversations()
+		m.info = ""
+		return m, nil
+	case "backspace":
+		if m.list.filter == "" {
+			m.list.clearFilter()
+			m.flushPendingConversations()
+			return m, nil
+		}
+		r := []rune(m.list.filter)
+		m.list.setFilter(string(r[:len(r)-1]))
+		return m, nil
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "down", "j":
+		m.list.move(1)
+		return m, nil
+	case "up", "k":
+		m.list.move(-1)
+		return m, nil
+	}
+	if msg.Type == tea.KeyRunes {
+		m.list.setFilter(m.list.filter + string(msg.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) applyConversations(msg []localapi.Conversation) {
+	selectedID := ""
+	if item, ok := m.list.selected(); ok {
+		selectedID = item.conv.ConversationID
+	}
+	items := make([]convItem, 0, len(msg))
+	for _, c := range msg {
+		_, selected := m.broadcastIDs[c.ConversationID]
+		items = append(items, convItem{conv: c, selected: selected})
+		if m.activeID != "" && c.ConversationID == m.activeID {
+			m.activeName = c.Name
+			m.activeParticipants = c.Participants
+		}
+	}
+	m.list.setItems(items)
+	m.list.selectID(selectedID)
+	m.syncComposePlaceholder()
+}
+
+func (m *Model) flushPendingConversations() {
+	if !m.pendingConvsSet {
+		return
+	}
+	m.pendingConvsSet = false
+	pending := m.pendingConvs
+	m.pendingConvs = nil
+	m.applyConversations(pending)
+}
+
+func (m *Model) scheduleConversationsRefresh() tea.Cmd {
+	m.convRefreshGen++
+	gen := m.convRefreshGen
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+		return debouncedConvRefreshMsg(gen)
+	})
+}
+
 func (m *Model) cycleFocus(dir int) tea.Cmd {
 	order := []focusPane{focusList, focusThread, focusCompose}
 	idx := 0
@@ -714,8 +903,45 @@ func (m *Model) cycleFocus(dir int) tea.Cmd {
 	return nil
 }
 
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	ev := tea.MouseEvent(msg)
+	if !ev.IsWheel() {
+		return m, nil
+	}
+	delta := 1
+	if ev.Button == tea.MouseButtonWheelUp {
+		delta = -1
+	}
+
+	// Prefer the pane under the cursor so wheel-over-contacts works even while
+	// the composer is focused (opening a thread focuses compose).
+	d := m.paneDims()
+	listRightEdge := d.leftW + borderStyle.GetHorizontalBorderSize()
+	overList := ev.X < listRightEdge && m.focus != focusSearch
+
+	switch {
+	case m.focus == focusSearch:
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(msg)
+		return m, cmd
+	case overList:
+		if m.list.filtering {
+			return m, nil
+		}
+		m.list.move(delta)
+		return m, nil
+	default:
+		if delta < 0 {
+			m.viewport.LineUp(1)
+		} else {
+			m.viewport.LineDown(1)
+		}
+		return m, nil
+	}
+}
+
 func (m Model) openSelectedConversation() (tea.Model, tea.Cmd) {
-	item, ok := m.list.SelectedItem().(convItem)
+	item, ok := m.list.selected()
 	if !ok {
 		return m, nil
 	}
@@ -734,11 +960,16 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	m.reactPalette = false
 	m.focus = focusCompose
 	m.compose.SetValue(m.drafts[id])
+	if m.viewportWidth > 0 {
+		m.compose.SetWidth(m.viewportWidth)
+	}
+	if m.composeHeight > 0 {
+		m.compose.SetHeight(m.composeHeight)
+	}
 	focusCmd := m.compose.Focus()
-	m.setThreadContent(mutedStyle.Render("Loading…"))
+	m.setThreadContentFollow(mutedStyle.Render("Loading…"))
 	return m, tea.Batch(
 		focusCmd,
-		tea.ClearScreen,
 		m.refreshMessagesCmd(id, gen),
 		m.markReadCmd(id),
 	)
@@ -761,92 +992,136 @@ func (m *Model) saveComposeDraft() {
 }
 
 func (m *Model) setThreadContent(content string) {
+	y := m.viewport.YOffset
 	content = padLines(content, m.viewport.Height, max(1, m.viewportWidth))
-	m.viewport.SetYOffset(0)
 	m.viewport.SetContent(content)
+	m.viewport.SetYOffset(y)
+}
+
+func (m *Model) setThreadContentFollow(content string) {
+	content = padLines(content, m.viewport.Height, max(1, m.viewportWidth))
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
 }
 
 func (m Model) View() string {
 	if !m.ready {
 		return "Starting OpenMessage TUI…"
 	}
-	status := renderStatus(m.status, m.err, m.info)
-	help := "q quit  space multi-select  m compose  c clear  e react  enter send  esc back"
+	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info)
+	help := "q quit  [ ] river  / jump  ctrl+f msgs  space multi  enter open/send  esc back"
 
-	mainH := m.height - 2
-	if mainH < 5 {
-		mainH = 5
-	}
-	leftW := leftWidth(m.width)
-	rightW := m.width - leftW
-	if rightW < 20 {
-		rightW = 20
-	}
-
-	left := borderStyle.Width(leftW).Height(mainH).MaxHeight(mainH).Render(m.list.View())
+	d := m.paneDims()
+	leftInner := padViewBox(m.list.View(), d.listInnerW, d.mainH)
+	left := borderStyle.Width(d.leftW).Height(d.mainH).MaxHeight(d.mainH).Render(leftInner)
 	threadTitle := m.activeName
 	if threadTitle == "" {
 		threadTitle = "Thread"
 	}
-	innerW := max(1, rightW-2)
-	composeH := m.composeHeight
-	if composeH < 1 {
-		composeH = 3
-	}
+	innerW := d.threadInnerW
+	// Pin both panes to exact cell heights. An over-tall viewport.View() used to
+	// push the empty composer (placeholder) past MaxHeight and clip it away until
+	// typing switched textarea off the placeholder path.
+	threadVP := padViewBox(m.viewport.View(), innerW, d.viewportH)
+	composer := padViewBox(m.compose.View(), innerW, d.composeH)
 	threadBody := lipgloss.JoinVertical(lipgloss.Left,
 		paintLine(titleStyle, truncate(threadTitle, innerW), innerW),
-		m.viewport.View(),
-		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Height(composeH).MaxHeight(composeH).Render(m.compose.View()),
+		threadVP,
+		composer,
 	)
-	right := borderStyle.Width(rightW).Height(mainH).MaxHeight(mainH).Render(threadBody)
+	right := borderStyle.Width(d.rightW).Height(d.mainH).MaxHeight(d.mainH).Render(threadBody)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if m.focus == focusSearch {
 		searchPane := lipgloss.JoinVertical(lipgloss.Left, m.query.View(), m.search.View())
-		main = borderStyle.Width(m.width).Height(mainH).MaxHeight(mainH).Render(searchPane)
+		// Single pane: Width is content-only; border adds GetHorizontalBorderSize outside.
+		searchW := m.width - borderStyle.GetHorizontalBorderSize()
+		if searchW < 10 {
+			searchW = 10
+		}
+		main = borderStyle.Width(searchW).Height(d.mainH).MaxHeight(d.mainH).Render(
+			padViewBox(searchPane, searchW-borderStyle.GetHorizontalPadding(), d.mainH),
+		)
 	}
 
 	frame := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(1).MaxHeight(1).Render(status),
+		paintLine(lipgloss.NewStyle(), status, m.width),
 		main,
 		paintLine(mutedStyle, help, m.width),
 	)
-	// Fill the whole terminal so Windows Terminal doesn't leave ghost cells
-	// from the previous conversation's taller/wrapped content.
+	// Exact terminal fill — short lines from a prior frame are the usual WT ghost source.
 	return lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, frame,
 		lipgloss.WithWhitespaceChars(" "),
 	)
 }
 
-func (m *Model) layout() {
-	listW := leftWidth(m.width)
-	mainH := m.height - 2
+// paneDims sizes bordered panes so content Width/Height plus outside borders
+// fit exactly in the terminal. lipgloss Width/Height are content-box only;
+// NormalBorder adds 2 cols / 2 rows outside that box.
+type paneDims struct {
+	leftW, rightW   int
+	mainH           int
+	listInnerW      int
+	threadInnerW    int
+	composeH        int
+	viewportH       int
+}
+
+func (m Model) paneDims() paneDims {
+	borderX := borderStyle.GetHorizontalBorderSize()
+	borderY := borderStyle.GetVerticalBorderSize()
+	padX := borderStyle.GetHorizontalPadding()
+
+	availW := m.width - 2*borderX
+	if availW < 16 {
+		availW = 16
+	}
+	leftW := leftWidth(availW)
+	rightW := availW - leftW
+	if rightW < 20 {
+		rightW = min(20, availW/2)
+		if rightW < 10 {
+			rightW = max(1, availW/2)
+		}
+		leftW = availW - rightW
+	}
+
+	mainH := m.height - 2 - borderY // status + help + vertical pane borders
 	if mainH < 5 {
 		mainH = 5
 	}
-	listH := mainH - 2
-	if listH < 5 {
-		listH = 5
-	}
-	m.list.SetSize(listW-2, listH)
-	m.search.SetSize(m.width-4, listH-2)
-	threadW := m.width - listW - 4
-	if threadW < 20 {
-		threadW = 20
-	}
-	m.viewportWidth = threadW
-	m.viewport.Width = threadW
 	composeH := m.composeHeight
 	if composeH < 1 {
 		composeH = 3
 	}
-	// Title (1) + compose (composeH) inside border.
-	m.viewport.Height = listH - 1 - composeH
-	if m.viewport.Height < 3 {
-		m.viewport.Height = 3
+	viewportH := mainH - 1 - composeH // thread title + compose
+	if viewportH < 3 {
+		viewportH = 3
 	}
-	m.compose.SetWidth(max(1, threadW-2))
-	m.compose.SetHeight(composeH)
+	return paneDims{
+		leftW:        leftW,
+		rightW:       rightW,
+		mainH:        mainH,
+		listInnerW:   max(1, leftW-padX),
+		threadInnerW: max(1, rightW-padX),
+		composeH:     composeH,
+		viewportH:    viewportH,
+	}
+}
+
+func (m *Model) layout() {
+	d := m.paneDims()
+	m.list.setSize(d.listInnerW, d.mainH)
+	searchW := m.width - borderStyle.GetHorizontalBorderSize() - borderStyle.GetHorizontalPadding()
+	if searchW < 10 {
+		searchW = 10
+	}
+	m.search.SetSize(searchW, max(5, d.mainH-2))
+	m.viewportWidth = d.threadInnerW
+	m.viewport.Width = d.threadInnerW
+	m.viewport.Height = d.viewportH
+	m.compose.SetWidth(d.threadInnerW)
+	m.compose.SetHeight(d.composeH)
 }
 
 func leftWidth(total int) int {
@@ -867,14 +1142,19 @@ func leftWidth(total int) int {
 }
 
 func (m Model) canSend() bool {
-	g := m.status.Google
-	if g.NeedsPairing || !g.Paired {
-		return false
+	switch m.activeRiverProvider() {
+	case "slack":
+		return true
+	default:
+		g := m.status.Google
+		if g.NeedsPairing || !g.Paired {
+			return false
+		}
+		if g.NeedsRepair || g.AuthExpired {
+			return false
+		}
+		return g.Connected || m.status.Connected
 	}
-	if g.NeedsRepair || g.AuthExpired {
-		return false
-	}
-	return g.Connected || m.status.Connected
 }
 
 func (m Model) refreshStatusCmd() tea.Cmd {
@@ -890,15 +1170,78 @@ func (m Model) refreshStatusCmd() tea.Cmd {
 }
 
 func (m Model) refreshConversationsCmd() tea.Cmd {
+	riverID := m.activeRiverID
+	if riverID == "" {
+		riverID = "messages-default"
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		convs, err := m.session.Client.ListSMSConversations(ctx, 200)
+		convs, err := m.session.Client.ListConversationsByRiver(ctx, riverID, 200)
 		if err != nil {
 			return errMsg{err: err}
 		}
 		return conversationsMsg(convs)
 	}
+}
+
+func (m Model) refreshRiversCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rivers, err := m.session.Client.ListRivers(ctx)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return riversMsg(rivers)
+	}
+}
+
+func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
+	if len(m.rivers) == 0 {
+		return m, m.refreshRiversCmd()
+	}
+	idx := 0
+	for i, r := range m.rivers {
+		if r.ID == m.activeRiverID {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(m.rivers)) % len(m.rivers)
+	m.activeRiverID = m.rivers[idx].ID
+	m.list.title = m.rivers[idx].DisplayName
+	m.list.clearFilter()
+	m.clearBroadcast()
+	m.restampConversationList()
+	m.syncComposePlaceholder()
+	m.info = fmt.Sprintf("River: %s", m.rivers[idx].DisplayName)
+	m.activeID = ""
+	m.activeName = ""
+	m.messages = nil
+	m.setThreadContentFollow(mutedStyle.Render("Select a stream."))
+	return m, m.refreshConversationsCmd()
+}
+
+func (m Model) activeRiverName() string {
+	for _, r := range m.rivers {
+		if r.ID == m.activeRiverID {
+			return r.DisplayName
+		}
+	}
+	if m.activeRiverID == "messages-default" {
+		return "Messages"
+	}
+	return m.activeRiverID
+}
+
+func (m Model) activeRiverProvider() string {
+	for _, r := range m.rivers {
+		if r.ID == m.activeRiverID {
+			return r.Provider
+		}
+	}
+	return "messages"
 }
 
 func (m Model) refreshMessagesCmd(conversationID string, generation uint64) tea.Cmd {
@@ -995,9 +1338,19 @@ func (m Model) reactCmd(conversationID, messageID, emoji, action string) tea.Cmd
 
 func (m Model) mediaActionCmd(export bool) tea.Cmd {
 	msgs := m.messages
+	selected := m.selectedMsg
+	preferSelected := m.focus == focusThread
 	client := m.session.Client
 	return func() tea.Msg {
-		msg, ok := latestMediaMessage(msgs)
+		msg, ok := localapi.Message{}, false
+		if preferSelected {
+			if sel, sok := selectedMessage(msgs, selected); sok && sel.HasMedia() {
+				msg, ok = sel, true
+			}
+		}
+		if !ok {
+			msg, ok = latestMediaMessage(msgs)
+		}
 		if !ok {
 			return errMsg{err: fmt.Errorf("no media in this thread")}
 		}
@@ -1098,7 +1451,7 @@ func renderMessages(msgs []localapi.Message, width, selected int, resolve func(s
 			marker = ">"
 		}
 		prefix := fmt.Sprintf("%s %s  %s: ", marker, ts, who)
-		prefixW := runewidth.StringWidth(prefix)
+		prefixW := cellWidth(prefix)
 		bodyWidth := width - prefixW
 		if bodyWidth < 8 {
 			bodyWidth = width
@@ -1139,8 +1492,8 @@ func paintLine(style lipgloss.Style, text string, width int) string {
 	}
 	text = strings.ReplaceAll(text, "\n", " ")
 	text = strings.ReplaceAll(text, "\r", "")
-	text = runewidth.Truncate(text, width, "…")
-	if pad := width - runewidth.StringWidth(text); pad > 0 {
+	text = truncateCells(text, width)
+	if pad := width - cellWidth(text); pad > 0 {
 		text += strings.Repeat(" ", pad)
 	}
 	return style.Render(text)
@@ -1164,6 +1517,48 @@ func padLines(content string, height, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// padViewBox pads/truncates each line to width and fills to height so WT
+// differential redraws don't leave ghosts when list titles change length
+// (e.g. unread badges appearing on inbound SSE).
+func padViewBox(content string, width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	content = strings.TrimRight(content, "\n")
+	var lines []string
+	if content != "" {
+		lines = strings.Split(content, "\n")
+	}
+	for i, line := range lines {
+		lines[i] = padANSILine(line, width)
+	}
+	blank := strings.Repeat(" ", width)
+	for len(lines) < height {
+		lines = append(lines, blank)
+	}
+	if height > 0 && len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func padANSILine(line string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	w := lipgloss.Width(line)
+	if w == width {
+		return line
+	}
+	if w < width {
+		return line + strings.Repeat(" ", width-w)
+	}
+	// Visible truncate without trying to preserve broken ANSI mid-sequence:
+	// lipgloss Width+cut via rune walk on stripped content is lossy for styles,
+	// but list lines rarely exceed the pane; prefer hard cut via MaxWidth.
+	return lipgloss.NewStyle().MaxWidth(width).Width(width).Render(line)
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -1171,7 +1566,14 @@ func max(a, b int) int {
 	return b
 }
 
-func renderStatus(status localapi.DaemonStatus, errText, info string) string {
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func renderStatus(status localapi.DaemonStatus, riverName, errText, info string) string {
 	g := status.Google
 	state := "disconnected"
 	style := warnStyle
@@ -1193,7 +1595,11 @@ func renderStatus(status localapi.DaemonStatus, errText, info string) string {
 			style = warnStyle
 		}
 	}
-	line := style.Render("Google Messages: "+state) + "  " + mutedStyle.Render("local API")
+	riverLabel := strings.TrimSpace(riverName)
+	if riverLabel == "" {
+		riverLabel = "Messages"
+	}
+	line := style.Render("Google Messages: "+state) + "  " + mutedStyle.Render("river:"+riverLabel)
 	if info != "" {
 		line += "  " + mutedStyle.Render(info)
 	}
@@ -1205,13 +1611,7 @@ func renderStatus(status localapi.DaemonStatus, errText, info string) string {
 
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
-		return s
-	}
-	if n <= 1 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
+	return truncateCells(s, n)
 }
 
 func newIdempotencyKey() (string, error) {
@@ -1225,7 +1625,9 @@ func newIdempotencyKey() (string, error) {
 // Run launches the Bubble Tea program for session.
 func Run(session *Session) error {
 	model := NewModel(session)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	// Mouse cell motion keeps Windows Terminal from scrolling the alt screen
+	// buffer on wheel (that scroll is what smears panes into each other).
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := program.Run()
 	return err
 }
