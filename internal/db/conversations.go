@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/maxghenis/openmessage/internal/river"
 )
 
 // conversationColumns is the canonical column list for SELECT queries on conversations.
-const conversationColumns = `conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode, tab`
+const conversationColumns = `conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode, tab, river_id`
 
 const (
 	NotificationModeAll      = "all"
@@ -56,11 +58,14 @@ func (s *Store) UpsertConversation(c *Conversation) error {
 	if c.SourcePlatform == "" {
 		c.SourcePlatform = "sms"
 	}
+	if c.RiverID == "" && (c.SourcePlatform == "sms" || c.SourcePlatform == "rcs" || c.SourcePlatform == "") {
+		c.RiverID = river.DefaultMessagesRiverID
+	}
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	notificationMode, hasNotificationMode := explicitNotificationMode(c.NotificationMode)
 	_, err := s.db.Exec(`
-			INSERT INTO conversations (conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'all'))
+			INSERT INTO conversations (conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode, river_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'all'), ?)
 			ON CONFLICT(conversation_id) DO UPDATE SET
 				name=excluded.name,
 				is_group=excluded.is_group,
@@ -70,8 +75,9 @@ func (s *Store) UpsertConversation(c *Conversation) error {
 				source_platform=excluded.source_platform,
 				display_protocol=CASE WHEN excluded.display_protocol != '' THEN excluded.display_protocol ELSE conversations.display_protocol END,
 				is_favorite=CASE WHEN excluded.is_favorite THEN 1 ELSE conversations.is_favorite END,
-				notification_mode=CASE WHEN ? != '' THEN ? ELSE conversations.notification_mode END
-		`, c.ConversationID, c.Name, c.IsGroup, c.Participants, c.LastMessageTS, c.UnreadCount, c.SourcePlatform, c.DisplayProtocol, c.IsFavorite, notificationMode, maybeNotificationModeArg(hasNotificationMode, notificationMode), maybeNotificationModeArg(hasNotificationMode, notificationMode))
+				notification_mode=CASE WHEN ? != '' THEN ? ELSE conversations.notification_mode END,
+				river_id=CASE WHEN excluded.river_id != '' THEN excluded.river_id ELSE conversations.river_id END
+		`, c.ConversationID, c.Name, c.IsGroup, c.Participants, c.LastMessageTS, c.UnreadCount, c.SourcePlatform, c.DisplayProtocol, c.IsFavorite, notificationMode, c.RiverID, maybeNotificationModeArg(hasNotificationMode, notificationMode), maybeNotificationModeArg(hasNotificationMode, notificationMode))
 	return err
 }
 
@@ -80,7 +86,7 @@ func (s *Store) GetConversation(id string) (*Conversation, error) {
 	err := s.db.QueryRow(`
 		SELECT `+conversationColumns+`
 		FROM conversations WHERE conversation_id = ?
-		`, id).Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab)
+		`, id).Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab, &c.RiverID)
 	if err != nil {
 		return nil, err
 	}
@@ -351,6 +357,25 @@ func (s *Store) ListConversationsByPlatform(platform string, limit int) ([]*Conv
 	return scanConversations(rows)
 }
 
+// ListConversationsByRiver lists conversations for one river.
+func (s *Store) ListConversationsByRiver(riverID string, limit int) ([]*Conversation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT `+conversationColumns+`
+		FROM conversations
+		WHERE river_id = ?
+		ORDER BY last_message_ts DESC
+		LIMIT ?
+	`, riverID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanConversations(rows)
+}
+
 func (s *Store) SearchConversationsByMetadata(query string, limit int) ([]*Conversation, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT `+conversationColumns+`
@@ -386,7 +411,7 @@ func scanConversations(rows interface {
 	var convs []*Conversation
 	for rows.Next() {
 		c := &Conversation{}
-		if err := rows.Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab); err != nil {
+		if err := rows.Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab, &c.RiverID); err != nil {
 			return nil, err
 		}
 		c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
@@ -401,7 +426,7 @@ func getConversationTx(tx *sql.Tx, id string) (*Conversation, error) {
 	err := tx.QueryRow(`
 		SELECT `+conversationColumns+`
 		FROM conversations WHERE conversation_id = ?
-	`, id).Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab)
+	`, id).Scan(&c.ConversationID, &c.Name, &c.IsGroup, &c.Participants, &c.LastMessageTS, &c.UnreadCount, &c.SourcePlatform, &c.DisplayProtocol, &c.IsFavorite, &c.NotificationMode, &c.Tab, &c.RiverID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -417,11 +442,14 @@ func upsertConversationTx(tx *sql.Tx, c *Conversation) error {
 	if c.SourcePlatform == "" {
 		c.SourcePlatform = "sms"
 	}
+	if c.RiverID == "" && (c.SourcePlatform == "sms" || c.SourcePlatform == "rcs" || c.SourcePlatform == "") {
+		c.RiverID = river.DefaultMessagesRiverID
+	}
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	notificationMode, hasNotificationMode := explicitNotificationMode(c.NotificationMode)
 	_, err := tx.Exec(`
-			INSERT INTO conversations (conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'all'))
+			INSERT INTO conversations (conversation_id, name, is_group, participants, last_message_ts, unread_count, source_platform, display_protocol, is_favorite, notification_mode, river_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'all'), ?)
 			ON CONFLICT(conversation_id) DO UPDATE SET
 				name=excluded.name,
 				is_group=excluded.is_group,
@@ -431,8 +459,9 @@ func upsertConversationTx(tx *sql.Tx, c *Conversation) error {
 				source_platform=excluded.source_platform,
 				display_protocol=CASE WHEN excluded.display_protocol != '' THEN excluded.display_protocol ELSE conversations.display_protocol END,
 				is_favorite=CASE WHEN excluded.is_favorite THEN 1 ELSE conversations.is_favorite END,
-				notification_mode=CASE WHEN ? != '' THEN ? ELSE conversations.notification_mode END
-		`, c.ConversationID, c.Name, c.IsGroup, c.Participants, c.LastMessageTS, c.UnreadCount, c.SourcePlatform, c.DisplayProtocol, c.IsFavorite, notificationMode, maybeNotificationModeArg(hasNotificationMode, notificationMode), maybeNotificationModeArg(hasNotificationMode, notificationMode))
+				notification_mode=CASE WHEN ? != '' THEN ? ELSE conversations.notification_mode END,
+				river_id=CASE WHEN excluded.river_id != '' THEN excluded.river_id ELSE conversations.river_id END
+		`, c.ConversationID, c.Name, c.IsGroup, c.Participants, c.LastMessageTS, c.UnreadCount, c.SourcePlatform, c.DisplayProtocol, c.IsFavorite, notificationMode, c.RiverID, maybeNotificationModeArg(hasNotificationMode, notificationMode), maybeNotificationModeArg(hasNotificationMode, notificationMode))
 	return err
 }
 
@@ -462,6 +491,9 @@ func mergeConversationRecords(source, target *Conversation, targetID string) *Co
 	merged.IsFavorite = merged.IsFavorite || source.IsFavorite
 	if merged.SourcePlatform == "" {
 		merged.SourcePlatform = source.SourcePlatform
+	}
+	if merged.RiverID == "" {
+		merged.RiverID = source.RiverID
 	}
 	if merged.DisplayProtocol == "" {
 		merged.DisplayProtocol = normalizeDisplayProtocol(source.DisplayProtocol)

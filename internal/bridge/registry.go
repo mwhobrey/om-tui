@@ -13,6 +13,7 @@ const (
 	PlatformGoogle   Platform = "google"
 	PlatformWhatsApp Platform = "whatsapp"
 	PlatformSignal   Platform = "signal"
+	PlatformSlack    Platform = "slack"
 )
 
 var (

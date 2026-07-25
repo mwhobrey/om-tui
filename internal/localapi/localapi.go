@@ -103,7 +103,20 @@ type Conversation struct {
 	LastMessageTS      int64  `json:"LastMessageTS"`
 	UnreadCount        int    `json:"UnreadCount"`
 	SourcePlatform     string `json:"source_platform,omitempty"`
+	RiverID            string `json:"river_id,omitempty"`
 	LastMessagePreview string `json:"last_message_preview,omitempty"`
+}
+
+// River is one account/workspace from GET /api/rivers.
+type River struct {
+	ID          string `json:"id"`
+	Provider    string `json:"provider"`
+	DisplayName string `json:"display_name"`
+	AccountKey  string `json:"account_key"`
+	Status      string `json:"status"`
+	CreatedAtMS int64  `json:"created_at_ms"`
+	LastActive  int64  `json:"last_active_ms"`
+	UnreadCount int    `json:"unread_count,omitempty"`
 }
 
 // Message is one chat message from the conversations messages endpoint.
@@ -556,18 +569,38 @@ func (c *Client) ListConversations(ctx context.Context, limit int) ([]Conversati
 
 // ListSMSConversations returns Google Messages (sms) threads only.
 func (c *Client) ListSMSConversations(ctx context.Context, limit int) ([]Conversation, error) {
-	all, err := c.ListConversations(ctx, limit)
-	if err != nil {
+	return c.ListConversationsByRiver(ctx, "messages-default", limit)
+}
+
+// ListConversationsByRiver returns streams for one river.
+func (c *Client) ListConversationsByRiver(ctx context.Context, riverID string, limit int) ([]Conversation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	path := fmt.Sprintf("/api/conversations?limit=%d", limit)
+	if id := strings.TrimSpace(riverID); id != "" {
+		path += "&river_id=" + url.QueryEscape(id)
+	}
+	var out []Conversation
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
 		return nil, err
 	}
-	filtered := make([]Conversation, 0, len(all))
-	for _, conv := range all {
-		platform := strings.ToLower(strings.TrimSpace(conv.SourcePlatform))
-		if platform == "" || platform == "sms" || platform == "rcs" {
-			filtered = append(filtered, conv)
-		}
+	if out == nil {
+		out = []Conversation{}
 	}
-	return filtered, nil
+	return out, nil
+}
+
+// ListRivers returns registered rivers with unread aggregates.
+func (c *Client) ListRivers(ctx context.Context) ([]River, error) {
+	var out []River
+	if _, err := c.getJSON(ctx, "/api/rivers", &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []River{}
+	}
+	return out, nil
 }
 
 // ConversationMessages fetches recent messages for a conversation (newest-first from API).
@@ -625,7 +658,7 @@ func (c *Client) DownloadMedia(ctx context.Context, messageID string) ([]byte, s
 	if messageID == "" {
 		return nil, "", fmt.Errorf("message_id is required")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/media/"+messageID, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/media/"+url.PathEscape(messageID), nil)
 	if err != nil {
 		return nil, "", err
 	}

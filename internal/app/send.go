@@ -17,6 +17,9 @@ var (
 	sendSignalConversationText = func(a *App, conversationID, body, replyToID string) (*db.Message, error) {
 		return a.SendSignalText(conversationID, body, replyToID)
 	}
+	sendSlackConversationText = func(a *App, conversationID, body, replyToID string) (*db.Message, error) {
+		return a.SendSlackText(conversationID, body)
+	}
 )
 
 func (a *App) SendTextToConversation(conversationID, body string) (*db.Conversation, *db.Message, error) {
@@ -42,6 +45,15 @@ func (a *App) SendTextToConversation(conversationID, body string) (*db.Conversat
 		msg, err := sendSignalConversationText(a, conversationID, body, "")
 		if err != nil {
 			return conv, nil, fmt.Errorf("send Signal message: %w", err)
+		}
+		if err := a.Store.RecordOutgoingMessage(msg, ""); err != nil {
+			return conv, nil, fmt.Errorf("persist sent message: %w", err)
+		}
+		return conv, msg, nil
+	case "slack":
+		msg, err := sendSlackConversationText(a, conversationID, body, "")
+		if err != nil {
+			return conv, nil, fmt.Errorf("send Slack message: %w", err)
 		}
 		if err := a.Store.RecordOutgoingMessage(msg, ""); err != nil {
 			return conv, nil, fmt.Errorf("persist sent message: %w", err)
@@ -107,7 +119,7 @@ func normalizeConversationPlatform(platform string) string {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "", "sms":
 		return "sms"
-	case "whatsapp", "signal":
+	case "whatsapp", "signal", "slack":
 		return strings.ToLower(strings.TrimSpace(platform))
 	default:
 		return strings.ToLower(strings.TrimSpace(platform))

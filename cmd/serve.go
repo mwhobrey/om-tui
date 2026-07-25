@@ -452,6 +452,15 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		logger.Info().Msg("Transports disabled — skipping Signal live bridge")
 	}
 
+	if transports && !isDemo {
+		a.StartAllSlackRivers(context.Background())
+		defer a.StopAllSlackRivers()
+	} else if isDemo {
+		logger.Info().Msg("Demo mode — skipping Slack rivers")
+	} else {
+		logger.Info().Msg("Transports disabled — skipping Slack rivers")
+	}
+
 	if stack != nil {
 		stopV2Stack = stack.Start(context.Background(), a.Store, events, v2Primary)
 		logger.Info().
@@ -714,6 +723,11 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				SendSignalMedia:       a.SendSignalMedia,
 				SendSignalReaction:    a.SendSignalReaction,
 				SendWhatsAppMedia:     a.SendWhatsAppMedia,
+				SendSlackText:         a.SendSlackText,
+				SlackStatus:           func() any { return a.SlackStatusSnapshot() },
+				ListRivers: func() (any, error) {
+					return a.ListRiversWithUnread()
+				},
 				WhatsAppAvatar:        a.WhatsAppAvatar,
 				DownloadWhatsAppMedia: a.DownloadWhatsAppMedia,
 				DownloadSignalMedia:   a.DownloadSignalMedia,

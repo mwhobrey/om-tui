@@ -316,6 +316,8 @@ func (h *EventHandler) storeConversation(conv *gmproto.Conversation) bool {
 		Participants:   participantsJSON,
 		LastMessageTS:  conv.GetLastMessageTimestamp() / 1000, // microseconds to milliseconds
 		UnreadCount:    unread,
+		SourcePlatform: "sms",
+		RiverID:        "messages-default",
 	}
 
 	if err := h.Store.ApplyConversationSnapshot(dbConv); err != nil {

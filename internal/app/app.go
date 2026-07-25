@@ -18,6 +18,8 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/importer"
 	"github.com/maxghenis/openmessage/internal/signallive"
+	"github.com/maxghenis/openmessage/internal/slacklive"
+	"github.com/maxghenis/openmessage/internal/vault"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -117,6 +119,7 @@ type App struct {
 	Client              *client.Client
 	googleGeneration    *GoogleGeneration
 	Store               *db.Store
+	Vault               *vault.Store
 	EventHandler        *client.EventHandler
 	Logger              zerolog.Logger
 	DataDir             string
@@ -135,6 +138,7 @@ type App struct {
 	OnTypingChange         func(conversationID, senderName, senderNumber string, typing bool)
 	OnWhatsAppStatusChange func()
 	OnSignalStatusChange   func()
+	OnSlackStatusChange    func()
 
 	// gmClient is used by backfill methods. If nil, it's derived from Client.GM.
 	// Set this field directly in tests to inject a mock.
@@ -154,6 +158,8 @@ type App struct {
 	whatsAppLifecycleNotifier WhatsAppLifecycleNotifier
 	signalMu                  sync.Mutex
 	Signal                    *signallive.Bridge
+	slackMu                   sync.Mutex
+	SlackRivers               map[string]*slacklive.Client // riverID -> client
 	statusMu                  sync.Mutex
 	googleLastError           string
 	// A lapsed Google Messages linked-device session keeps reporting
@@ -404,6 +410,10 @@ func newApp(logger zerolog.Logger, runRepairSweeps bool) (*App, error) {
 		WhatsAppSessionPath: whatsAppSessionPath,
 		SignalConfigPath:    signalConfigPath,
 		tempDataDir:         tempDataDir,
+		SlackRivers:         map[string]*slacklive.Client{},
+	}
+	if _, err := app.EnsureRivers(); err != nil {
+		logger.Warn().Err(err).Msg("Failed to ensure rivers registry")
 	}
 	return app, nil
 }
@@ -890,6 +900,7 @@ func (a *App) Close() {
 			a.Logger.Warn().Err(err).Msg("Failed to close WhatsApp bridge")
 		}
 	}
+	a.StopAllSlackRivers()
 	if a.Store != nil {
 		a.Store.Close()
 	}

@@ -124,6 +124,9 @@ type APIOptions struct {
 	SendSignalMedia       func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
 	SendSignalReaction    func(conversationID, messageID, emoji, action string) error
 	SendWhatsAppMedia     func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
+	SendSlackText         func(conversationID, body string) (*db.Message, error)
+	SlackStatus           func() any
+	ListRivers            func() (any, error)
 	DownloadWhatsAppMedia func(msg *db.Message) ([]byte, string, error)
 	DownloadSignalMedia   func(msg *db.Message) ([]byte, string, error)
 	StartDeepBackfill     func() bool
@@ -311,6 +314,9 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		if opts.SignalStatus != nil {
 			payload["signal"] = opts.SignalStatus()
+		}
+		if opts.SlackStatus != nil {
+			payload["slack"] = opts.SlackStatus()
 		}
 		if opts.BackfillStatus != nil {
 			payload["backfill"] = opts.BackfillStatus()
@@ -514,6 +520,13 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		conv, err := store.GetConversation(conversationID)
 		return err == nil && conv != nil && conv.SourcePlatform == "signal"
 	}
+	isSlackConversation := func(conversationID string) bool {
+		if strings.HasPrefix(conversationID, "slack:") {
+			return true
+		}
+		conv, err := store.GetConversation(conversationID)
+		return err == nil && conv != nil && conv.SourcePlatform == "slack"
+	}
 	var (
 		errWhatsAppTextUnavailable  = errors.New("WhatsApp sending is not available")
 		errWhatsAppMediaUnavailable = errors.New("WhatsApp media sending is not available")
@@ -521,6 +534,8 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		errSignalTextUnavailable    = errors.New("Signal sending is not available")
 		errSignalMediaUnavailable   = errors.New("Signal media sending is not available")
 		errSignalLocalStore         = errors.New("signal local store update failed")
+		errSlackTextUnavailable     = errors.New("Slack sending is not available")
+		errSlackLocalStore          = errors.New("slack local store update failed")
 	)
 	sendWhatsAppText := func(conversationID, body, replyToID, deleteDraftID string) (*db.Message, error) {
 		if opts.SendWhatsAppText == nil {
@@ -558,6 +573,19 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		if err := recordOutgoingMessage(msg, deleteDraftID); err != nil {
 			return msg, fmt.Errorf("%w: %v", errSignalLocalStore, err)
+		}
+		return msg, nil
+	}
+	sendSlackText := func(conversationID, body, deleteDraftID string) (*db.Message, error) {
+		if opts.SendSlackText == nil {
+			return nil, errSlackTextUnavailable
+		}
+		msg, err := opts.SendSlackText(conversationID, body)
+		if err != nil {
+			return nil, err
+		}
+		if err := recordOutgoingMessage(msg, deleteDraftID); err != nil {
+			return msg, fmt.Errorf("%w: %v", errSlackLocalStore, err)
 		}
 		return msg, nil
 	}
@@ -815,7 +843,18 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 
 	mux.HandleFunc("/api/conversations", func(w http.ResponseWriter, r *http.Request) {
 		limit := queryIntClamped(r, "limit", 50, 500)
-		convos, err := reads.ListConversations(limit)
+		riverID := strings.TrimSpace(r.URL.Query().Get("river_id"))
+		platform := strings.TrimSpace(r.URL.Query().Get("source_platform"))
+		var convos []*db.Conversation
+		var err error
+		switch {
+		case riverID != "":
+			convos, err = store.ListConversationsByRiver(riverID, limit)
+		case platform != "":
+			convos, err = store.ListConversationsByPlatform(platform, limit)
+		default:
+			convos, err = reads.ListConversations(limit)
+		}
 		if err != nil {
 			httpError(w, "list conversations: "+err.Error(), 500)
 			return
@@ -831,6 +870,23 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		writeJSON(w, convos)
+	})
+
+	mux.HandleFunc("/api/rivers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.ListRivers == nil {
+			httpError(w, "rivers unavailable", 501)
+			return
+		}
+		payload, err := opts.ListRivers()
+		if err != nil {
+			httpError(w, "list rivers: "+err.Error(), 500)
+			return
+		}
+		writeJSON(w, payload)
 	})
 
 	mux.HandleFunc("/api/conversations/", func(w http.ResponseWriter, r *http.Request) {
@@ -1659,6 +1715,36 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, err.Error(), 501)
 				return
 			case errors.Is(err, errSignalLocalStore):
+				messageID := ""
+				if msg != nil {
+					messageID = msg.MessageID
+				}
+				completeIdempotentSend(idempotencyKey, messageID, db.OutgoingSendStatusLocalStoreFailed)
+				writeLocalStoreFailedSend(w, messageID, err)
+				return
+			case err != nil:
+				completeIdempotentSend(idempotencyKey, "", db.OutgoingSendStatusFailed)
+				httpError(w, err.Error(), 502)
+				return
+			}
+			completeIdempotentSend(idempotencyKey, msg.MessageID, db.OutgoingSendStatusSent)
+			publishMessages(req.ConversationID)
+			publishConversations()
+			writeJSON(w, map[string]any{
+				"message_id": msg.MessageID,
+				"status":     "SUCCESS",
+				"success":    true,
+			})
+			return
+		}
+		if isSlackConversation(req.ConversationID) {
+			msg, err := sendSlackText(req.ConversationID, req.Message, "")
+			switch {
+			case errors.Is(err, errSlackTextUnavailable):
+				releaseIdempotentSend(idempotencyKey)
+				httpError(w, err.Error(), 501)
+				return
+			case errors.Is(err, errSlackLocalStore):
 				messageID := ""
 				if msg != nil {
 					messageID = msg.MessageID

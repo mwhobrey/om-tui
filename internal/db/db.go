@@ -20,8 +20,9 @@ type Conversation struct {
 	Participants       string // JSON array
 	LastMessageTS      int64
 	UnreadCount        int
-	SourcePlatform     string `json:"source_platform,omitempty"`  // sms, gchat, imessage, whatsapp, signal, telegram
+	SourcePlatform     string `json:"source_platform,omitempty"`  // sms, gchat, imessage, whatsapp, signal, telegram, slack
 	DisplayProtocol    string `json:"display_protocol,omitempty"` // display-only SMS/RCS protocol detail
+	RiverID            string `json:"river_id,omitempty"`         // account/workspace instance
 	LastMessagePreview string `json:"last_message_preview,omitempty"`
 	UnifiedID          string `json:"unified_id,omitempty"`
 	UnifiedName        string `json:"unified_name,omitempty"`
@@ -379,8 +380,15 @@ func (s *Store) migrate() error {
 		"ALTER TABLE conversations ADD COLUMN notification_mode TEXT NOT NULL DEFAULT 'all'",
 		"ALTER TABLE conversations ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE conversations ADD COLUMN tab TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE conversations ADD COLUMN river_id TEXT NOT NULL DEFAULT ''",
 	} {
 		s.db.Exec(col) // ignore "duplicate column" errors
+	}
+	if err := s.ensureRiversTable(); err != nil {
+		return fmt.Errorf("ensure rivers table: %w", err)
+	}
+	if _, err := s.EnsureMessagesRiver(); err != nil {
+		return fmt.Errorf("ensure messages river: %w", err)
 	}
 	if _, err := s.db.Exec(`UPDATE messages SET source_platform = 'sms' WHERE IFNULL(source_platform, '') = ''`); err != nil {
 		return fmt.Errorf("normalize blank message source platform: %w", err)
@@ -402,6 +410,7 @@ func (s *Store) migrate() error {
 
 	// Index for platform-filtered conversation queries
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_platform ON conversations(source_platform)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_conversations_river ON conversations(river_id)`)
 
 	// Index for the contacts.number = messages.sender_number JOIN in metadata search
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_number ON contacts(number)`)

@@ -25,8 +25,9 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: openmessage <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status>")
 		fmt.Fprintln(os.Stderr, "  pair [--google|--google-file path]       - Pair with your phone via QR or Google account cookies")
+		fmt.Fprintln(os.Stderr, "  pair slack [--token xoxp-...] [--name N] - Pair a Slack workspace (river) via user token")
 		fmt.Fprintln(os.Stderr, "  serve [--demo] [--web|--no-web] [--api|--no-api] [--mcp-sse|--no-mcp-sse] [--mcp-stdio] - Start explicit web/API/MCP transports")
-		fmt.Fprintln(os.Stderr, "  tui                                      - Google Messages terminal UI (starts serve --api if needed)")
+		fmt.Fprintln(os.Stderr, "  tui                                      - Terminal UI with river switcher (starts serve --api if needed)")
 		fmt.Fprintln(os.Stderr, "  demo                                     - Start a seeded fake-data UI with live transports disabled")
 		fmt.Fprintln(os.Stderr, "  backup [--to dir] [--json]               - Create a verified legacy migration backup and manifest")
 		fmt.Fprintln(os.Stderr, "  migrate [--check] [--from dir] [--to dir] [--json] - Transform the legacy store into a validated v2 store")

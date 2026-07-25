@@ -34,6 +34,10 @@ const (
 )
 
 func RunPair(logger zerolog.Logger, args ...string) error {
+	if len(args) > 0 && strings.EqualFold(args[0], "slack") {
+		return RunPairSlack(logger, args[1:]...)
+	}
+
 	dataDir := app.DefaultDataDir()
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
