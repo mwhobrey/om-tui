@@ -53,15 +53,23 @@ Evidence: dirty worktree with Slack/rivers/vault/TUI changes (~900+ LOC tracked 
 
 ## How to verify right now
 
+Go comes from `mise` on this box — see the toolchain note in
+[03_RULES_AND_STANDARDS.md](./03_RULES_AND_STANDARDS.md).
+
 ```powershell
-go test ./internal/river/... ./internal/vault/... ./internal/db/ -count=1
-go test ./internal/tui/... -count=1
-go build -o openmessage.exe .
+$env:PATH = "$env:LOCALAPPDATA\mise\installs\go\1.26.5\bin;" + $env:PATH
+go build ./... ; go vet ./...
+go test ./internal/river/ ./internal/vault/ ./internal/db/ ./internal/tui/ ./internal/app/ -count=1
 .\openmessage.exe status --json
 # With a token:
 .\openmessage.exe pair slack --token xoxp-... --name "Test"
 .\openmessage.exe serve --api --no-web
 .\openmessage.exe tui
 ```
+
+As of the rivers/TUI push: `go build ./...` and `go vet ./...` are clean, and every
+package touched by that work passes on Windows. The remaining `go test ./...` failures
+match the pre-existing Windows baseline documented in
+[03_RULES_AND_STANDARDS.md](./03_RULES_AND_STANDARDS.md).
 
 Live support / re-pair / MCP fratricide: always start from [../agent-runbook.md](../agent-runbook.md).

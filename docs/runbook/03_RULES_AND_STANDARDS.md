@@ -60,6 +60,40 @@ swift test --package-path macos/OpenMessage
 bash macos/build.sh
 ```
 
+### Go toolchain on this Windows box
+
+Go is **not** on the system `PATH`. It is managed by `mise` (`go 1.26.5`, pinned in
+`~/.config/mise/config.toml`). Either prefix commands or prepend the install bin:
+
+```powershell
+mise exec -- go test ./...
+# or, once per shell session:
+$env:PATH = "$env:LOCALAPPDATA\mise\installs\go\1.26.5\bin;" + $env:PATH
+```
+
+### Windows test baseline — many failures are expected
+
+`go test ./...` on Windows fails in roughly 15 packages for POSIX assumptions in the
+tests, **not** product bugs. Verified identical on a clean pre-change worktree, so
+treat these as the baseline and compare against it rather than against green:
+
+| Failure signature | Cause |
+|---|---|
+| `VACUUM INTO ... SQL logic error: out of memory (1)` | backup/migrate tests against Windows paths |
+| `mode ... = 0777, want 0700` | Unix permission-bit assertions (`v2/`, blobs, control token) |
+| `sync <dir>: Access is denied` | directory fsync on publish/rollback |
+| `executable file not found in %PATH%` | binary tests build `openmessage` without `.exe` |
+| `%1 is not a valid Win32 application` | tests exec a `.sh` cookie-refresh script |
+| static asset / link preview / media resolve failures | path separator and mode assumptions |
+
+Packages that **do** pass on Windows and should stay passing: `internal/app`, `db`,
+`river`, `vault`, `tui`, `localapi`, `bridge`, `bridgeadapters/*`, `importer`, `story`,
+`viz`, `v2read`, `v2keys`, `notify`, `telemetry`, `googlecookies`.
+
+CI runs on `ubuntu-latest`, so the real gate is green there. Note that GitHub Actions
+appears to be **disabled on the `mwhobrey/om-tui` fork** (`gh run list` returns nothing),
+so pushes to this fork currently get no CI at all.
+
 ### CI (`.github/workflows/`)
 
 | Workflow | What |
