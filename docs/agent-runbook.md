@@ -7,20 +7,24 @@ the hard way.
 
 ## Data layout — the #1 gotcha
 
-There are **two separate data directories**, and they are **not the same store**:
+There are **multiple separate data directories**, and they are **not the same store**:
 
 | Used by | Path | Notes |
 |---|---|---|
 | **macOS app** (live) | `~/Library/Application Support/OpenMessage/` | The real `messages.db` + `session.json`. `BackendManager` launches the backend with `OPENMESSAGES_DATA_DIR` set to this. |
-| **CLI default** | `~/.local/share/openmessage/` | What `openmessage read/status/pair/serve` use when run with **no** env var. Frequently **stale** relative to the app. |
+| **CLI default (macOS/Linux)** | `~/.local/share/openmessage/` | What `openmessage read/status/pair/serve` use when run with **no** env var. Frequently **stale** relative to the app. |
+| **Windows CLI / TUI** | `%LOCALAPPDATA%\OpenMessage` | Default for this fork's Windows path. Pair, `serve`, and `tui` must share it. River credentials: `rivers/<id>/credentials.enc` (DPAPI). |
 
 Consequences:
 
-- To read or modify the **app's live data** from the CLI, set
+- To read or modify the **app's live data** from the CLI on macOS, set
   `OPENMESSAGES_DATA_DIR="$HOME/Library/Application Support/OpenMessage"`.
   Querying `~/.local/share/openmessage/messages.db` shows a different
   (usually older) message history — do not trust it for "what did the user
   just receive/send."
+- On Windows, point everything at `%LOCALAPPDATA%\OpenMessage` (or a shared
+  `OPENMESSAGES_DATA_DIR`). Product path: [windows-tui.md](windows-tui.md).
+  Architecture / current state: [runbook/](runbook/).
 - `BackendManager.migrateOldDataIfNeeded()` copies `session.json` (+ db files)
   from `~/.local/share/openmessage` → App Support **only when App Support has
   no `session.json`**. So to force the app unpaired you must clear the session

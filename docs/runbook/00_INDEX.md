@@ -32,7 +32,7 @@ Default branch: `main`. Go module path remains `github.com/maxghenis/openmessage
 | [../windows-tui.md](../windows-tui.md) | Windows TUI + Slack rivers product path |
 | [../migration-backup.md](../migration-backup.md) | Offline `backup` / cutover prep |
 | [../release-checklist.md](../release-checklist.md) | Pre-release dogfood + privacy checklist |
-| [../../CLAUDE.md](../../CLAUDE.md) | Agent-facing project overview (may lag the fork) |
+| [../../CLAUDE.md](../../CLAUDE.md) | Agent-facing project overview (kept in sync with this runbook) |
 
 ## Fast paths
 
@@ -66,6 +66,6 @@ go test -race ./...
 | Google Messages (SMS/RCS) | yes | — | libgm / mautrix-gmessages fork |
 | WhatsApp | yes | text export / Desktop | whatsmeow; single-owner session |
 | Signal | yes | Desktop | local `signal-cli` ≥ 0.14.5 |
-| Slack | WIP (this fork) | — | rivers + vault; not on V2 ingest |
+| Slack | yes (this fork) | — | rivers + vault; text send + recent sync; not on V2 ingest |
 | Google Chat | — | Takeout | importer only |
 | iMessage | — | `chat.db` | macOS Full Disk Access |

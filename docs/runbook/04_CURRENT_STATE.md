@@ -40,16 +40,15 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Native Windows GUI | Non-goal for om-tui |
 | Live WhatsApp/Signal on Windows TUI product path | Documented non-goals |
 | QR Google pair | Dead for many accounts — cookie method only |
-| CLAUDE.md / README platform list | Lag Slack/rivers; prefer this runbook + `windows-tui.md` |
+| CLAUDE.md / README / agent-runbook | Synced for rivers + Windows data dirs; prefer this runbook if anything drifts |
 | Fork CI | Actions appear disabled on `mwhobrey/om-tui` |
 
 ## Immediate next steps (suggested)
 
-1. **Dogfood Slack river MVP** — pair → sync → TUI list/send → vault round-trip; walk the smoke checklist in `windows-tui.md`.
-2. **Triage remaining TUI polish** — any leftover ghosts, unread badge flapping, Slack-specific send errors.
-3. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
-4. **Refresh CLAUDE.md / README Windows section** so agents don't miss rivers.
-5. **Optional:** enable Actions on the fork, or add a Windows-focused smoke script that skips the POSIX-baseline failures.
+1. **Keep dogfooding Slack + TUI** — file polish bugs as they appear (ghosts, unread flapping, Slack send quirks).
+2. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
+3. **Optional:** enable Actions on the fork, or add a Windows-focused smoke script that skips the POSIX-baseline failures.
+4. ~~Refresh CLAUDE.md / README~~ — done; prefer this runbook when docs disagree.
 
 ## How to verify right now
 
