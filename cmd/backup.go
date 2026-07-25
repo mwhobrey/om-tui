@@ -818,6 +818,38 @@ func discoverAuxiliaryState(dataDir string) (auxiliaryPlan, error) {
 			isSQLite:     strings.HasSuffix(name, ".db"),
 		})
 	}
+	// River credential ciphertext (DPAPI-sealed on Windows). Restore only works
+	// for the same OS user/machine that sealed the blobs.
+	riversDir := filepath.Join(dataDir, "rivers")
+	if entries, err := os.ReadDir(riversDir); err == nil {
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			rel := filepath.Join("rivers", ent.Name(), "credentials.enc")
+			path := filepath.Join(dataDir, rel)
+			info, err := os.Lstat(path)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return auxiliaryPlan{}, err
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			plan.included = append(plan.included, rel)
+			plan.files = append(plan.files, auxiliaryFile{
+				sourcePath:   path,
+				relativePath: rel,
+				isSQLite:     false,
+			})
+		}
+	} else if !os.IsNotExist(err) {
+		return auxiliaryPlan{}, err
+	} else {
+		plan.notPresent = append(plan.notPresent, "rivers/")
+	}
 
 	signalPath := filepath.Join(dataDir, "signal-cli")
 	info, err := os.Lstat(signalPath)
