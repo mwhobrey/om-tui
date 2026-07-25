@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1055,9 +1056,16 @@ func (m Model) View() string {
 		paintLine(mutedStyle, help, m.width),
 	)
 	// Exact terminal fill — short lines from a prior frame are the usual WT ghost source.
-	return lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, frame,
+	placed := lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, frame,
 		lipgloss.WithWhitespaceChars(" "),
 	)
+	// Disable autowrap (DECAWM) for the whole frame. A single contact name or SMS
+	// preview containing a grapheme Windows Terminal renders wider than we measure
+	// (ZWJ/flag/skin-tone emoji) would otherwise wrap one physical line, push the
+	// frame a row past the viewport, scroll the alt screen, and leave the ghosts
+	// we keep chasing. With autowrap off the extra cells clip at the right margin
+	// instead. Run() restores it (?7h) on exit so the user's shell still wraps.
+	return decawmOff + placed
 }
 
 // paneDims sizes bordered panes so content Width/Height plus outside borders
@@ -1644,12 +1652,23 @@ func newIdempotencyKey() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// decawmOff disables terminal autowrap so an under-measured wide glyph clips at
+// the right margin instead of wrapping the frame and scrolling the alt screen.
+// decawmOn restores it. See View() for the ghost this prevents.
+const (
+	decawmOff = "\x1b[?7l"
+	decawmOn  = "\x1b[?7h"
+)
+
 // Run launches the Bubble Tea program for session.
 func Run(session *Session) error {
 	model := NewModel(session)
 	// Mouse cell motion keeps Windows Terminal from scrolling the alt screen
 	// buffer on wheel (that scroll is what smears panes into each other).
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Frames render with autowrap disabled (see decawmOff); restore it no matter
+	// how we exit so the user's shell keeps wrapping long lines.
+	defer fmt.Fprint(os.Stdout, decawmOn)
 	_, err := program.Run()
 	return err
 }

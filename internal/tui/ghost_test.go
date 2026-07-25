@@ -41,6 +41,12 @@ func TestViewStableAfterOpenAndListScroll(t *testing.T) {
 	assertExactFrame := func(t *testing.T, label string) {
 		t.Helper()
 		view := m.View()
+		// Autowrap must be disabled for the frame so a wide glyph WT renders
+		// wider than we measure clips instead of wrapping + scrolling the alt
+		// screen (the source of the contact-list ghosts).
+		if !strings.HasPrefix(view, decawmOff) {
+			t.Fatalf("%s: frame missing autowrap-off (DECAWM) prefix", label)
+		}
 		lines := strings.Split(view, "\n")
 		if len(lines) < m.height-1 || len(lines) > m.height {
 			t.Fatalf("%s: view lines = %d, want ~%d", label, len(lines), m.height)
