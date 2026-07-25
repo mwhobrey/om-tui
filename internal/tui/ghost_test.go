@@ -45,6 +45,9 @@ func TestViewStableAfterOpenAndListScroll(t *testing.T) {
 		if len(lines) < m.height-1 || len(lines) > m.height {
 			t.Fatalf("%s: view lines = %d, want ~%d", label, len(lines), m.height)
 		}
+		if !strings.Contains(view, "└") {
+			t.Fatalf("%s: missing bottom borders (MaxHeight clipping?)", label)
+		}
 		for i, line := range lines {
 			if i >= m.height {
 				break

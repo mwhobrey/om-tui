@@ -57,4 +57,8 @@ func TestViewLinesExactWidth(t *testing.T) {
 			t.Fatalf("line %d width = %d, want %d (%q)", i, w, m.width, stripForWidthTest(line))
 		}
 	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "└") {
+		t.Fatal("frame missing bottom pane borders — MaxHeight likely clipping content-box Height")
+	}
 }

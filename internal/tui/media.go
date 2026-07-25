@@ -49,6 +49,15 @@ func latestMediaMessage(msgs []localapi.Message) (localapi.Message, bool) {
 	return localapi.Message{}, false
 }
 
+func latestDownloadableMediaMessage(msgs []localapi.Message) (localapi.Message, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].HasDownloadableMedia() {
+			return msgs[i], true
+		}
+	}
+	return localapi.Message{}, false
+}
+
 func extensionForMIME(mime string) string {
 	mime = strings.ToLower(strings.TrimSpace(strings.Split(mime, ";")[0]))
 	switch mime {

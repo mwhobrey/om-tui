@@ -15,20 +15,18 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 - macOS app packaging + CI (Go, race, E2E, Swift, gmessages fork drift)
 - Windows defaults: `%LOCALAPPDATA%\OpenMessage`, TUI entrypoint
 
-## Working on this fork (uncommitted / in-flight at runbook generation)
-
-Evidence: dirty worktree with Slack/rivers/vault/TUI changes (~900+ LOC tracked delta plus untracked packages). Treat as **active WIP**, not released product.
+## Working on this fork (committed on `main`)
 
 | Area | Status |
 |---|---|
-| Rivers model (`messages-default`, Slack rivers) | Implemented in `internal/river`, `internal/db/rivers*` |
-| Vault (DPAPI Windows) | Implemented; insecure path for tests |
-| `pair slack --token` | Implemented |
-| Slack live client + recent sync + text send | Implemented (`slacklive`, `app` Slack paths) |
+| Rivers model (`messages-default`, Slack rivers) | Shipped in `internal/river`, `internal/db/rivers*` |
+| Vault (DPAPI Windows) | Shipped; insecure path for tests |
+| `pair slack --token` | Shipped |
+| Slack live client + recent sync + text send | Shipped (`slacklive`, `app` Slack paths) |
 | Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
-| TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Substantial TUI expansion |
-| API: `/api/rivers`, conversation `river_id` filter | Present in fork changes |
-| Docs: `docs/windows-tui.md` | Written for the Windows path |
+| TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Shipped; ghost/`s`-key media bugs fixed |
+| API: `/api/rivers`, conversation `river_id` filter | Shipped |
+| Docs: `docs/windows-tui.md` + `docs/runbook/` | Present |
 
 ## Explicitly incomplete / broken / out of scope
 
@@ -36,20 +34,22 @@ Evidence: dirty worktree with Slack/rivers/vault/TUI changes (~900+ LOC tracked 
 |---|---|
 | Slack → V2 ingest/outbox | No Slack decoder / V2 account wiring |
 | Slack media / reactions / full RTM richness | Text-first; expand later |
+| Slack realtime / websocket events | Recent-history sync on start; live push not confirmed |
 | V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
 | Daemon honors `instance.lock` | Still backup/migrate-only |
 | Native Windows GUI | Non-goal for om-tui |
 | Live WhatsApp/Signal on Windows TUI product path | Documented non-goals |
 | QR Google pair | Dead for many accounts — cookie method only |
-| CLAUDE.md platform list | May lag Slack/rivers; prefer this runbook + `windows-tui.md` |
+| CLAUDE.md / README platform list | Lag Slack/rivers; prefer this runbook + `windows-tui.md` |
+| Fork CI | Actions appear disabled on `mwhobrey/om-tui` |
 
 ## Immediate next steps (suggested)
 
-1. **Stabilize Slack river MVP** — pair → sync → TUI list/send → vault round-trip on one Windows machine; smoke checklist in `windows-tui.md`.
-2. **Decide V2 posture for Slack** — either keep Slack legacy-only until V2 primary is real, or add decoder + outbox path before cutting over.
-3. **Land or split the WIP** — Slack/vault/rivers vs pure TUI UX vs backup tweaks as separate commits/PRs if targeting upstream.
-4. **Keep transport ownership tests green** when wiring Slack into `serve` supervisors.
-5. **Refresh CLAUDE.md / README Windows section** once Slack ships so agents don't miss rivers.
+1. **Dogfood Slack river MVP** — pair → sync → TUI list/send → vault round-trip; walk the smoke checklist in `windows-tui.md`.
+2. **Triage remaining TUI polish** — any leftover ghosts, unread badge flapping, Slack-specific send errors.
+3. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
+4. **Refresh CLAUDE.md / README Windows section** so agents don't miss rivers.
+5. **Optional:** enable Actions on the fork, or add a Windows-focused smoke script that skips the POSIX-baseline failures.
 
 ## How to verify right now
 

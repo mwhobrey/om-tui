@@ -135,9 +135,17 @@ type Message struct {
 	SourcePlatform string `json:"source_platform,omitempty"`
 }
 
-// HasMedia reports whether the message carries a downloadable attachment.
+// HasMedia reports whether the message should render as a media placeholder.
+// MimeType alone is enough for display (e.g. pending stubs); downloading still
+// requires HasDownloadableMedia.
 func (m Message) HasMedia() bool {
 	return strings.TrimSpace(m.MediaID) != "" || strings.TrimSpace(m.MimeType) != ""
+}
+
+// HasDownloadableMedia reports whether GET /api/media/{id} can serve bytes.
+// The legacy media route requires a non-empty MediaID.
+func (m Message) HasDownloadableMedia() bool {
+	return strings.TrimSpace(m.MediaID) != ""
 }
 
 // SearchHit is one result from GET /api/search.

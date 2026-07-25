@@ -1012,8 +1012,13 @@ func (m Model) View() string {
 	help := "q quit  [ ] river  / jump  ctrl+f msgs  space multi  enter open/send  esc back"
 
 	d := m.paneDims()
+	// lipgloss Height is content-box (borders add outside). MaxHeight caps the
+	// final rendered block including borders — using mainH for both clipped the
+	// bottom border and two list rows, which left Windows Terminal ghosts of the
+	// first contact's preview above/below the name while scrolling.
+	paneMaxH := d.mainH + borderStyle.GetVerticalBorderSize()
 	leftInner := padViewBox(m.list.View(), d.listInnerW, d.mainH)
-	left := borderStyle.Width(d.leftW).Height(d.mainH).MaxHeight(d.mainH).Render(leftInner)
+	left := borderStyle.Width(d.leftW).Height(d.mainH).MaxHeight(paneMaxH).Render(leftInner)
 	threadTitle := m.activeName
 	if threadTitle == "" {
 		threadTitle = "Thread"
@@ -1029,7 +1034,7 @@ func (m Model) View() string {
 		threadVP,
 		composer,
 	)
-	right := borderStyle.Width(d.rightW).Height(d.mainH).MaxHeight(d.mainH).Render(threadBody)
+	right := borderStyle.Width(d.rightW).Height(d.mainH).MaxHeight(paneMaxH).Render(threadBody)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if m.focus == focusSearch {
@@ -1039,7 +1044,7 @@ func (m Model) View() string {
 		if searchW < 10 {
 			searchW = 10
 		}
-		main = borderStyle.Width(searchW).Height(d.mainH).MaxHeight(d.mainH).Render(
+		main = borderStyle.Width(searchW).Height(d.mainH).MaxHeight(paneMaxH).Render(
 			padViewBox(searchPane, searchW-borderStyle.GetHorizontalPadding(), d.mainH),
 		)
 	}
@@ -1342,17 +1347,12 @@ func (m Model) mediaActionCmd(export bool) tea.Cmd {
 	preferSelected := m.focus == focusThread
 	client := m.session.Client
 	return func() tea.Msg {
-		msg, ok := localapi.Message{}, false
-		if preferSelected {
-			if sel, sok := selectedMessage(msgs, selected); sok && sel.HasMedia() {
-				msg, ok = sel, true
-			}
+		msg, ok, err := resolveMediaMessage(msgs, selected, preferSelected)
+		if err != nil {
+			return errMsg{err: err}
 		}
 		if !ok {
-			msg, ok = latestMediaMessage(msgs)
-		}
-		if !ok {
-			return errMsg{err: fmt.Errorf("no media in this thread")}
+			return errMsg{err: fmt.Errorf("no downloadable media in this thread")}
 		}
 		if strings.TrimSpace(msg.MessageID) == "" {
 			return errMsg{err: fmt.Errorf("media message missing id")}
@@ -1376,6 +1376,28 @@ func (m Model) mediaActionCmd(export bool) tea.Cmd {
 		}
 		return mediaDoneMsg{action: action, path: path}
 	}
+}
+
+// resolveMediaMessage picks the attachment to open/save.
+// Thread focus with an explicit selection never silently falls back to another
+// message — that produced confusing API 404s on text-only / empty-body rows
+// when an older MimeType-only stub was still in the thread.
+func resolveMediaMessage(msgs []localapi.Message, selected int, preferSelected bool) (localapi.Message, bool, error) {
+	if preferSelected {
+		sel, sok := selectedMessage(msgs, selected)
+		if !sok {
+			return localapi.Message{}, false, fmt.Errorf("no message selected")
+		}
+		if !sel.HasDownloadableMedia() {
+			if sel.HasMedia() {
+				return localapi.Message{}, false, fmt.Errorf("selected message has no downloadable attachment")
+			}
+			return localapi.Message{}, false, fmt.Errorf("selected message has no media")
+		}
+		return sel, true, nil
+	}
+	msg, ok := latestDownloadableMediaMessage(msgs)
+	return msg, ok, nil
 }
 
 func (m Model) ensureSSECmd() tea.Cmd {

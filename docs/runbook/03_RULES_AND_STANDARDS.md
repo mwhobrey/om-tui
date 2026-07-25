@@ -123,6 +123,7 @@ Do not weaken these when "simplifying" serve.
 9. **`go.work` overrides** can make dependency bumps look ignored.
 10. **Keep PATH binary = app binary** — schema migrations from a newer CLI against an older app are hostile.
 11. **Windows non-goals** (this fork): native GUI/tray, iMessage, live WA/Signal on Windows TUI path, inline media previews, MSI — see [../windows-tui.md](../windows-tui.md).
+12. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
 
 ## MCP tools (24)
 

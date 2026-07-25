@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
@@ -43,6 +44,37 @@ func TestLatestMediaMessageMimeOnlyWithCaption(t *testing.T) {
 	got, ok := latestMediaMessage(msgs)
 	if !ok || got.MessageID != "2" {
 		t.Fatalf("got %#v ok=%v", got, ok)
+	}
+	if _, ok := latestDownloadableMediaMessage(msgs); ok {
+		t.Fatal("MimeType-only stub must not be downloadable")
+	}
+}
+
+func TestResolveMediaMessageThreadSelectionNoFallback(t *testing.T) {
+	msgs := []localapi.Message{
+		{MessageID: "media", MediaID: "m1", MimeType: "image/png"},
+		{MessageID: "empty", Body: ""},
+		{MessageID: "mime-only", MimeType: "image/jpeg"},
+	}
+
+	_, _, err := resolveMediaMessage(msgs, 1, true)
+	if err == nil || !strings.Contains(err.Error(), "no media") {
+		t.Fatalf("empty body selected: err=%v", err)
+	}
+
+	_, _, err = resolveMediaMessage(msgs, 2, true)
+	if err == nil || !strings.Contains(err.Error(), "no downloadable") {
+		t.Fatalf("mime-only selected: err=%v", err)
+	}
+
+	got, ok, err := resolveMediaMessage(msgs, 0, true)
+	if err != nil || !ok || got.MessageID != "media" {
+		t.Fatalf("downloadable selected: got=%#v ok=%v err=%v", got, ok, err)
+	}
+
+	got, ok, err = resolveMediaMessage(msgs, 1, false)
+	if err != nil || !ok || got.MessageID != "media" {
+		t.Fatalf("list/compose fallback: got=%#v ok=%v err=%v", got, ok, err)
 	}
 }
 

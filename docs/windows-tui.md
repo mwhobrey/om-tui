@@ -101,7 +101,9 @@ Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[
 
 - **`o`** downloads via `GET /api/media/{message_id}` into a temp cache and opens with the default app (`cmd /c start` on Windows).
 - **`s`** downloads to `%USERPROFILE%\Documents\OpenMessage\media\` (override root with `OPENMESSAGES_EXPORT_DIR`). The status line shows the saved path.
-- Target is the **latest media message** in the loaded thread (no picker yet).
+- Target is the **selected** media message in thread focus (`j`/`k`), otherwise the
+  latest downloadable attachment in the loaded thread. MimeType-only stubs are not
+  downloadable; text/empty rows no longer silently fall back to another message.
 
 ### Send
 
