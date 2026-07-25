@@ -18,7 +18,7 @@ var (
 		return a.SendSignalText(conversationID, body, replyToID)
 	}
 	sendSlackConversationText = func(a *App, conversationID, body, replyToID string) (*db.Message, error) {
-		return a.SendSlackText(conversationID, body)
+		return a.SendSlackText(conversationID, body, replyToID)
 	}
 )
 

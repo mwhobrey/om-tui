@@ -86,53 +86,55 @@ type UnpairFunc func() error
 
 // APIOptions holds optional callbacks for the API handler.
 type APIOptions struct {
-	Auth                  *ControlAuth
-	ServeStatic           bool
-	V2                    *V2Options
-	V2IngestCounters      func() map[string]ingest.CounterSnapshot
-	Reads                 readsource.ReadSource
-	V2Primary             bool
-	Client                func() *client.Client
-	Events                *EventBroker
-	EventHeartbeat        time.Duration
-	IdentityName          string
-	IsConnected           StatusChecker
-	GoogleStatus          func() any
-	RecordGoogleSend      func(success bool) // tracks Google send outcomes for stuck-session detection
-	RecordGoogleSendError func(error)        // tracks auth/dead-session send errors for needs_repair
-	GooglePhoneResponding func() bool
-	MarkGoogleAuthExpired func(error) bool
-	ReconnectGoogle       func() error
-	Unpair                UnpairFunc
-	WhatsAppStatus        func() any
-	ConnectWhatsApp       func() error
-	PairWhatsAppPhone     func(phone string) (string, error)
-	UnpairWhatsApp        func() error
-	SignalStatus          func() any
-	ConnectSignal         func() error
-	ReplaySignalRecovery  func() error
-	UnpairSignal          func() error
-	LeaveWhatsAppGroup    func(conversationID string) error
-	WhatsAppQRCode        func() (any, error)
-	SignalQRCode          func() (any, error)
-	WhatsAppAvatar        func(conversationID string) ([]byte, string, error)
-	FetchLinkPreview      LinkPreviewFetcher
-	FetchLinkPreviewImage LinkPreviewImageFetcher
-	SendWhatsAppText      func(conversationID, body, replyToID string) (*db.Message, error)
-	SendWhatsAppReaction  func(conversationID, messageID, emoji, action string) error
-	SendSignalText        func(conversationID, body, replyToID string) (*db.Message, error)
-	SendSignalMedia       func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
-	SendSignalReaction    func(conversationID, messageID, emoji, action string) error
-	SendWhatsAppMedia     func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
-	SendSlackText         func(conversationID, body string) (*db.Message, error)
-	SlackStatus           func() any
-	ListRivers            func() (any, error)
-	DownloadWhatsAppMedia func(msg *db.Message) ([]byte, string, error)
-	DownloadSignalMedia   func(msg *db.Message) ([]byte, string, error)
-	StartDeepBackfill     func() bool
-	BackfillStatus        func() any         // returns a JSON-serializable backfill progress snapshot
-	BackfillPhone         func(string) error // targeted backfill for a single phone number
-	SyncGoogleContacts    func() (int, error)
+	Auth                   *ControlAuth
+	ServeStatic            bool
+	V2                     *V2Options
+	V2IngestCounters       func() map[string]ingest.CounterSnapshot
+	Reads                  readsource.ReadSource
+	V2Primary              bool
+	Client                 func() *client.Client
+	Events                 *EventBroker
+	EventHeartbeat         time.Duration
+	IdentityName           string
+	IsConnected            StatusChecker
+	GoogleStatus           func() any
+	RecordGoogleSend       func(success bool) // tracks Google send outcomes for stuck-session detection
+	RecordGoogleSendError  func(error)        // tracks auth/dead-session send errors for needs_repair
+	GooglePhoneResponding  func() bool
+	MarkGoogleAuthExpired  func(error) bool
+	ReconnectGoogle        func() error
+	Unpair                 UnpairFunc
+	WhatsAppStatus         func() any
+	ConnectWhatsApp        func() error
+	PairWhatsAppPhone      func(phone string) (string, error)
+	UnpairWhatsApp         func() error
+	SignalStatus           func() any
+	ConnectSignal          func() error
+	ReplaySignalRecovery   func() error
+	UnpairSignal           func() error
+	LeaveWhatsAppGroup     func(conversationID string) error
+	WhatsAppQRCode         func() (any, error)
+	SignalQRCode           func() (any, error)
+	WhatsAppAvatar         func(conversationID string) ([]byte, string, error)
+	FetchLinkPreview       LinkPreviewFetcher
+	FetchLinkPreviewImage  LinkPreviewImageFetcher
+	SendWhatsAppText       func(conversationID, body, replyToID string) (*db.Message, error)
+	SendWhatsAppReaction   func(conversationID, messageID, emoji, action string) error
+	SendSignalText         func(conversationID, body, replyToID string) (*db.Message, error)
+	SendSignalMedia        func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
+	SendSignalReaction     func(conversationID, messageID, emoji, action string) error
+	SendWhatsAppMedia      func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
+	SendSlackText          func(conversationID, body, replyToID string) (*db.Message, error)
+	FetchSlackThread       func(conversationID, rootMessageID string) ([]*db.Message, error)
+	FetchOlderSlackHistory func(conversationID string, limit int) ([]*db.Message, error)
+	SlackStatus            func() any
+	ListRivers             func() (any, error)
+	DownloadWhatsAppMedia  func(msg *db.Message) ([]byte, string, error)
+	DownloadSignalMedia    func(msg *db.Message) ([]byte, string, error)
+	StartDeepBackfill      func() bool
+	BackfillStatus         func() any         // returns a JSON-serializable backfill progress snapshot
+	BackfillPhone          func(string) error // targeted backfill for a single phone number
+	SyncGoogleContacts     func() (int, error)
 }
 
 type SearchResult struct {
@@ -576,11 +578,11 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		return msg, nil
 	}
-	sendSlackText := func(conversationID, body, deleteDraftID string) (*db.Message, error) {
+	sendSlackText := func(conversationID, body, replyToID, deleteDraftID string) (*db.Message, error) {
 		if opts.SendSlackText == nil {
 			return nil, errSlackTextUnavailable
 		}
-		msg, err := opts.SendSlackText(conversationID, body)
+		msg, err := opts.SendSlackText(conversationID, body, replyToID)
 		if err != nil {
 			return nil, err
 		}
@@ -1006,6 +1008,45 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			if msgs == nil {
 				msgs = []*db.Message{}
+			}
+			writeJSON(w, msgs)
+			return
+		}
+		if action == "slack-thread" {
+			if r.Method != http.MethodGet {
+				httpError(w, "method not allowed", 405)
+				return
+			}
+			if opts.FetchSlackThread == nil {
+				httpError(w, "Slack threads unavailable", 501)
+				return
+			}
+			rootID := strings.TrimSpace(r.URL.Query().Get("root_id"))
+			if rootID == "" {
+				httpError(w, "root_id is required", 400)
+				return
+			}
+			msgs, err := opts.FetchSlackThread(convID, rootID)
+			if err != nil {
+				httpError(w, "fetch Slack thread: "+err.Error(), 502)
+				return
+			}
+			writeJSON(w, msgs)
+			return
+		}
+		if action == "older" {
+			if r.Method != http.MethodPost {
+				httpError(w, "method not allowed", 405)
+				return
+			}
+			if opts.FetchOlderSlackHistory == nil {
+				httpError(w, "Slack history unavailable", 501)
+				return
+			}
+			msgs, err := opts.FetchOlderSlackHistory(convID, queryIntClamped(r, "limit", 100, 500))
+			if err != nil {
+				httpError(w, "fetch older Slack history: "+err.Error(), 502)
+				return
 			}
 			writeJSON(w, msgs)
 			return
@@ -1530,7 +1571,8 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		limit := queryIntClamped(r, "limit", 50, 500)
-		msgs, err := reads.SearchMessagesFiltered(q, db.SearchFilter{Limit: limit})
+		riverID := strings.TrimSpace(r.URL.Query().Get("river_id"))
+		msgs, err := reads.SearchMessagesFiltered(q, db.SearchFilter{Limit: limit, RiverID: riverID})
 		if err != nil {
 			httpError(w, "search: "+err.Error(), 500)
 			return
@@ -1540,7 +1582,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			identityStore *db.Store
 		)
 		if !opts.V2Primary {
-			convos, err = store.SearchConversationsByMetadata(q, limit)
+			convos, err = store.SearchConversationsByMetadataRiver(q, riverID, limit)
 			if err != nil {
 				httpError(w, "search: "+err.Error(), 500)
 				return
@@ -1738,7 +1780,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		if isSlackConversation(req.ConversationID) {
-			msg, err := sendSlackText(req.ConversationID, req.Message, "")
+			msg, err := sendSlackText(req.ConversationID, req.Message, req.ReplyToID, "")
 			switch {
 			case errors.Is(err, errSlackTextUnavailable):
 				releaseIdempotentSend(idempotencyKey)

@@ -11,7 +11,7 @@ Built on [mautrix/gmessages](https://github.com/mautrix/gmessages) (libgm) for t
 - **Google Messages for Mac / Windows** — pair your Android phone and read/send SMS + RCS locally
 - **Live WhatsApp support** — link WhatsApp as a live companion device on your machine
 - **Live Signal support** — link Signal locally and keep its threads in the same inbox
-- **Slack rivers (Windows / om-tui)** — pair Slack workspaces as additional rivers; switch with `[` / `]` in the TUI
+- **Slack rivers (Windows / om-tui)** — readable users/DMs, unread filters, dedicated reply threads, lazy history, text send, and optional Socket Mode realtime
 - **One local inbox** — search, route-aware threads, favorites, media, reactions, drafts, scheduled sends, and grouped contacts
 - **Rich compose** — text, media, GIFs, drag/drop attachments, link previews, replies, forwards, and browser-side queued sends while a route reconnects
 - **macOS app + PWA web UI** — native wrapper with notifications and contact photos, plus an installable localhost UI
@@ -31,6 +31,7 @@ Built on [mautrix/gmessages](https://github.com/mautrix/gmessages) (libgm) for t
 go build -o openmessage.exe .
 .\openmessage.exe pair
 .\openmessage.exe pair slack --token xoxp-... --name "Acme"   # optional
+# Add --app-token xapp-... for Socket Mode realtime
 .\openmessage.exe tui
 ```
 

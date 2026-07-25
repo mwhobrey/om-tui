@@ -157,13 +157,43 @@ func (l *convList) applyFilter() {
 	}
 	idxs := make([]int, 0, len(l.items))
 	for i, it := range l.items {
-		if strings.Contains(strings.ToLower(conversationFilterValue(it.conv)), q) {
+		if conversationMatchesFilter(it.conv, q) {
 			idxs = append(idxs, i)
 		}
 	}
 	l.filtered = idxs
 	l.clampCursor()
 	l.ensureVisible()
+}
+
+func conversationMatchesFilter(c localapi.Conversation, query string) bool {
+	terms := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	haystack := strings.ToLower(conversationFilterValue(c))
+	for _, term := range terms {
+		switch term {
+		case "is:unread":
+			if c.UnreadCount <= 0 {
+				return false
+			}
+		case "type:dm":
+			if c.StreamKind != "im" && c.StreamKind != "mpim" {
+				return false
+			}
+		case "type:channel":
+			if c.StreamKind != "public_channel" && c.StreamKind != "private_channel" {
+				return false
+			}
+		case "type:im", "type:mpim", "type:public_channel", "type:private_channel":
+			if c.StreamKind != strings.TrimPrefix(term, "type:") {
+				return false
+			}
+		default:
+			if !strings.Contains(haystack, term) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (l convList) View() string {

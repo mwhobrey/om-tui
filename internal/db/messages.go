@@ -9,7 +9,7 @@ import (
 )
 
 // messageColumns is the canonical column list for SELECT queries on messages.
-const messageColumns = `message_id, conversation_id, sender_name, sender_number, body, timestamp_ms, status, is_from_me, mentions_me, media_id, mime_type, decryption_key, reactions, reply_to_id, source_platform, source_id, transcript, transcribed_at, transcript_model`
+const messageColumns = `message_id, conversation_id, sender_name, sender_number, body, timestamp_ms, status, is_from_me, mentions_me, media_id, mime_type, decryption_key, reactions, reply_to_id, reply_count, source_platform, source_id, transcript, transcribed_at, transcript_model`
 
 var ErrMessageNotFound = errors.New("message not found")
 
@@ -19,23 +19,40 @@ const (
 )
 
 func (s *Store) UpsertMessage(m *Message) error {
+	_, err := s.UpsertMessageAndReportNew(m)
+	return err
+}
+
+// UpsertMessageAndReportNew upserts m and reports whether its message_id was
+// absent before this transaction. Live transports use the result to increment
+// unread exactly once when polling re-delivers history.
+func (s *Store) UpsertMessageAndReportNew(m *Message) (bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM messages WHERE message_id = ?`, m.MessageID).Scan(&exists)
+	isNew := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !isNew {
+		return false, err
+	}
 	if err := upsertMessageTx(tx, m); err != nil {
-		return err
+		return false, err
 	}
 	body, err := messageSearchBodyTx(tx, m.MessageID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := s.syncMessageSearchIndex(tx, m.MessageID, body); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return isNew, nil
 }
 
 func upsertMessageTx(tx *sql.Tx, m *Message) error {
@@ -52,8 +69,8 @@ func upsertMessageTx(tx *sql.Tx, m *Message) error {
 	// Volatile fields (status, is_from_me, mentions_me, timestamp) are
 	// last-writer-wins because that's exactly what a status update changes.
 	_, err := tx.Exec(`
-		INSERT INTO messages (message_id, conversation_id, sender_name, sender_number, body, timestamp_ms, status, is_from_me, mentions_me, media_id, mime_type, decryption_key, reactions, reply_to_id, source_platform, source_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (message_id, conversation_id, sender_name, sender_number, body, timestamp_ms, status, is_from_me, mentions_me, media_id, mime_type, decryption_key, reactions, reply_to_id, reply_count, source_platform, source_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(message_id) DO UPDATE SET
 			conversation_id=excluded.conversation_id,
 			sender_name=CASE WHEN excluded.sender_name != '' THEN excluded.sender_name ELSE messages.sender_name END,
@@ -68,9 +85,10 @@ func upsertMessageTx(tx *sql.Tx, m *Message) error {
 			decryption_key=CASE WHEN excluded.decryption_key != '' THEN excluded.decryption_key ELSE messages.decryption_key END,
 			reactions=CASE WHEN excluded.reactions != '' THEN excluded.reactions ELSE messages.reactions END,
 			reply_to_id=CASE WHEN excluded.reply_to_id != '' THEN excluded.reply_to_id ELSE messages.reply_to_id END,
+			reply_count=CASE WHEN excluded.reply_count > 0 THEN excluded.reply_count ELSE messages.reply_count END,
 			source_platform=excluded.source_platform,
 			source_id=CASE WHEN excluded.source_id != '' THEN excluded.source_id ELSE messages.source_id END
-	`, m.MessageID, m.ConversationID, m.SenderName, m.SenderNumber, m.Body, m.TimestampMS, m.Status, m.IsFromMe, m.MentionsMe, m.MediaID, m.MimeType, m.DecryptionKey, m.Reactions, m.ReplyToID, m.SourcePlatform, m.SourceID)
+	`, m.MessageID, m.ConversationID, m.SenderName, m.SenderNumber, m.Body, m.TimestampMS, m.Status, m.IsFromMe, m.MentionsMe, m.MediaID, m.MimeType, m.DecryptionKey, m.Reactions, m.ReplyToID, m.ReplyCount, m.SourcePlatform, m.SourceID)
 	if err != nil {
 		return err
 	}
@@ -250,6 +268,7 @@ func (s *Store) GetMessages(phoneNumber string, afterMS, beforeMS int64, limit i
 type SearchFilter struct {
 	Phone          string // restrict to this sender number
 	ConversationID string // restrict to one conversation
+	RiverID        string // restrict to one account/workspace river
 	SinceMS        int64  // only messages at/after this ms (0 = no lower bound)
 	UntilMS        int64  // only messages at/before this ms (0 = no upper bound)
 	Limit          int    // max rows (<=0 → 20)
@@ -291,6 +310,10 @@ func (s *Store) searchMessagesFTS(query string, f SearchFilter) ([]*Message, err
 		conditions = append(conditions, "m.conversation_id = ?")
 		args = append(args, f.ConversationID)
 	}
+	if f.RiverID != "" {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id AND c.river_id = ?)")
+		args = append(args, f.RiverID)
+	}
 	if f.SinceMS > 0 {
 		conditions = append(conditions, "m.timestamp_ms >= ?")
 		args = append(args, f.SinceMS)
@@ -328,6 +351,10 @@ func (s *Store) searchMessagesLike(query string, f SearchFilter) ([]*Message, er
 		conditions = append(conditions, "conversation_id = ?")
 		args = append(args, f.ConversationID)
 	}
+	if f.RiverID != "" {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id AND c.river_id = ?)")
+		args = append(args, f.RiverID)
+	}
 	if f.SinceMS > 0 {
 		conditions = append(conditions, "timestamp_ms >= ?")
 		args = append(args, f.SinceMS)
@@ -356,7 +383,7 @@ func (s *Store) GetMessageByID(messageID string) (*Message, error) {
 		FROM messages WHERE message_id = ?
 	`, messageID)
 	m := &Message{}
-	err := row.Scan(&m.MessageID, &m.ConversationID, &m.SenderName, &m.SenderNumber, &m.Body, &m.TimestampMS, &m.Status, &m.IsFromMe, &m.MentionsMe, &m.MediaID, &m.MimeType, &m.DecryptionKey, &m.Reactions, &m.ReplyToID, &m.SourcePlatform, &m.SourceID, &m.Transcript, &m.TranscribedAtMS, &m.TranscriptModel)
+	err := row.Scan(&m.MessageID, &m.ConversationID, &m.SenderName, &m.SenderNumber, &m.Body, &m.TimestampMS, &m.Status, &m.IsFromMe, &m.MentionsMe, &m.MediaID, &m.MimeType, &m.DecryptionKey, &m.Reactions, &m.ReplyToID, &m.ReplyCount, &m.SourcePlatform, &m.SourceID, &m.Transcript, &m.TranscribedAtMS, &m.TranscriptModel)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -803,7 +830,7 @@ func scanMessages(rows interface {
 	var msgs []*Message
 	for rows.Next() {
 		m := &Message{}
-		if err := rows.Scan(&m.MessageID, &m.ConversationID, &m.SenderName, &m.SenderNumber, &m.Body, &m.TimestampMS, &m.Status, &m.IsFromMe, &m.MentionsMe, &m.MediaID, &m.MimeType, &m.DecryptionKey, &m.Reactions, &m.ReplyToID, &m.SourcePlatform, &m.SourceID, &m.Transcript, &m.TranscribedAtMS, &m.TranscriptModel); err != nil {
+		if err := rows.Scan(&m.MessageID, &m.ConversationID, &m.SenderName, &m.SenderNumber, &m.Body, &m.TimestampMS, &m.Status, &m.IsFromMe, &m.MentionsMe, &m.MediaID, &m.MimeType, &m.DecryptionKey, &m.Reactions, &m.ReplyToID, &m.ReplyCount, &m.SourcePlatform, &m.SourceID, &m.Transcript, &m.TranscribedAtMS, &m.TranscriptModel); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)

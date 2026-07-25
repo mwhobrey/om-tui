@@ -29,6 +29,7 @@ type Conversation struct {
 	IsFavorite         bool   `json:"is_favorite,omitempty"`
 	NotificationMode   string `json:"notification_mode,omitempty"` // all, mentions, muted
 	Tab                string `json:"tab,omitempty"`               // "" = Recent (inbox), "archive", or a custom tab id
+	StreamKind         string `json:"stream_kind,omitempty"`       // Slack: im, mpim, public_channel, private_channel
 }
 
 type Message struct {
@@ -46,6 +47,7 @@ type Message struct {
 	DecryptionKey   string `json:"-"`          // hex-encoded, never exposed in API
 	Reactions       string `json:",omitempty"` // JSON array of {emoji, count}
 	ReplyToID       string `json:",omitempty"`
+	ReplyCount      int    `json:"reply_count,omitempty"`
 	SourcePlatform  string `json:"source_platform,omitempty"` // sms, gchat, imessage, whatsapp, signal, telegram
 	SourceID        string `json:"source_id,omitempty"`       // platform-specific original ID for dedup
 	Transcript      string `json:"transcript,omitempty"`
@@ -313,7 +315,8 @@ func (s *Store) migrate() error {
 		mime_type TEXT NOT NULL DEFAULT '',
 		decryption_key TEXT NOT NULL DEFAULT '',
 		reactions TEXT NOT NULL DEFAULT '',
-		reply_to_id TEXT NOT NULL DEFAULT ''
+		reply_to_id TEXT NOT NULL DEFAULT '',
+		reply_count INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages(conversation_id, timestamp_ms);
@@ -369,6 +372,7 @@ func (s *Store) migrate() error {
 		"ALTER TABLE messages ADD COLUMN decryption_key TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE messages ADD COLUMN reply_to_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE messages ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0",
 		// Multi-source support
 		"ALTER TABLE messages ADD COLUMN source_platform TEXT NOT NULL DEFAULT 'sms'",
 		"ALTER TABLE messages ADD COLUMN source_id TEXT NOT NULL DEFAULT ''",
@@ -387,6 +391,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureRiversTable(); err != nil {
 		return fmt.Errorf("ensure rivers table: %w", err)
 	}
+	if err := s.ensureSlackTables(); err != nil {
+		return fmt.Errorf("ensure Slack tables: %w", err)
+	}
 	if _, err := s.EnsureMessagesRiver(); err != nil {
 		return fmt.Errorf("ensure messages river: %w", err)
 	}
@@ -395,6 +402,15 @@ func (s *Store) migrate() error {
 	}
 	if _, err := s.db.Exec(`UPDATE conversations SET source_platform = 'sms' WHERE IFNULL(source_platform, '') = ''`); err != nil {
 		return fmt.Errorf("normalize blank conversation source platform: %w", err)
+	}
+	if _, err := s.db.Exec(`
+		UPDATE messages
+		SET source_id = substr(message_id, 7)
+		WHERE source_platform = 'slack'
+		  AND message_id LIKE 'slack:%'
+		  AND source_id NOT LIKE '%:%'
+	`); err != nil {
+		return fmt.Errorf("normalize Slack source ids: %w", err)
 	}
 
 	// Unified contacts table

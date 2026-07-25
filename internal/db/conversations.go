@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -92,6 +93,7 @@ func (s *Store) GetConversation(id string) (*Conversation, error) {
 	}
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	c.NotificationMode = normalizeStoredNotificationMode(c.NotificationMode)
+	populateConversationDerived(c)
 	return c, nil
 }
 
@@ -377,10 +379,21 @@ func (s *Store) ListConversationsByRiver(riverID string, limit int) ([]*Conversa
 }
 
 func (s *Store) SearchConversationsByMetadata(query string, limit int) ([]*Conversation, error) {
+	return s.SearchConversationsByMetadataRiver(query, "", limit)
+}
+
+func (s *Store) SearchConversationsByMetadataRiver(query, riverID string, limit int) ([]*Conversation, error) {
+	riverClause := ""
+	args := []any{"%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%"}
+	if strings.TrimSpace(riverID) != "" {
+		riverClause = " AND river_id = ?"
+		args = append(args, riverID)
+	}
+	args = append(args, limit)
 	rows, err := s.db.Query(`
 		SELECT DISTINCT `+conversationColumns+`
 		FROM conversations
-		WHERE name LIKE ?
+		WHERE (name LIKE ?
 			OR participants LIKE ?
 			OR conversation_id IN (
 				SELECT DISTINCT conversation_id
@@ -392,10 +405,10 @@ func (s *Store) SearchConversationsByMetadata(query string, limit int) ([]*Conve
 				FROM messages m
 				JOIN contacts c ON c.number = m.sender_number
 				WHERE c.name LIKE ? OR c.number LIKE ?
-			)
+			))`+riverClause+`
 		ORDER BY last_message_ts DESC
 		LIMIT ?
-	`, "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%", limit)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +429,7 @@ func scanConversations(rows interface {
 		}
 		c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 		c.NotificationMode = normalizeStoredNotificationMode(c.NotificationMode)
+		populateConversationDerived(c)
 		convs = append(convs, c)
 	}
 	return convs, rows.Err()
@@ -435,7 +449,20 @@ func getConversationTx(tx *sql.Tx, id string) (*Conversation, error) {
 	}
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	c.NotificationMode = normalizeStoredNotificationMode(c.NotificationMode)
+	populateConversationDerived(c)
 	return c, nil
+}
+
+func populateConversationDerived(c *Conversation) {
+	if c == nil || c.SourcePlatform != "slack" {
+		return
+	}
+	var participants []struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal([]byte(c.Participants), &participants) == nil && len(participants) > 0 {
+		c.StreamKind = strings.TrimSpace(participants[0].Kind)
+	}
 }
 
 func upsertConversationTx(tx *sql.Tx, c *Conversation) error {

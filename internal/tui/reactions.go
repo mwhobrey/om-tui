@@ -314,6 +314,18 @@ func selectedMessage(msgs []localapi.Message, selected int) (localapi.Message, b
 	return msgs[idx], true
 }
 
+func indexMessageByID(msgs []localapi.Message, messageID string) int {
+	if messageID == "" {
+		return -1
+	}
+	for i := range msgs {
+		if msgs[i].MessageID == messageID {
+			return i
+		}
+	}
+	return -1
+}
+
 func reactPaletteHelp() string {
 	parts := make([]string, 0, len(reactPaletteEmojis))
 	for i, e := range reactPaletteEmojis {

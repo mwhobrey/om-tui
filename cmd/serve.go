@@ -717,14 +717,16 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				SignalQRCode: func() (any, error) {
 					return a.SignalQRCode()
 				},
-				SendWhatsAppText:      a.SendWhatsAppText,
-				SendWhatsAppReaction:  a.SendWhatsAppReaction,
-				SendSignalText:        a.SendSignalText,
-				SendSignalMedia:       a.SendSignalMedia,
-				SendSignalReaction:    a.SendSignalReaction,
-				SendWhatsAppMedia:     a.SendWhatsAppMedia,
-				SendSlackText:         a.SendSlackText,
-				SlackStatus:           func() any { return a.SlackStatusSnapshot() },
+				SendWhatsAppText:       a.SendWhatsAppText,
+				SendWhatsAppReaction:   a.SendWhatsAppReaction,
+				SendSignalText:         a.SendSignalText,
+				SendSignalMedia:        a.SendSignalMedia,
+				SendSignalReaction:     a.SendSignalReaction,
+				SendWhatsAppMedia:      a.SendWhatsAppMedia,
+				SendSlackText:          a.SendSlackText,
+				FetchSlackThread:       a.FetchSlackThread,
+				FetchOlderSlackHistory: a.FetchOlderSlackHistory,
+				SlackStatus:            func() any { return a.SlackStatusSnapshot() },
 				ListRivers: func() (any, error) {
 					return a.ListRiversWithUnread()
 				},

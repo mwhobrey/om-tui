@@ -21,10 +21,13 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 |---|---|
 | Rivers model (`messages-default`, Slack rivers) | Shipped in `internal/river`, `internal/db/rivers*` |
 | Vault (DPAPI Windows) | Shipped; insecure path for tests |
-| `pair slack --token` | Shipped |
-| Slack live client + recent sync + text send | Shipped (`slacklive`, `app` Slack paths) |
+| `pair slack --token [--app-token]` | Shipped; optional `xapp` token enables Socket Mode |
+| Slack identity + readable mrkdwn | Durable per-river user cache; DM/sender/mention/channel names resolved |
+| Slack sync + unread + history | Incremental per-channel cursors, dedupe-safe IDs, lazy older pages, SSE invalidation |
+| Slack threads | Dedicated TUI thread view, `conversations.replies`, reply-in-thread send |
+| Slack realtime | Optional Socket Mode; polling remains startup/reconnect fallback |
 | Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
-| TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Shipped; ghost/`s`-key media bugs fixed |
+| TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Shipped; context-aware help; `Ctrl+K` universal palette (all-river jump, `>` commands, frecency, `commands.json`, `>msg contact::body`) |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |
 | Docs: `docs/windows-tui.md` + `docs/runbook/` | Present |
 
@@ -33,8 +36,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Item | Notes |
 |---|---|
 | Slack → V2 ingest/outbox | No Slack decoder / V2 account wiring |
-| Slack media / reactions / full RTM richness | Text-first; expand later |
-| Slack realtime / websocket events | Recent-history sync on start; live push not confirmed |
+| Slack media / reaction mutation / Block Kit | Text-first; expand later |
 | V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
 | Daemon honors `instance.lock` | Still backup/migrate-only |
 | Native Windows GUI | Non-goal for om-tui |
@@ -45,7 +47,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 
 ## Immediate next steps (suggested)
 
-1. **Keep dogfooding Slack + TUI** — file polish bugs as they appear (ghosts, unread flapping, Slack send quirks).
+1. **Dogfood the Slack daily-driver path** — names, unread filters, dedicated threads, older history, and optional Socket Mode.
 2. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
 3. **Optional:** enable Actions on the fork, or add a Windows-focused smoke script that skips the POSIX-baseline failures.
 4. ~~Refresh CLAUDE.md / README~~ — done; prefer this runbook when docs disagree.
@@ -58,10 +60,10 @@ Go comes from `mise` on this box — see the toolchain note in
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\mise\installs\go\1.26.5\bin;" + $env:PATH
 go build ./... ; go vet ./...
-go test ./internal/river/ ./internal/vault/ ./internal/db/ ./internal/tui/ ./internal/app/ -count=1
+go test ./internal/river/ ./internal/vault/ ./internal/db/ ./internal/slacklive/ ./internal/localapi/ ./internal/tui/ ./internal/app/ -count=1
 .\openmessage.exe status --json
 # With a token:
-.\openmessage.exe pair slack --token xoxp-... --name "Test"
+.\openmessage.exe pair slack --token xoxp-... --app-token xapp-... --name "Test"
 .\openmessage.exe serve --api --no-web
 .\openmessage.exe tui
 ```

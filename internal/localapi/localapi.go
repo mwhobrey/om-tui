@@ -104,6 +104,7 @@ type Conversation struct {
 	UnreadCount        int    `json:"UnreadCount"`
 	SourcePlatform     string `json:"source_platform,omitempty"`
 	RiverID            string `json:"river_id,omitempty"`
+	StreamKind         string `json:"stream_kind,omitempty"`
 	LastMessagePreview string `json:"last_message_preview,omitempty"`
 }
 
@@ -129,9 +130,12 @@ type Message struct {
 	TimestampMS    int64  `json:"TimestampMS"`
 	Status         string `json:"Status"`
 	IsFromMe       bool   `json:"IsFromMe"`
+	MentionsMe     bool   `json:"mentions_me,omitempty"`
 	MediaID        string `json:"MediaID,omitempty"`
 	MimeType       string `json:"MimeType,omitempty"`
 	Reactions      string `json:"Reactions,omitempty"`
+	ReplyToID      string `json:"ReplyToID,omitempty"`
+	ReplyCount     int    `json:"reply_count,omitempty"`
 	SourcePlatform string `json:"source_platform,omitempty"`
 }
 
@@ -627,12 +631,40 @@ func (c *Client) ConversationMessages(ctx context.Context, conversationID string
 	return out, nil
 }
 
+func (c *Client) SlackThread(ctx context.Context, conversationID, rootMessageID string) ([]Message, error) {
+	path := fmt.Sprintf("/api/conversations/%s/slack-thread?root_id=%s", conversationID, url.QueryEscape(rootMessageID))
+	var out []Message
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) FetchOlderSlackHistory(ctx context.Context, conversationID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/api/conversations/%s/older?limit=%d", conversationID, limit)
+	var out []Message
+	if err := c.postJSON(ctx, path, map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SearchMessages hits GET /api/search?q=.
 func (c *Client) SearchMessages(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	return c.SearchMessagesByRiver(ctx, query, "", limit)
+}
+
+func (c *Client) SearchMessagesByRiver(ctx context.Context, query, riverID string, limit int) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	path := fmt.Sprintf("/api/search?q=%s&limit=%d", url.QueryEscape(query), limit)
+	if strings.TrimSpace(riverID) != "" {
+		path += "&river_id=" + url.QueryEscape(riverID)
+	}
 	var out []SearchHit
 	if _, err := c.getJSON(ctx, path, &out); err != nil {
 		return nil, err

@@ -14,6 +14,7 @@ import (
 // RunPairSlack pairs a Slack workspace via a user token (xoxp-...).
 func RunPairSlack(logger zerolog.Logger, args ...string) error {
 	token := ""
+	appToken := ""
 	name := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -29,10 +30,17 @@ func RunPairSlack(logger zerolog.Logger, args ...string) error {
 			}
 			i++
 			name = args[i]
+		case "--app-token":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--app-token requires a value")
+			}
+			i++
+			appToken = args[i]
 		case "-h", "--help":
-			fmt.Println(`Usage: openmessage pair slack [--token xoxp-...] [--name "Workspace"]
+			fmt.Println(`Usage: openmessage pair slack [--token xoxp-...] [--app-token xapp-...] [--name "Workspace"]
 
 Paste a Slack user token with scopes for channels/groups/im history and chat:write.
+An optional app-level token enables Socket Mode; polling remains the fallback.
 Credentials are stored encrypted in the river vault (DPAPI on Windows).`)
 			return nil
 		default:
@@ -57,7 +65,7 @@ Credentials are stored encrypted in the river vault (DPAPI on Windows).`)
 	}
 	defer a.Close()
 
-	riverRow, err := a.PairSlackRiver(token, name)
+	riverRow, err := a.PairSlackRiver(token, appToken, name)
 	if err != nil {
 		return err
 	}

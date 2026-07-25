@@ -30,3 +30,25 @@ func TestConvItemFilterValue(t *testing.T) {
 		t.Fatal("convItem.FilterValue mismatch")
 	}
 }
+
+func TestConversationMatchesSlackFilterTokens(t *testing.T) {
+	dm := localapi.Conversation{
+		Name: "#not-used", StreamKind: "im", UnreadCount: 2,
+		LastMessagePreview: "release check",
+	}
+	channel := localapi.Conversation{
+		Name: "#general", StreamKind: "public_channel",
+	}
+	if !conversationMatchesFilter(dm, "type:dm is:unread release") {
+		t.Fatal("expected unread DM to match combined filter")
+	}
+	if conversationMatchesFilter(channel, "type:dm") {
+		t.Fatal("channel matched DM filter")
+	}
+	if conversationMatchesFilter(channel, "is:unread") {
+		t.Fatal("read channel matched unread filter")
+	}
+	if !conversationMatchesFilter(channel, "type:channel general") {
+		t.Fatal("channel did not match channel + text filter")
+	}
+}

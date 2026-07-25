@@ -89,6 +89,15 @@ type (
 		generation     uint64
 		messages       []localapi.Message
 	}
+	slackThreadMsg struct {
+		conversationID string
+		rootMessageID  string
+		messages       []localapi.Message
+	}
+	olderSlackHistoryMsg struct {
+		conversationID string
+		messages       []localapi.Message
+	}
 	searchMsg      []localapi.SearchHit
 	errMsg         struct{ err error }
 	streamEventMsg localapi.StreamEvent
@@ -124,22 +133,30 @@ type Model struct {
 	compose  textarea.Model
 	query    textinput.Model
 
-	activeID           string
-	activeName         string
-	activeParticipants string
-	activeRiverID      string
-	rivers             []localapi.River
-	messages           []localapi.Message
-	msgGeneration      uint64
-	viewportWidth      int
-	composeHeight      int
-	drafts             map[string]string
-	broadcastIDs       map[string]string // conversationID -> display name
-	selectedMsg        int               // index into messages; clamped to latest when out of range
-	reactPalette       bool              // thread-focus emoji picker open
-	convRefreshGen     uint64            // debounce token for conversation list reloads
-	pendingConvs       []localapi.Conversation
-	pendingConvsSet    bool              // hold list Apply while jump-filter is open
+	activeID            string
+	activeName          string
+	activeParticipants  string
+	activeRiverID       string
+	rivers              []localapi.River
+	messages            []localapi.Message
+	msgGeneration       uint64
+	viewportWidth       int
+	composeHeight       int
+	drafts              map[string]string
+	broadcastIDs        map[string]string // conversationID -> display name
+	selectedMsg         int               // index into messages; clamped to latest when out of range
+	threadRootID        string            // non-empty while a dedicated Slack thread is open
+	channelMessages     []localapi.Message
+	reactPalette        bool   // thread-focus emoji picker open
+	convRefreshGen      uint64 // debounce token for conversation list reloads
+	pendingConvs        []localapi.Conversation
+	pendingConvsSet     bool // hold list Apply while jump-filter is open
+	palette             commandPalette
+	paletteConvs        []localapi.Conversation
+	paletteConvsAt      time.Time
+	paletteConvsLoading bool
+	frecency            *frecencyStore
+	customCmds          []customCommand
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -179,6 +196,11 @@ func NewModel(session *Session) Model {
 	vp := viewport.New(40, 10)
 	vp.SetContent("Select a conversation.")
 
+	dataDir := ""
+	if session != nil {
+		dataDir = session.DataDir
+	}
+
 	return Model{
 		session:       session,
 		focus:         focusList,
@@ -190,6 +212,9 @@ func NewModel(session *Session) Model {
 		drafts:        make(map[string]string),
 		composeHeight: 3,
 		activeRiverID: "messages-default",
+		palette:       newCommandPalette(),
+		frecency:      loadFrecency(dataDir),
+		customCmds:    loadCustomCommands(dataDir),
 	}
 }
 
@@ -257,6 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case broadcastSentMsg:
 		m.compose.SetValue("")
+		m.syncComposeHeight()
 		if msg.failed == 0 {
 			m.info = fmt.Sprintf("Sent to %d chats", msg.ok)
 			m.err = ""
@@ -271,6 +297,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.refreshConversationsCmd()
 
+	case paletteConvsMsg:
+		m.paletteConvsLoading = false
+		if msg.err != nil {
+			if m.palette.open && m.palette.mode == "jump" {
+				m.info = "Failed to load conversations for jump"
+			}
+			return m, nil
+		}
+		m.paletteConvs = msg.conversations
+		m.paletteConvsAt = time.Now()
+		if m.palette.open {
+			m.refreshPaletteMatches()
+		}
+		return m, nil
+
 	case messagesMsg:
 		if msg.conversationID != m.activeID || msg.generation != m.msgGeneration {
 			return m, nil
@@ -278,6 +319,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = msg.messages
 		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
 		m.setThreadContentFollow(m.renderActiveThread())
+		return m, nil
+
+	case slackThreadMsg:
+		if msg.conversationID != m.activeID || msg.rootMessageID != m.threadRootID {
+			return m, nil
+		}
+		m.messages = msg.messages
+		m.selectedMsg = clampMessageIndex(len(m.messages), len(m.messages)-1)
+		m.setThreadContentFollow(m.renderActiveThread())
+		m.info = "Slack thread"
+		return m, nil
+
+	case olderSlackHistoryMsg:
+		if msg.conversationID != m.activeID || m.threadRootID != "" {
+			return m, nil
+		}
+		selectedID := ""
+		if selected, ok := selectedMessage(m.messages, m.selectedMsg); ok {
+			selectedID = selected.MessageID
+		}
+		m.messages = msg.messages
+		m.selectedMsg = indexMessageByID(m.messages, selectedID)
+		if m.selectedMsg < 0 {
+			m.selectedMsg = clampMessageIndex(len(m.messages), len(m.messages)-1)
+		}
+		m.setThreadContent(m.renderActiveThread())
+		m.info = "Loaded older Slack history"
 		return m, nil
 
 	case searchMsg:
@@ -303,8 +371,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sentMsg:
 		m.info = "Sent"
 		m.compose.SetValue("")
+		m.syncComposeHeight()
 		delete(m.drafts, msg.conversationID)
-		return m, tea.Batch(m.refreshMessagesCmd(msg.conversationID, m.msgGeneration), m.refreshConversationsCmd())
+		refresh := m.refreshMessagesCmd(msg.conversationID, m.msgGeneration)
+		if m.threadRootID != "" {
+			refresh = m.fetchSlackThreadCmd(msg.conversationID, m.threadRootID)
+		}
+		return m, tea.Batch(refresh, m.refreshConversationsCmd())
 
 	case markedReadMsg:
 		return m, m.scheduleConversationsRefresh()
@@ -360,6 +433,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.info = ""
 		m.compose.SetValue(m.compose.Value() + text)
+		m.syncComposeHeight()
+		m.syncComposeViewport()
 		return m, nil
 
 	case sseReadyMsg:
@@ -384,8 +459,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeID != "" && (msg.ConversationID == "" || msg.ConversationID == m.activeID) {
 				// Refresh the open thread immediately; debounce the list so
 				// unread badges don't thrash the left pane mid-navigation.
+				refresh := m.refreshMessagesCmd(m.activeID, m.msgGeneration)
+				if m.threadRootID != "" {
+					refresh = m.fetchSlackThreadCmd(m.activeID, m.threadRootID)
+				}
 				cmds = append(cmds,
-					m.refreshMessagesCmd(m.activeID, m.msgGeneration),
+					refresh,
 					m.markReadCmd(m.activeID),
 					m.scheduleConversationsRefresh(),
 				)
@@ -404,6 +483,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.palette.open {
+			return m.updatePaletteKeys(msg)
+		}
+		if msg.String() == "ctrl+k" {
+			return m.openPalette()
+		}
 		if m.focus == focusSearch {
 			return m.updateSearchKeys(msg)
 		}
@@ -428,20 +513,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.query.Focus()
 			m.compose.Blur()
 			return m, nil
-		case "r":
+		case "r", "ctrl+r":
 			m.info = "Reconnecting…"
 			return m, m.reconnectCmd()
-		case "o":
+		case "o", "ctrl+o":
 			if m.activeID != "" {
 				m.info = "Opening media…"
 				return m, m.mediaActionCmd(false)
 			}
-		case "s":
+		case "s", "ctrl+s":
 			if m.activeID != "" {
 				m.info = "Saving media…"
 				return m, m.mediaActionCmd(true)
 			}
-		case "a":
+		case "a", "ctrl+a":
 			if m.activeID != "" {
 				if !m.canSend() {
 					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
@@ -450,6 +535,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.info = "Attach file…"
 				return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
 			}
+		case "ctrl+t":
+			return m.openSelectedSlackThread()
+		case "ctrl+e":
+			return m.openReactPalette()
 		case "ctrl+v":
 			if m.activeID != "" {
 				if !m.canSend() {
@@ -599,6 +688,9 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "esc":
+		if m.threadRootID != "" {
+			return m.leaveSlackThread()
+		}
 		m.focus = focusList
 		m.compose.Blur()
 		m.err = ""
@@ -628,26 +720,29 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.setThreadContent(m.renderActiveThread())
 		return m, nil
-	case "e":
-		if _, ok := selectedMessage(m.messages, m.selectedMsg); !ok {
-			m.err = "no message to react to"
-			return m, nil
+	case "ctrl+t":
+		// Bare letters are reserved for typing (and Shift is unusable as a
+		// modifier on Windows Terminal message panes). Match Ctrl+O / Ctrl+A.
+		return m.openSelectedSlackThread()
+	case "pgup", "ctrl+u":
+		if m.activeRiverProvider() == "slack" && m.threadRootID == "" {
+			m.info = "Loading older Slack history…"
+			return m, m.fetchOlderSlackHistoryCmd(m.activeID)
 		}
-		m.reactPalette = true
-		m.err = ""
-		m.info = "React: " + reactPaletteHelp()
-		return m, nil
-	case "o":
+	case "ctrl+e", "e":
+		// Ctrl+E works from compose too; bare e is only reachable in thread focus.
+		return m.openReactPalette()
+	case "o", "ctrl+o":
 		if m.activeID != "" {
 			m.info = "Opening media…"
 			return m, m.mediaActionCmd(false)
 		}
-	case "s":
+	case "s", "ctrl+s":
 		if m.activeID != "" {
 			m.info = "Saving media…"
 			return m, m.mediaActionCmd(true)
 		}
-	case "a":
+	case "a", "ctrl+a":
 		if m.activeID != "" {
 			if !m.canSend() {
 				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
@@ -665,7 +760,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.info = "Checking clipboard…"
 			return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
 		}
-	case "r":
+	case "r", "ctrl+r":
 		m.info = "Reconnecting…"
 		return m, m.reconnectCmd()
 	case "/":
@@ -691,22 +786,15 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.info = ""
 		return m, nil
-	case "o", "ctrl+o":
-		// Opening a thread focuses the composer; bare `o` used to type into the
-		// draft instead of opening media. Allow it when the draft is empty, and
-		// always allow Ctrl+O.
-		if msg.String() == "o" && strings.TrimSpace(m.compose.Value()) != "" {
-			break
-		}
+	case "ctrl+o":
+		// Bare letters always type in the composer — the old empty-draft special
+		// case ate the first "o"/"s" of a new message as a media action.
 		if m.activeID == "" {
 			return m, nil
 		}
 		m.info = "Opening media…"
 		return m, m.mediaActionCmd(false)
-	case "s", "ctrl+s":
-		if msg.String() == "s" && strings.TrimSpace(m.compose.Value()) != "" {
-			break
-		}
+	case "ctrl+s":
 		if m.activeID == "" {
 			return m, nil
 		}
@@ -723,6 +811,24 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.info = "Attach file…"
 		return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+	case "ctrl+t":
+		return m.openSelectedSlackThread()
+	case "ctrl+e":
+		return m.openReactPalette()
+	case "ctrl+f":
+		m.focus = focusSearch
+		m.query.SetValue("")
+		m.query.Focus()
+		m.compose.Blur()
+		return m, nil
+	case "pgup", "ctrl+u":
+		if m.activeRiverProvider() == "slack" && m.threadRootID == "" && m.activeID != "" {
+			m.info = "Loading older Slack history…"
+			return m, m.fetchOlderSlackHistoryCmd(m.activeID)
+		}
+	case "ctrl+r":
+		m.info = "Reconnecting…"
+		return m, m.reconnectCmd()
 	case "ctrl+v":
 		if m.activeID == "" {
 			break
@@ -757,12 +863,17 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.info = "Sending media…"
 			return m, m.sendMediaCmd(m.activeID, path, "")
 		}
-		return m, m.sendCmd(m.activeID, body)
+		return m, m.sendCmd(m.activeID, body, m.threadRootID)
 	case "ctrl+c":
 		return m, tea.Quit
 	}
 	var cmd tea.Cmd
 	m.compose, cmd = m.compose.Update(msg)
+	prevH := m.composeHeight
+	m.syncComposeHeight()
+	if m.composeHeight != prevH {
+		m.syncComposeViewport()
+	}
 	return m, cmd
 }
 
@@ -957,6 +1068,8 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	m.activeName = name
 	m.activeParticipants = participants
 	m.messages = nil
+	m.threadRootID = ""
+	m.channelMessages = nil
 	m.selectedMsg = -1
 	m.reactPalette = false
 	m.focus = focusCompose
@@ -968,6 +1081,8 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 		m.compose.SetHeight(m.composeHeight)
 	}
 	focusCmd := m.compose.Focus()
+	m.syncComposeHeight()
+	m.syncComposeViewport()
 	m.setThreadContentFollow(mutedStyle.Render("Loading…"))
 	return m, tea.Batch(
 		focusCmd,
@@ -1010,7 +1125,7 @@ func (m Model) View() string {
 		return "Starting OpenMessage TUI…"
 	}
 	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info)
-	help := "q quit  [ ] river  / jump  ctrl+f msgs  space multi  enter open/send  esc back"
+	help := renderContextHelp(m)
 
 	d := m.paneDims()
 	// lipgloss Height is content-box (borders add outside). MaxHeight caps the
@@ -1023,6 +1138,9 @@ func (m Model) View() string {
 	threadTitle := m.activeName
 	if threadTitle == "" {
 		threadTitle = "Thread"
+	}
+	if m.threadRootID != "" {
+		threadTitle += " › thread"
 	}
 	innerW := d.threadInnerW
 	// Pin both panes to exact cell heights. An over-tall viewport.View() used to
@@ -1059,6 +1177,9 @@ func (m Model) View() string {
 	placed := lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, frame,
 		lipgloss.WithWhitespaceChars(" "),
 	)
+	if m.palette.open {
+		placed = overlayCenter(placed, m.renderPaletteOverlay(), m.width, m.height)
+	}
 	// Disable autowrap (DECAWM) for the whole frame. A single contact name or SMS
 	// preview containing a grapheme Windows Terminal renders wider than we measure
 	// (ZWJ/flag/skin-tone emoji) would otherwise wrap one physical line, push the
@@ -1072,12 +1193,12 @@ func (m Model) View() string {
 // fit exactly in the terminal. lipgloss Width/Height are content-box only;
 // NormalBorder adds 2 cols / 2 rows outside that box.
 type paneDims struct {
-	leftW, rightW   int
-	mainH           int
-	listInnerW      int
-	threadInnerW    int
-	composeH        int
-	viewportH       int
+	leftW, rightW int
+	mainH         int
+	listInnerW    int
+	threadInnerW  int
+	composeH      int
+	viewportH     int
 }
 
 func (m Model) paneDims() paneDims {
@@ -1135,6 +1256,61 @@ func (m *Model) layout() {
 	m.viewport.Height = d.viewportH
 	m.compose.SetWidth(d.threadInnerW)
 	m.compose.SetHeight(d.composeH)
+}
+
+const (
+	composeMinHeight = 3
+	composeMaxHeight = 6
+)
+
+// syncComposeHeight grows/shrinks the composer between composeMinHeight and
+// MaxHeight so wrapped drafts stay readable instead of scrolling out of a
+// 3-line box into the void.
+func (m *Model) syncComposeHeight() {
+	maxH := m.compose.MaxHeight
+	if maxH < composeMinHeight {
+		maxH = composeMaxHeight
+	}
+	w := m.compose.Width()
+	if w < 1 {
+		w = max(1, m.viewportWidth-2)
+	}
+	lines := len(wrapText(m.compose.Value(), w))
+	if lines < 1 {
+		lines = 1
+	}
+	h := lines
+	if h < composeMinHeight {
+		h = composeMinHeight
+	}
+	if h > maxH {
+		h = maxH
+	}
+	if h == m.composeHeight && m.compose.Height() == h {
+		return
+	}
+	m.composeHeight = h
+	if m.width > 0 && m.height > 0 {
+		m.layout()
+		if m.activeID != "" && len(m.messages) > 0 {
+			m.setThreadContent(m.renderActiveThread())
+		}
+	} else {
+		m.compose.SetHeight(h)
+	}
+}
+
+// syncComposeViewport refreshes the textarea line cache and scrolls so the
+// cursor stays visible. bubbles/textarea only repositions against lines
+// populated by View(); SetValue resets YOffset to 0 without scrolling back.
+func (m *Model) syncComposeViewport() {
+	_ = m.compose.View()
+	if !m.compose.Focused() {
+		return
+	}
+	var cmd tea.Cmd
+	m.compose, cmd = m.compose.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	_ = cmd
 }
 
 func leftWidth(total int) int {
@@ -1232,6 +1408,8 @@ func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
 	m.activeID = ""
 	m.activeName = ""
 	m.messages = nil
+	m.threadRootID = ""
+	m.channelMessages = nil
 	m.setThreadContentFollow(mutedStyle.Render("Select a stream."))
 	return m, m.refreshConversationsCmd()
 }
@@ -1273,6 +1451,68 @@ func (m Model) refreshMessagesCmd(conversationID string, generation uint64) tea.
 	}
 }
 
+func (m Model) openReactPalette() (tea.Model, tea.Cmd) {
+	if _, ok := selectedMessage(m.messages, m.selectedMsg); !ok {
+		m.err = "no message to react to"
+		return m, nil
+	}
+	m.focus = focusThread
+	m.compose.Blur()
+	m.reactPalette = true
+	m.err = ""
+	m.info = "React: " + reactPaletteHelp()
+	return m, nil
+}
+
+func (m Model) openSelectedSlackThread() (tea.Model, tea.Cmd) {
+	if m.activeRiverProvider() != "slack" || m.threadRootID != "" || m.activeID == "" {
+		return m, nil
+	}
+	target, ok := selectedMessage(m.messages, m.selectedMsg)
+	if !ok || target.MessageID == "" {
+		m.err = "no Slack message selected"
+		return m, nil
+	}
+	rootID := target.MessageID
+	if target.ReplyToID != "" {
+		rootID = target.ReplyToID
+	}
+	m.channelMessages = append([]localapi.Message(nil), m.messages...)
+	m.threadRootID = rootID
+	m.messages = nil
+	m.selectedMsg = -1
+	m.setThreadContentFollow(mutedStyle.Render("Loading Slack thread…"))
+	m.info = "Loading Slack thread…"
+	return m, m.fetchSlackThreadCmd(m.activeID, rootID)
+}
+
+func (m Model) fetchSlackThreadCmd(conversationID, rootMessageID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		msgs, err := m.session.Client.SlackThread(ctx, conversationID, rootMessageID)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return slackThreadMsg{conversationID: conversationID, rootMessageID: rootMessageID, messages: msgs}
+	}
+}
+
+func (m Model) fetchOlderSlackHistoryCmd(conversationID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		msgs, err := m.session.Client.FetchOlderSlackHistory(ctx, conversationID, 100)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+			msgs[i], msgs[j] = msgs[j], msgs[i]
+		}
+		return olderSlackHistoryMsg{conversationID: conversationID, messages: msgs}
+	}
+}
+
 func (m Model) markReadCmd(conversationID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1285,10 +1525,11 @@ func (m Model) markReadCmd(conversationID string) tea.Cmd {
 }
 
 func (m Model) searchCmd(query string) tea.Cmd {
+	riverID := m.activeRiverID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		hits, err := m.session.Client.SearchMessages(ctx, query, 50)
+		hits, err := m.session.Client.SearchMessagesByRiver(ctx, query, riverID, 50)
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -1308,7 +1549,8 @@ func (m Model) reconnectCmd() tea.Cmd {
 	}
 }
 
-func (m Model) sendCmd(conversationID, body string) tea.Cmd {
+func (m Model) sendCmd(conversationID, body, replyToID string) tea.Cmd {
+	slackRiver := m.activeRiverProvider() == "slack"
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -1320,16 +1562,17 @@ func (m Model) sendCmd(conversationID, body string) tea.Cmd {
 		if err != nil {
 			return errMsg{err: err}
 		}
-		if status.V2Send || status.V2Primary {
+		if (status.V2Send || status.V2Primary) && !slackRiver {
 			if _, err := m.session.Client.SubmitText(ctx, localapi.TextSubmission{
 				ConversationID: conversationID,
 				Body:           body,
+				ReplyToID:      replyToID,
 				IdempotencyKey: key,
 			}); err != nil {
 				return errMsg{err: err}
 			}
 		} else {
-			if _, err := m.session.Client.LegacySendText(ctx, conversationID, body, "", key); err != nil {
+			if _, err := m.session.Client.LegacySendText(ctx, conversationID, body, replyToID, key); err != nil {
 				return errMsg{err: err}
 			}
 		}
@@ -1476,11 +1719,17 @@ func renderMessages(msgs []localapi.Message, width, selected int, resolve func(s
 		if rx := formatReactions(msg.Reactions, resolve, peerName); rx != "" {
 			body = body + "  " + rx
 		}
+		if msg.ReplyCount > 0 {
+			body += fmt.Sprintf("  [%d replies]", msg.ReplyCount)
+		}
 		marker := " "
 		if i == selected {
 			marker = ">"
 		}
 		prefix := fmt.Sprintf("%s %s  %s: ", marker, ts, who)
+		if msg.ReplyToID != "" {
+			prefix = fmt.Sprintf("%s ↳ %s  %s: ", marker, ts, who)
+		}
 		prefixW := cellWidth(prefix)
 		bodyWidth := width - prefixW
 		if bodyWidth < 8 {
