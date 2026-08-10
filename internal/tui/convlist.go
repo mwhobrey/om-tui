@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -196,6 +197,69 @@ func conversationMatchesFilter(c localapi.Conversation, query string) bool {
 	return true
 }
 
+// conversationTypeGlyph distinguishes Slack channels from Slack DMs in a
+// mixed river list. Plain ASCII only — this codebase has a history of
+// Windows Terminal ghosting from under-measured wide glyphs (see wrap.go),
+// so no emoji here. SMS/RCS/etc. rivers are already homogeneous per list,
+// so they get a blank glyph rather than a redundant per-row marker.
+func conversationTypeGlyph(c localapi.Conversation) string {
+	switch c.StreamKind {
+	case "public_channel", "private_channel":
+		return "#"
+	case "im", "mpim":
+		return "@"
+	default:
+		return " "
+	}
+}
+
+// renderConvRow builds one styled conversation-list row: a left-edge cursor
+// marker (the same selection idiom the thread view uses), the broadcast
+// multi-select marker, a conversation-type glyph, the name, and a
+// right-aligned unread-count badge pill instead of "(N)" baked into the
+// name's own color.
+func renderConvRow(it convItem, isCursor bool, width int) string {
+	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	if isCursor {
+		nameStyle = accentBoldStyle
+	}
+
+	cursorMark := " "
+	if isCursor {
+		cursorMark = accentStyle.Render("▍")
+	}
+	broadcastMark := " "
+	if it.selected {
+		// Warn-orange, not the row's own color: a pending multi-select
+		// broadcast is a "you're about to message N people" state and
+		// should be harder to miss than the name's usual styling.
+		broadcastMark = warnStyle.Render("*")
+	}
+	const prefixW = 5 // cursor(1) + broadcast(1) + space(1) + glyph(1) + space(1)
+	prefix := cursorMark + broadcastMark + " " + dimStyle.Render(conversationTypeGlyph(it.conv)) + " "
+
+	name := strings.TrimSpace(it.conv.Name)
+	if name == "" {
+		name = it.conv.ConversationID
+	}
+
+	badge := ""
+	badgeW := 0
+	if it.conv.UnreadCount > 0 {
+		badgeText := fmt.Sprintf(" %d ", it.conv.UnreadCount)
+		badge = badgeStyle.Render(badgeText)
+		badgeW = cellWidth(badgeText)
+	}
+
+	nameW := width - prefixW - badgeW
+	if nameW < 1 {
+		nameW = 1
+	}
+	nameTrunc := truncateCells(name, nameW)
+	pad := max(0, nameW-cellWidth(nameTrunc))
+	return prefix + nameStyle.Render(nameTrunc) + strings.Repeat(" ", pad) + badge
+}
+
 func (l convList) View() string {
 	width := max(1, l.width)
 	height := max(3, l.height)
@@ -228,19 +292,13 @@ func (l convList) View() string {
 		if !ok {
 			break
 		}
-		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-		descStyle := mutedStyle
-		if i == l.cursor {
-			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
-			descStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-		}
-		b.WriteString(paintLine(nameStyle, it.Title(), width))
+		b.WriteString(paintLine(lipgloss.NewStyle(), renderConvRow(it, i == l.cursor, width), width))
 		b.WriteByte('\n')
 		linesUsed++
 		if linesUsed >= bodyRows {
 			break
 		}
-		b.WriteString(paintLine(descStyle, it.Description(), width))
+		b.WriteString(paintLine(mutedStyle, "  "+it.Description(), width))
 		b.WriteByte('\n')
 		linesUsed++
 		if linesUsed >= bodyRows {
@@ -258,6 +316,18 @@ func (l convList) View() string {
 }
 
 // restampBroadcast marks broadcast selection flags from ids.
+// totalUnread sums UnreadCount across all loaded conversations (not just the
+// filtered/visible subset) for the status bar's right-aligned badge.
+func (l convList) totalUnread() int {
+	total := 0
+	for _, it := range l.items {
+		if it.conv.UnreadCount > 0 {
+			total += it.conv.UnreadCount
+		}
+	}
+	return total
+}
+
 func (l *convList) restampBroadcast(ids map[string]string) {
 	selectedID := ""
 	if cur, ok := l.selected(); ok {

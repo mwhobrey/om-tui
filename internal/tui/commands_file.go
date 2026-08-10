@@ -2,9 +2,11 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -28,18 +30,27 @@ type customCommandsFile struct {
 	Commands []customCommand `json:"commands"`
 }
 
-func loadCustomCommands(dataDir string) []customCommand {
+// loadCustomCommands reads and parses commands.json, returning the file's
+// mtime alongside the parsed commands so callers can skip re-reading when
+// unchanged. A missing file is not an error (empty result, zero mtime); a
+// malformed file returns an error so it can be surfaced instead of silently
+// dropping the user's custom commands.
+func loadCustomCommands(dataDir string) ([]customCommand, time.Time, error) {
 	if strings.TrimSpace(dataDir) == "" {
-		return nil
+		return nil, time.Time{}, nil
 	}
 	path := filepath.Join(dataDir, customCommandsFileName)
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return nil, time.Time{}, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, time.Time{}, fmt.Errorf("read %s: %w", customCommandsFileName, err)
 	}
 	var file customCommandsFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		return nil
+		return nil, info.ModTime(), fmt.Errorf("parse %s: %w", customCommandsFileName, err)
 	}
 	out := make([]customCommand, 0, len(file.Commands))
 	for _, c := range file.Commands {
@@ -56,7 +67,7 @@ func loadCustomCommands(dataDir string) []customCommand {
 		}
 		out = append(out, c)
 	}
-	return out
+	return out, info.ModTime(), nil
 }
 
 func (c customCommand) haystack() string {

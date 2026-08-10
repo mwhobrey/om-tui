@@ -8,8 +8,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var clipboardCachePurgeOnce sync.Once
+
+func init() {
+	openFileImpl = openFileWindows
+}
+
+// openFileWindows uses PowerShell's Start-Process (ShellExecute under the
+// hood) instead of rundll32.exe url.dll,FileProtocolHandler. rundll32 hands
+// off to the shell and returns immediately regardless of outcome, so a file
+// with no associated application silently reports success; Start-Process
+// with $ErrorActionPreference='Stop' surfaces that as a terminating error we
+// can report back to the user.
+func openFileWindows(path string) error {
+	if _, err := powershellRunner(openFileScript(path)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func openFileScript(path string) string {
+	escaped := strings.ReplaceAll(path, "'", "''")
+	return `
+$ErrorActionPreference = 'Stop'
+Start-Process -FilePath '` + escaped + `' | Out-Null
+`
+}
 
 // powershellRunner is overridable in tests.
 var powershellRunner = func(script string) (string, error) {
@@ -68,6 +96,7 @@ func clipboardCacheDir() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	clipboardCachePurgeOnce.Do(func() { purgeOldCacheFiles(dir, mediaCacheMaxAge) })
 	return dir, nil
 }
 

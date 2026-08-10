@@ -74,13 +74,13 @@ func (m Model) sendBroadcastCmd(ids []string, body string) tea.Cmd {
 	client := m.session.Client
 	return func() tea.Msg {
 		if len(ids) == 0 {
-			return errMsg{err: fmt.Errorf("no conversations selected")}
+			return sendFailedMsg{body: body, err: fmt.Errorf("no conversations selected")}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(15*len(ids))*time.Second+30*time.Second)
 		defer cancel()
 		status, _, err := client.Status(ctx)
 		if err != nil {
-			return errMsg{err: err}
+			return sendFailedMsg{body: body, err: err}
 		}
 		ok, failed := 0, 0
 		lastErr := ""

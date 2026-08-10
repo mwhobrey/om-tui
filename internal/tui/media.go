@@ -7,10 +7,43 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
+
+// mediaCacheMaxAge bounds how long downloaded/pasted scratch files sit in
+// the OS temp dir before a purge cleans them up. These are open/paste
+// working copies, not user-requested exports (which go to
+// mediaExportDir and are never purged).
+const mediaCacheMaxAge = 7 * 24 * time.Hour
+
+var mediaCachePurgeOnce sync.Once
+
+// purgeOldCacheFiles removes regular files in dir whose mtime is older than
+// maxAge. Best-effort: errors are ignored since this is opportunistic
+// cleanup, not something a user action should ever fail on.
+func purgeOldCacheFiles(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
 
 func mediaKind(mime string) string {
 	mime = strings.ToLower(strings.TrimSpace(mime))
@@ -121,6 +154,7 @@ func mediaCacheDir() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	mediaCachePurgeOnce.Do(func() { purgeOldCacheFiles(dir, mediaCacheMaxAge) })
 	return dir, nil
 }
 
@@ -160,19 +194,27 @@ func writeMediaFile(dir string, msg localapi.Message, data []byte, contentType s
 	return path, nil
 }
 
+// openFileImpl is overridden on Windows (attach_windows.go) with a
+// PowerShell Start-Process call that can actually surface "no application
+// is associated with this file" instead of the rundll32 fire-and-forget
+// launch, which reports success as soon as the shell hand-off starts
+// regardless of whether anything visibly opened.
+var openFileImpl = defaultOpenFile
+
 func openFile(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("empty path")
 	}
+	return openFileImpl(path)
+}
+
+func defaultOpenFile(path string) error {
 	switch runtime.GOOS {
-	case "windows":
-		// rundll32 handles spaces; cmd `start` is easy to break and can leave a console flash.
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
 	case "darwin":
-		return exec.Command("open", path).Start()
+		return exec.Command("open", path).Run()
 	default:
-		return exec.Command("xdg-open", path).Start()
+		return exec.Command("xdg-open", path).Run()
 	}
 }
 

@@ -1,12 +1,57 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
+
+func TestActiveSlackBadge(t *testing.T) {
+	m := NewModel(nil)
+	m.activeRiverID = "slack-T1"
+	m.rivers = []localapi.River{{ID: "slack-T1", Provider: "slack"}}
+
+	if got := m.activeSlackBadge(); got != "" {
+		t.Fatalf("no status entries yet: got %q, want empty", got)
+	}
+
+	m.status.Slack = []localapi.SlackRiverStatus{
+		{RiverID: "slack-other", SocketConnected: true},
+	}
+	if got := m.activeSlackBadge(); got != "" {
+		t.Fatalf("status for a different river should not badge: got %q", got)
+	}
+
+	m.status.Slack = []localapi.SlackRiverStatus{
+		{RiverID: "slack-T1", SocketConfigured: true, SocketConnected: true},
+	}
+	if got := m.activeSlackBadge(); !strings.Contains(got, "live") {
+		t.Fatalf("connected socket should show live: got %q", got)
+	}
+
+	m.status.Slack = []localapi.SlackRiverStatus{
+		{RiverID: "slack-T1", SocketConfigured: true, SocketConnected: false},
+	}
+	if got := m.activeSlackBadge(); !strings.Contains(got, "reconnecting") {
+		t.Fatalf("configured but disconnected should show reconnecting: got %q", got)
+	}
+
+	m.status.Slack = []localapi.SlackRiverStatus{
+		{RiverID: "slack-T1", SocketConfigured: false, SocketConnected: false},
+	}
+	if got := m.activeSlackBadge(); !strings.Contains(got, "poll") {
+		t.Fatalf("no app token should show poll: got %q", got)
+	}
+
+	m.activeRiverID = "messages-default"
+	m.rivers = nil
+	if got := m.activeSlackBadge(); got != "" {
+		t.Fatalf("non-Slack active river should never badge: got %q", got)
+	}
+}
 
 func TestSlackThreadNavigationPreservesChannelMessages(t *testing.T) {
 	m := NewModel(nil)

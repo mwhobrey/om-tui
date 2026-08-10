@@ -35,6 +35,31 @@ func TestPaintLineHeartEmojiMatchesTerminal(t *testing.T) {
 	}
 }
 
+func TestPaintCenteredLineExactWidth(t *testing.T) {
+	got := paintCenteredLine(mutedStyle, "No messages yet.", 40)
+	plain := stripForWidthTest(got)
+	if cellWidth(plain) != 40 {
+		t.Fatalf("width = %d, want 40 (%q)", cellWidth(plain), plain)
+	}
+	trimmed := strings.TrimSpace(plain)
+	if trimmed != "No messages yet." {
+		t.Fatalf("text = %q, want %q", trimmed, "No messages yet.")
+	}
+	leading := len(plain) - len(strings.TrimLeft(plain, " "))
+	trailing := len(plain) - len(strings.TrimRight(plain, " "))
+	if leading != trailing && leading != trailing+1 && trailing != leading+1 {
+		t.Fatalf("padding not balanced: leading=%d trailing=%d (%q)", leading, trailing, plain)
+	}
+}
+
+func TestPaintCenteredLineUnknownWidthFallsBackUnpadded(t *testing.T) {
+	got := paintCenteredLine(mutedStyle, "Select a conversation.", 0)
+	plain := stripForWidthTest(got)
+	if plain != "Select a conversation." {
+		t.Fatalf("got %q, want unpadded plain text", plain)
+	}
+}
+
 func TestPadLines(t *testing.T) {
 	got := padLines("a\nb", 4, 3)
 	lines := strings.Split(got, "\n")

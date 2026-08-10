@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -81,7 +83,7 @@ func (m Model) openPalette() (tea.Model, tea.Cmd) {
 	m.query.Blur()
 	m.reactPalette = false
 	focusCmd := m.palette.filter.Focus()
-	m.reloadCustomCommands()
+	m.reloadCustomCommandsIfChanged()
 	m.refreshPaletteMatches()
 	m.info = ""
 	m.err = ""
@@ -93,9 +95,9 @@ func (m Model) openPalette() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(focusCmd, fetch)
 }
 
-func (m *Model) closePalette() {
+func (m *Model) closePalette() tea.Cmd {
 	if !m.palette.open {
-		return
+		return nil
 	}
 	m.palette.open = false
 	m.palette.filter.Blur()
@@ -103,8 +105,9 @@ func (m *Model) closePalette() {
 	m.palette.matches = nil
 	m.palette.cursor = 0
 	m.palette.mode = "jump"
+	var saveCmd tea.Cmd
 	if m.frecency != nil {
-		m.frecency.save()
+		saveCmd = m.frecency.saveCmd()
 	}
 	m.focus = m.palette.prevFocus
 	switch m.focus {
@@ -118,14 +121,40 @@ func (m *Model) closePalette() {
 		m.compose.Blur()
 		m.query.Blur()
 	}
+	return saveCmd
 }
 
-func (m *Model) reloadCustomCommands() {
+// reloadCustomCommandsIfChanged re-reads commands.json only when the file's
+// mtime has moved since the last load, instead of re-parsing on every
+// palette open. A parse error is surfaced via m.err rather than silently
+// dropping the previously loaded commands.
+func (m *Model) reloadCustomCommandsIfChanged() {
 	dir := ""
 	if m.session != nil {
 		dir = m.session.DataDir
 	}
-	m.customCmds = loadCustomCommands(dir)
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	path := filepath.Join(dir, customCommandsFileName)
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		if m.customCmds != nil || !m.customCmdsModTime.IsZero() {
+			m.customCmds = nil
+			m.customCmdsModTime = time.Time{}
+		}
+		return
+	}
+	if !m.customCmdsModTime.IsZero() && !info.ModTime().After(m.customCmdsModTime) {
+		return
+	}
+	cmds, modTime, err := loadCustomCommands(dir)
+	if err != nil {
+		m.err = err.Error()
+		return
+	}
+	m.customCmds = cmds
+	m.customCmdsModTime = modTime
 }
 
 func (m Model) paletteConvsNeedRefresh() bool {
@@ -176,11 +205,12 @@ func (m Model) jumpPaletteItems(query string) []paletteItem {
 		return nil
 	}
 	convs := m.paletteConvs
+	badges := m.riverBadgeMap()
 	var items []paletteItem
 	if query == "" {
 		items = make([]paletteItem, 0, len(convs))
 		for i := range convs {
-			items = append(items, m.convPaletteItem(&convs[i], 0))
+			items = append(items, m.convPaletteItem(&convs[i], 0, badgeFor(badges, convs[i].RiverID)))
 		}
 		sort.SliceStable(items, func(i, j int) bool {
 			if items[i].Score != items[j].Score {
@@ -201,7 +231,7 @@ func (m Model) jumpPaletteItems(query string) []paletteItem {
 	if paletteQueryHasFilterTerms(query) || strings.Contains(query, " ") {
 		for i := range convs {
 			if conversationMatchesFilter(convs[i], query) {
-				items = append(items, m.convPaletteItem(&convs[i], 0))
+				items = append(items, m.convPaletteItem(&convs[i], 0, badgeFor(badges, convs[i].RiverID)))
 			}
 		}
 		sort.SliceStable(items, func(i, j int) bool {
@@ -210,26 +240,14 @@ func (m Model) jumpPaletteItems(query string) []paletteItem {
 		return truncatePaletteItems(items, 40)
 	}
 
-	type pair struct {
-		idx int
-		hay string
-	}
-	pairs := make([]pair, 0, len(convs))
-	data := make([]string, 0, len(convs))
+	data := make([]string, len(convs))
 	for i := range convs {
-		hay := paletteConvHaystack(convs[i], m.riverBadge(convs[i].RiverID))
-		pairs = append(pairs, pair{idx: i, hay: hay})
-		data = append(data, hay)
+		data[i] = paletteConvHaystack(convs[i], badgeFor(badges, convs[i].RiverID))
 	}
 	found := fuzzy.Find(query, data)
+	items = make([]paletteItem, 0, len(found))
 	for rank, match := range found {
-		for _, p := range pairs {
-			if p.hay == match.Str {
-				it := m.convPaletteItem(&convs[p.idx], float64(len(found)-rank))
-				items = append(items, it)
-				break
-			}
-		}
+		items = append(items, m.convPaletteItem(&convs[match.Index], float64(len(found)-rank), badgeFor(badges, convs[match.Index].RiverID)))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		// Prefer fuzzy order already; frecency breaks ties via Score field mix
@@ -260,9 +278,8 @@ func paletteConvHaystack(c localapi.Conversation, riverBadge string) string {
 	}, " ")
 }
 
-func (m Model) convPaletteItem(c *localapi.Conversation, fuzzyBoost float64) paletteItem {
+func (m Model) convPaletteItem(c *localapi.Conversation, fuzzyBoost float64, badge string) paletteItem {
 	cp := *c
-	badge := m.riverBadge(c.RiverID)
 	label := strings.TrimSpace(c.Name)
 	if label == "" {
 		label = c.ConversationID
@@ -291,6 +308,32 @@ func (m Model) riverBadge(riverID string) string {
 	}
 	if riverID == "messages-default" {
 		return "Messages"
+	}
+	return riverID
+}
+
+// riverBadgeMap precomputes riverID -> display-name badges once so callers
+// filtering/scoring many conversations don't re-scan m.rivers per item.
+func (m Model) riverBadgeMap() map[string]string {
+	badges := make(map[string]string, len(m.rivers)+1)
+	for _, r := range m.rivers {
+		badges[r.ID] = r.DisplayName
+	}
+	if _, ok := badges["messages-default"]; !ok {
+		badges["messages-default"] = "Messages"
+	}
+	return badges
+}
+
+// badgeFor mirrors riverBadge's fallback (unknown non-empty river IDs display
+// as themselves) but reads from a precomputed map instead of scanning rivers.
+func badgeFor(badges map[string]string, riverID string) string {
+	riverID = strings.TrimSpace(riverID)
+	if riverID == "" {
+		return ""
+	}
+	if b, ok := badges[riverID]; ok {
+		return b
 	}
 	return riverID
 }
@@ -367,27 +410,22 @@ func (m Model) commandPaletteItems(query string) []paletteItem {
 	found := fuzzy.Find(stem, data)
 	items := make([]paletteItem, 0, len(found))
 	for rank, match := range found {
-		for _, c := range cands {
-			if c.hay != match.Str {
-				continue
-			}
-			it := c.item
-			it.Score += float64(len(found) - rank)
-			it.Args = extractCommandArgs(query, it.ActionID, it.Label, nil)
-			if it.Kind == paletteKindCustom {
-				for _, cc := range customs {
-					if cc.ID == it.CustomID {
-						it.Args = extractCommandArgs(query, cc.ID, cc.Label, cc.Keywords)
-						break
-					}
+		c := cands[match.Index]
+		it := c.item
+		it.Score += float64(len(found) - rank)
+		it.Args = extractCommandArgs(query, it.ActionID, it.Label, nil)
+		if it.Kind == paletteKindCustom {
+			for _, cc := range customs {
+				if cc.ID == it.CustomID {
+					it.Args = extractCommandArgs(query, cc.ID, cc.Label, cc.Keywords)
+					break
 				}
 			}
-			if it.ActionID == "quick-msg" {
-				it.Args = extractQuickMsgArgs(query)
-			}
-			items = append(items, it)
-			break
 		}
+		if it.ActionID == "quick-msg" {
+			it.Args = extractQuickMsgArgs(query)
+		}
+		items = append(items, it)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Score != items[j].Score {
@@ -498,8 +536,8 @@ func (m Model) updatePaletteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "ctrl+k":
-		m.closePalette()
-		return m, nil
+		saveCmd := m.closePalette()
+		return m, saveCmd
 	case "enter":
 		return m.runPaletteSelection()
 	case "down", "j", "ctrl+n":
@@ -542,15 +580,23 @@ func (m Model) updatePaletteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) runPaletteSelection() (tea.Model, tea.Cmd) {
 	if len(m.palette.matches) == 0 || m.palette.cursor < 0 || m.palette.cursor >= len(m.palette.matches) {
-		m.closePalette()
-		return m, nil
+		saveCmd := m.closePalette()
+		return m, saveCmd
 	}
 	item := m.palette.matches[m.palette.cursor]
 	if m.frecency != nil {
 		m.frecency.bump(item.Key)
 	}
-	m.closePalette()
+	saveCmd := m.closePalette()
 
+	next, cmd := m.runPaletteAction(item)
+	if saveCmd == nil {
+		return next, cmd
+	}
+	return next, tea.Batch(saveCmd, cmd)
+}
+
+func (m Model) runPaletteAction(item paletteItem) (tea.Model, tea.Cmd) {
 	switch item.Kind {
 	case paletteKindConv:
 		if item.Conv == nil {
@@ -626,12 +672,7 @@ func (m Model) resolvePaletteContact(query string) (localapi.Conversation, bool)
 		}
 		found := fuzzy.Find(query, data)
 		for _, match := range found {
-			for i, hay := range data {
-				if hay == match.Str {
-					filtered = append(filtered, convs[i])
-					break
-				}
-			}
+			filtered = append(filtered, convs[match.Index])
 		}
 		// Also allow substring filter fallback
 		if len(filtered) == 0 {
@@ -701,7 +742,9 @@ func (m Model) renderPaletteOverlay() string {
 	if m.palette.mode == "commands" {
 		titleText = "Commands"
 	}
-	title := paintLine(titleStyle, titleText, innerW)
+	// Accent-colored title (not the plain titleStyle every other pane uses)
+	// so the palette reads as its own floating surface, not another pane.
+	title := paintLine(accentBoldStyle, titleText, innerW)
 	filterLine := paintLine(lipgloss.NewStyle(), m.palette.filter.View(), innerW)
 
 	maxList := paletteMaxRows - 3
@@ -724,7 +767,7 @@ func (m Model) renderPaletteOverlay() string {
 		if m.palette.mode == "jump" && m.paletteConvsLoading {
 			msg = "Loading conversations…"
 		}
-		rows = append(rows, paintLine(mutedStyle, msg, innerW))
+		rows = append(rows, paintCenteredLine(mutedStyle, msg, innerW))
 	} else {
 		for i := start; i < end; i++ {
 			it := m.palette.matches[i]
@@ -749,7 +792,9 @@ func (m Model) renderPaletteOverlay() string {
 	rows = append(rows, paintLine(mutedStyle, hint, innerW))
 
 	body := strings.Join(rows, "\n")
-	box := borderStyle.Width(innerW).Render(body)
+	// Accent border, same idiom as the focused pane elsewhere — the
+	// palette owns all input while it's open, so it's always "focused".
+	box := focusBorderStyle.Width(innerW).Render(body)
 	return padViewBox(box, lipgloss.Width(box), lipgloss.Height(box))
 }
 

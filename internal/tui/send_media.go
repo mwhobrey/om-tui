@@ -89,21 +89,24 @@ func captionForAttach(composeValue string) string {
 
 func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 	client := m.session.Client
+	fail := func(err error) tea.Msg {
+		return sendFailedMsg{conversationID: conversationID, body: path, err: err}
+	}
 	return func() tea.Msg {
 		info, err := os.Stat(path)
 		if err != nil {
-			return errMsg{err: fmt.Errorf("stat media: %w", err)}
+			return fail(fmt.Errorf("stat media: %w", err))
 		}
 		if info.IsDir() {
-			return errMsg{err: fmt.Errorf("path is a directory, not a file")}
+			return fail(fmt.Errorf("path is a directory, not a file"))
 		}
 		if info.Size() > maxTUIMediaBytes {
-			return errMsg{err: fmt.Errorf("file too large (%d bytes; limit %d MB)", info.Size(), maxTUIMediaBytes>>20)}
+			return fail(fmt.Errorf("file too large (%d bytes; limit %d MB)", info.Size(), maxTUIMediaBytes>>20))
 		}
 
 		file, err := os.Open(path)
 		if err != nil {
-			return errMsg{err: fmt.Errorf("open media: %w", err)}
+			return fail(fmt.Errorf("open media: %w", err))
 		}
 		defer file.Close()
 
@@ -114,12 +117,12 @@ func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 		}
 		sniff = sniff[:n]
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return errMsg{err: fmt.Errorf("rewind media: %w", err)}
+			return fail(fmt.Errorf("rewind media: %w", err))
 		}
 
 		filename := filepath.Base(path)
 		if filename == "." || filename == string(filepath.Separator) || filename == "" {
-			return errMsg{err: fmt.Errorf("invalid media filename")}
+			return fail(fmt.Errorf("invalid media filename"))
 		}
 		mimeType := detectSendMIME(filename, sniff)
 
@@ -127,11 +130,11 @@ func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 		defer cancel()
 		status, _, err := client.Status(ctx)
 		if err != nil {
-			return errMsg{err: err}
+			return fail(err)
 		}
 		key, err := newIdempotencyKey()
 		if err != nil {
-			return errMsg{err: err}
+			return fail(err)
 		}
 		submission := localapi.MediaSubmission{
 			ConversationID: conversationID,
@@ -143,11 +146,11 @@ func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 		}
 		if status.V2Send || status.V2Primary {
 			if _, err := client.SubmitMedia(ctx, submission); err != nil {
-				return errMsg{err: err}
+				return fail(err)
 			}
 		} else {
 			if _, err := client.LegacySendMedia(ctx, submission); err != nil {
-				return errMsg{err: err}
+				return fail(err)
 			}
 		}
 		return sentMsg{conversationID: conversationID}

@@ -42,6 +42,20 @@ func TestRenderContextHelpComposeSlack(t *testing.T) {
 	}
 }
 
+func TestRenderContextHelpStyledMatchesPlainContent(t *testing.T) {
+	m := NewModel(nil)
+	m.focus = focusList
+	plain := renderContextHelp(m)
+	styled := stripForWidthTest(renderContextHelpStyled(m))
+	// Styling changes separators ("  " -> " · ") but must not drop or
+	// reorder any chord/label content.
+	for _, chunk := range strings.Split(plain, "  ") {
+		if !strings.Contains(styled, chunk) {
+			t.Fatalf("styled help missing %q: plain=%q styled=%q", chunk, plain, styled)
+		}
+	}
+}
+
 func TestRenderContextHelpReactPalette(t *testing.T) {
 	m := NewModel(nil)
 	m.focus = focusThread
@@ -279,9 +293,41 @@ func TestCustomCommandsLoadAndSkipBad(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := loadCustomCommands(dir)
+	got, modTime, err := loadCustomCommands(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modTime.IsZero() {
+		t.Fatal("expected non-zero mtime for existing file")
+	}
 	if len(got) != 1 || got[0].ID != "ok" {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestCustomCommandsLoadMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, customCommandsFileName)
+	if err := os.WriteFile(path, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := loadCustomCommands(dir)
+	if err == nil {
+		t.Fatal("expected parse error for malformed commands.json")
+	}
+	if got != nil {
+		t.Fatalf("expected nil commands on parse error, got %#v", got)
+	}
+}
+
+func TestCustomCommandsLoadMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	got, modTime, err := loadCustomCommands(dir)
+	if err != nil {
+		t.Fatalf("missing file should not be an error: %v", err)
+	}
+	if got != nil || !modTime.IsZero() {
+		t.Fatalf("expected empty result for missing file, got %#v %v", got, modTime)
 	}
 }
 

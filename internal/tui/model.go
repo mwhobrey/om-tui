@@ -34,20 +34,6 @@ type convItem struct {
 	selected bool
 }
 
-func (i convItem) Title() string {
-	name := strings.TrimSpace(i.conv.Name)
-	if name == "" {
-		name = i.conv.ConversationID
-	}
-	if i.conv.UnreadCount > 0 {
-		name = fmt.Sprintf("%s (%d)", name, i.conv.UnreadCount)
-	}
-	if i.selected {
-		return "* " + name
-	}
-	return "  " + name
-}
-
 func (i convItem) Description() string {
 	preview := strings.TrimSpace(i.conv.LastMessagePreview)
 	if preview == "" {
@@ -102,6 +88,11 @@ type (
 	errMsg         struct{ err error }
 	streamEventMsg localapi.StreamEvent
 	sentMsg        struct{ conversationID string }
+	sendFailedMsg  struct {
+		conversationID string // "" for a broadcast, which has no single conversation
+		body           string // the draft that was optimistically cleared, to restore
+		err            error
+	}
 	markedReadMsg  string
 	reconnectMsg   localapi.DaemonStatus
 	mediaDoneMsg   struct {
@@ -144,6 +135,7 @@ type Model struct {
 	composeHeight       int
 	drafts              map[string]string
 	broadcastIDs        map[string]string // conversationID -> display name
+	sending             bool              // true while a sendCmd/sendMediaCmd/sendBroadcastCmd is in flight
 	selectedMsg         int               // index into messages; clamped to latest when out of range
 	threadRootID        string            // non-empty while a dedicated Slack thread is open
 	channelMessages     []localapi.Message
@@ -157,6 +149,7 @@ type Model struct {
 	paletteConvsLoading bool
 	frecency            *frecencyStore
 	customCmds          []customCommand
+	customCmdsModTime   time.Time
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -177,8 +170,8 @@ func NewModel(session *Session) Model {
 	compose.CharLimit = 4000
 	compose.Prompt = "> "
 	compose.ShowLineNumbers = false
-	compose.SetHeight(3)
-	compose.MaxHeight = 6
+	compose.SetHeight(composeMinHeight)
+	compose.MaxHeight = composeMaxHeight
 	compose.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	compose.BlurredStyle.Prompt = mutedStyle
 	// Default focused CursorLine uses a near-black background that can swallow
@@ -201,21 +194,28 @@ func NewModel(session *Session) Model {
 		dataDir = session.DataDir
 	}
 
-	return Model{
-		session:       session,
-		focus:         focusList,
-		list:          convList{title: "Conversations"},
-		search:        searchList,
-		viewport:      vp,
-		compose:       compose,
-		query:         query,
-		drafts:        make(map[string]string),
-		composeHeight: 3,
-		activeRiverID: "messages-default",
-		palette:       newCommandPalette(),
-		frecency:      loadFrecency(dataDir),
-		customCmds:    loadCustomCommands(dataDir),
+	customCmds, customCmdsModTime, customCmdsErr := loadCustomCommands(dataDir)
+
+	m := Model{
+		session:           session,
+		focus:             focusList,
+		list:              convList{title: "Conversations"},
+		search:            searchList,
+		viewport:          vp,
+		compose:           compose,
+		query:             query,
+		drafts:            make(map[string]string),
+		composeHeight:     composeMinHeight,
+		activeRiverID:     "messages-default",
+		palette:           newCommandPalette(),
+		frecency:          loadFrecency(dataDir),
+		customCmds:        customCmds,
+		customCmdsModTime: customCmdsModTime,
 	}
+	if customCmdsErr != nil {
+		m.err = customCmdsErr.Error()
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -281,8 +281,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshConversationsCmd()
 
 	case broadcastSentMsg:
-		m.compose.SetValue("")
-		m.syncComposeHeight()
+		m.sending = false
 		if msg.failed == 0 {
 			m.info = fmt.Sprintf("Sent to %d chats", msg.ok)
 			m.err = ""
@@ -369,9 +368,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sentMsg:
+		m.sending = false
 		m.info = "Sent"
-		m.compose.SetValue("")
-		m.syncComposeHeight()
 		delete(m.drafts, msg.conversationID)
 		refresh := m.refreshMessagesCmd(msg.conversationID, m.msgGeneration)
 		if m.threadRootID != "" {
@@ -477,8 +475,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case errMsg:
+		m.sending = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
+			m.info = ""
+		}
+		return m, nil
+
+	case sendFailedMsg:
+		m.sending = false
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			m.info = ""
+		}
+		// Restore what failed to send — but only if the composer is still
+		// empty. If the user already typed something new during the
+		// round-trip, that takes priority; don't clobber it.
+		if msg.body != "" && strings.TrimSpace(m.compose.Value()) == "" {
+			m.compose.SetValue(msg.body)
+			m.syncComposeHeight()
+			m.syncComposeViewport()
 		}
 		return m, nil
 
@@ -840,6 +856,9 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.info = "Checking clipboard…"
 		return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
 	case "enter":
+		if m.sending {
+			return m, nil
+		}
 		body := strings.TrimSpace(m.compose.Value())
 		if body == "" {
 			return m, nil
@@ -854,16 +873,25 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.info = fmt.Sprintf("Sending to %d chats…", len(ids))
-			return m, m.sendBroadcastCmd(ids, body)
+			m.sending = true
+			cmd := m.sendBroadcastCmd(ids, body)
+			m.clearComposeOptimistically()
+			return m, cmd
 		}
 		if m.activeID == "" {
 			return m, nil
 		}
 		if path, ok := looksLikeExistingFile(body); ok {
 			m.info = "Sending media…"
-			return m, m.sendMediaCmd(m.activeID, path, "")
+			m.sending = true
+			cmd := m.sendMediaCmd(m.activeID, path, "")
+			m.clearComposeOptimistically()
+			return m, cmd
 		}
-		return m, m.sendCmd(m.activeID, body, m.threadRootID)
+		m.sending = true
+		cmd := m.sendCmd(m.activeID, body, m.threadRootID)
+		m.clearComposeOptimistically()
+		return m, cmd
 	case "ctrl+c":
 		return m, tea.Quit
 	}
@@ -1083,7 +1111,7 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	focusCmd := m.compose.Focus()
 	m.syncComposeHeight()
 	m.syncComposeViewport()
-	m.setThreadContentFollow(mutedStyle.Render("Loading…"))
+	m.setThreadContentFollow(paintCenteredLine(mutedStyle, "Loading…", m.viewportWidth))
 	return m, tea.Batch(
 		focusCmd,
 		m.refreshMessagesCmd(id, gen),
@@ -1124,8 +1152,8 @@ func (m Model) View() string {
 	if !m.ready {
 		return "Starting OpenMessage TUI…"
 	}
-	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info)
-	help := renderContextHelp(m)
+	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info, m.activeSlackBadge(), m.list.totalUnread(), m.width)
+	help := renderContextHelpStyled(m)
 
 	d := m.paneDims()
 	// lipgloss Height is content-box (borders add outside). MaxHeight caps the
@@ -1133,8 +1161,15 @@ func (m Model) View() string {
 	// bottom border and two list rows, which left Windows Terminal ghosts of the
 	// first contact's preview above/below the name while scrolling.
 	paneMaxH := d.mainH + borderStyle.GetVerticalBorderSize()
+	leftBorder, rightBorder := dimBorderStyle, dimBorderStyle
+	switch m.focus {
+	case focusList:
+		leftBorder = focusBorderStyle
+	case focusThread, focusCompose:
+		rightBorder = focusBorderStyle
+	}
 	leftInner := padViewBox(m.list.View(), d.listInnerW, d.mainH)
-	left := borderStyle.Width(d.leftW).Height(d.mainH).MaxHeight(paneMaxH).Render(leftInner)
+	left := leftBorder.Width(d.leftW).Height(d.mainH).MaxHeight(paneMaxH).Render(leftInner)
 	threadTitle := m.activeName
 	if threadTitle == "" {
 		threadTitle = "Thread"
@@ -1149,11 +1184,11 @@ func (m Model) View() string {
 	threadVP := padViewBox(m.viewport.View(), innerW, d.viewportH)
 	composer := padViewBox(m.compose.View(), innerW, d.composeH)
 	threadBody := lipgloss.JoinVertical(lipgloss.Left,
-		paintLine(titleStyle, truncate(threadTitle, innerW), innerW),
+		m.renderThreadTitleLine(threadTitle, innerW),
 		threadVP,
 		composer,
 	)
-	right := borderStyle.Width(d.rightW).Height(d.mainH).MaxHeight(paneMaxH).Render(threadBody)
+	right := rightBorder.Width(d.rightW).Height(d.mainH).MaxHeight(paneMaxH).Render(threadBody)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if m.focus == focusSearch {
@@ -1163,7 +1198,7 @@ func (m Model) View() string {
 		if searchW < 10 {
 			searchW = 10
 		}
-		main = borderStyle.Width(searchW).Height(d.mainH).MaxHeight(paneMaxH).Render(
+		main = focusBorderStyle.Width(searchW).Height(d.mainH).MaxHeight(paneMaxH).Render(
 			padViewBox(searchPane, searchW-borderStyle.GetHorizontalPadding(), d.mainH),
 		)
 	}
@@ -1171,7 +1206,7 @@ func (m Model) View() string {
 	frame := lipgloss.JoinVertical(lipgloss.Left,
 		paintLine(lipgloss.NewStyle(), status, m.width),
 		main,
-		paintLine(mutedStyle, help, m.width),
+		paintLine(lipgloss.NewStyle(), help, m.width),
 	)
 	// Exact terminal fill — short lines from a prior frame are the usual WT ghost source.
 	placed := lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, frame,
@@ -1259,13 +1294,14 @@ func (m *Model) layout() {
 }
 
 const (
-	composeMinHeight = 3
+	composeMinHeight = 1
 	composeMaxHeight = 6
 )
 
 // syncComposeHeight grows/shrinks the composer between composeMinHeight and
-// MaxHeight so wrapped drafts stay readable instead of scrolling out of a
-// 3-line box into the void.
+// MaxHeight so wrapped drafts stay readable instead of scrolling out of the
+// box into the void. Idle/empty stays at composeMinHeight (1 row) so the
+// thread pane keeps the rest of the vertical space.
 func (m *Model) syncComposeHeight() {
 	maxH := m.compose.MaxHeight
 	if maxH < composeMinHeight {
@@ -1300,6 +1336,20 @@ func (m *Model) syncComposeHeight() {
 	}
 }
 
+// clearComposeOptimistically clears the composer immediately on send
+// dispatch, matching every other chat app, instead of waiting for the
+// send's own round-trip. Waiting was the source of a visible "duplicate"
+// bug: the SSE-driven message refresh and the send's direct HTTP response
+// are two independent round-trips with no ordering guarantee, so the sent
+// message could already be showing in the thread while the composer still
+// displayed the same text it was mid-flight on. sendFailedMsg restores the
+// text if the send actually fails.
+func (m *Model) clearComposeOptimistically() {
+	m.compose.SetValue("")
+	m.syncComposeHeight()
+	m.syncComposeViewport()
+}
+
 // syncComposeViewport refreshes the textarea line cache and scrolls so the
 // cursor stays visible. bubbles/textarea only repositions against lines
 // populated by View(); SetValue resets YOffset to 0 without scrolling back.
@@ -1314,12 +1364,12 @@ func (m *Model) syncComposeViewport() {
 }
 
 func leftWidth(total int) int {
-	w := total / 3
+	w := total * 2 / 5
 	if w < 24 {
 		w = 24
 	}
-	if w > 42 {
-		w = 42
+	if w > 56 {
+		w = 56
 	}
 	if w > total-30 {
 		w = total - 30
@@ -1410,7 +1460,7 @@ func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
 	m.messages = nil
 	m.threadRootID = ""
 	m.channelMessages = nil
-	m.setThreadContentFollow(mutedStyle.Render("Select a stream."))
+	m.setThreadContentFollow(paintCenteredLine(mutedStyle, "Select a stream.", m.viewportWidth))
 	return m, m.refreshConversationsCmd()
 }
 
@@ -1433,6 +1483,31 @@ func (m Model) activeRiverProvider() string {
 		}
 	}
 	return "messages"
+}
+
+// activeSlackBadge renders a small live/poll indicator for the active Slack
+// river, or "" when the active river isn't Slack. socket_connected means
+// Socket Mode is actually delivering events right now; socket_configured
+// but not connected means the reconnect loop (internal/slacklive/socket.go)
+// is between attempts; no app token at all means it's on 45s polling only.
+func (m Model) activeSlackBadge() string {
+	if m.activeRiverProvider() != "slack" {
+		return ""
+	}
+	for _, s := range m.status.Slack {
+		if s.RiverID != m.activeRiverID {
+			continue
+		}
+		switch {
+		case s.SocketConnected:
+			return okStyle.Render("● live")
+		case s.SocketConfigured:
+			return warnStyle.Render("○ reconnecting")
+		default:
+			return mutedStyle.Render("○ poll")
+		}
+	}
+	return ""
 }
 
 func (m Model) refreshMessagesCmd(conversationID string, generation uint64) tea.Cmd {
@@ -1481,7 +1556,7 @@ func (m Model) openSelectedSlackThread() (tea.Model, tea.Cmd) {
 	m.threadRootID = rootID
 	m.messages = nil
 	m.selectedMsg = -1
-	m.setThreadContentFollow(mutedStyle.Render("Loading Slack thread…"))
+	m.setThreadContentFollow(paintCenteredLine(mutedStyle, "Loading Slack thread…", m.viewportWidth))
 	m.info = "Loading Slack thread…"
 	return m, m.fetchSlackThreadCmd(m.activeID, rootID)
 }
@@ -1556,11 +1631,11 @@ func (m Model) sendCmd(conversationID, body, replyToID string) tea.Cmd {
 		defer cancel()
 		status, _, err := m.session.Client.Status(ctx)
 		if err != nil {
-			return errMsg{err: err}
+			return sendFailedMsg{conversationID: conversationID, body: body, err: err}
 		}
 		key, err := newIdempotencyKey()
 		if err != nil {
-			return errMsg{err: err}
+			return sendFailedMsg{conversationID: conversationID, body: body, err: err}
 		}
 		if (status.V2Send || status.V2Primary) && !slackRiver {
 			if _, err := m.session.Client.SubmitText(ctx, localapi.TextSubmission{
@@ -1569,11 +1644,11 @@ func (m Model) sendCmd(conversationID, body, replyToID string) tea.Cmd {
 				ReplyToID:      replyToID,
 				IdempotencyKey: key,
 			}); err != nil {
-				return errMsg{err: err}
+				return sendFailedMsg{conversationID: conversationID, body: body, err: err}
 			}
 		} else {
 			if _, err := m.session.Client.LegacySendText(ctx, conversationID, body, replyToID, key); err != nil {
-				return errMsg{err: err}
+				return sendFailedMsg{conversationID: conversationID, body: body, err: err}
 			}
 		}
 		return sentMsg{conversationID: conversationID}
@@ -1691,23 +1766,71 @@ func (m Model) renderActiveThread() string {
 	return renderMessages(m.messages, m.viewportWidth, m.selectedMsg, resolve, peer)
 }
 
+// sameThreadTurn reports whether msg continues the same visual "turn" as
+// prev: same sender (already resolved to who) and close enough in time that
+// collapsing the repeated timestamp/name still reads as one block instead
+// of hiding a real gap in the conversation.
+func sameThreadTurn(prev, msg localapi.Message, who string) bool {
+	if prev.ReplyToID != "" {
+		return false
+	}
+	prevWho := "them"
+	if prev.IsFromMe {
+		prevWho = "you"
+	} else if name := strings.TrimSpace(prev.SenderName); name != "" {
+		prevWho = name
+	}
+	if prevWho != who {
+		return false
+	}
+	const groupWindowMS = 5 * 60 * 1000
+	gap := msg.TimestampMS - prev.TimestampMS
+	return gap >= 0 && gap < groupWindowMS
+}
+
+// dayDividerText centers a "── Mon, Jan 2 ──" rule for a calendar-day
+// boundary. Per-message prefixes show time-only (see renderMessages) — the
+// divider is the sole place the date appears, instead of every line
+// repeating it.
+func dayDividerText(t time.Time, width int) string {
+	label := t.Format("Mon, Jan 2")
+	if t.Year() != time.Now().Year() {
+		label = t.Format("Mon, Jan 2, 2006")
+	}
+	label = " " + label + " "
+	labelW := cellWidth(label)
+	if labelW >= width {
+		return truncateCells(strings.TrimSpace(label), width)
+	}
+	side := (width - labelW) / 2
+	return strings.Repeat("─", side) + label + strings.Repeat("─", width-labelW-side)
+}
+
 func renderMessages(msgs []localapi.Message, width, selected int, resolve func(string) string, peerName string) string {
 	if width < 16 {
 		width = 16
 	}
 	if len(msgs) == 0 {
-		return paintLine(mutedStyle, "No messages yet.", width)
+		return paintCenteredLine(mutedStyle, "No messages yet.", width)
 	}
 	selected = clampMessageIndex(len(msgs), selected)
 	var b strings.Builder
+	var lastDay string
 	for i, msg := range msgs {
-		ts := time.UnixMilli(msg.TimestampMS).Local().Format("Jan 2 15:04")
+		local := time.UnixMilli(msg.TimestampMS).Local()
+		if day := local.Format("2006-01-02"); day != lastDay {
+			b.WriteString(paintLine(dimStyle, dayDividerText(local, width), width))
+			b.WriteByte('\n')
+			lastDay = day
+		}
+		ts := local.Format("15:04")
 		who := "them"
 		if msg.IsFromMe {
 			who = "you"
 		} else if name := strings.TrimSpace(msg.SenderName); name != "" {
 			who = name
 		}
+		grouped := msg.ReplyToID == "" && i > 0 && sameThreadTurn(msgs[i-1], msg, who)
 		body := strings.TrimSpace(msg.Body)
 		hasMedia := strings.TrimSpace(msg.MediaID) != "" || strings.TrimSpace(msg.MimeType) != ""
 		switch {
@@ -1729,6 +1852,16 @@ func renderMessages(msgs []localapi.Message, width, selected int, resolve func(s
 		prefix := fmt.Sprintf("%s %s  %s: ", marker, ts, who)
 		if msg.ReplyToID != "" {
 			prefix = fmt.Sprintf("%s ↳ %s  %s: ", marker, ts, who)
+		}
+		if grouped {
+			// Same run as the previous message (same sender, close in time,
+			// not a reply): keep the marker column live but drop the
+			// repeated timestamp/name — Slack/iMessage-style turn grouping.
+			blankW := cellWidth(prefix) - cellWidth(marker) - 1
+			if blankW < 0 {
+				blankW = 0
+			}
+			prefix = marker + " " + strings.Repeat(" ", blankW)
 		}
 		prefixW := cellWidth(prefix)
 		bodyWidth := width - prefixW
@@ -1776,6 +1909,25 @@ func paintLine(style lipgloss.Style, text string, width int) string {
 		text += strings.Repeat(" ", pad)
 	}
 	return style.Render(text)
+}
+
+// paintCenteredLine is paintLine's centered sibling for empty/loading
+// placeholder text ("No messages yet.", "Loading…") — space-padded evenly
+// on both sides instead of left-aligned. Falls back to plain unpadded
+// styling when width is unknown (<1), e.g. callers running before the
+// first layout pass has sized anything.
+func paintCenteredLine(style lipgloss.Style, text string, width int) string {
+	if width < 1 {
+		return style.Render(text)
+	}
+	text = truncateCells(text, width)
+	textW := cellWidth(text)
+	if textW >= width {
+		return style.Render(text)
+	}
+	left := (width - textW) / 2
+	right := width - textW - left
+	return style.Render(strings.Repeat(" ", left) + text + strings.Repeat(" ", right))
 }
 
 func padLines(content string, height, width int) string {
@@ -1852,10 +2004,56 @@ func min(a, b int) int {
 	return b
 }
 
-func renderStatus(status localapi.DaemonStatus, riverName, errText, info string) string {
+// renderStatus builds the segmented status line: a connection dot, plain
+// label, colored state, "│"-separated segments, and a right-aligned
+// accent unread badge when there's anything unread. width is the target
+// terminal width used only to right-align the badge — the final paintLine
+// pass in View() still truncates/pads the whole line to the real width.
+// composeCharLimitThreshold is how close to compose.CharLimit a draft has
+// to get before the counter appears — quiet until it's actually relevant,
+// rather than a permanent "0/4000" fixture.
+const composeCharLimitThreshold = 500
+
+// composeCharLimitBadge renders "N/limit" once a draft is within
+// composeCharLimitThreshold characters of compose.CharLimit, in warn color
+// once it's actually at the cap. Returns "" otherwise.
+func (m Model) composeCharLimitBadge() string {
+	limit := m.compose.CharLimit
+	if limit <= 0 {
+		return ""
+	}
+	used := len(m.compose.Value())
+	if limit-used > composeCharLimitThreshold {
+		return ""
+	}
+	style := mutedStyle
+	if used >= limit {
+		style = warnStyle
+	}
+	return style.Render(fmt.Sprintf("%d/%d", used, limit))
+}
+
+// renderThreadTitleLine is the thread pane's title row: the conversation
+// name, plus a right-aligned char-limit counter once the draft is close to
+// compose.CharLimit.
+func (m Model) renderThreadTitleLine(title string, width int) string {
+	titleText := truncate(title, width)
+	line := titleStyle.Render(titleText)
+	if badge := m.composeCharLimitBadge(); badge != "" {
+		pad := width - cellWidth(titleText) - cellWidth(badge)
+		if pad < 1 {
+			pad = 1
+		}
+		line += strings.Repeat(" ", pad) + badge
+	}
+	return paintLine(lipgloss.NewStyle(), line, width)
+}
+
+func renderStatus(status localapi.DaemonStatus, riverName, errText, info, slackBadge string, unread, width int) string {
 	g := status.Google
 	state := "disconnected"
 	style := warnStyle
+	dot := "○"
 	switch {
 	case g.NeedsPairing || (!g.Paired && !status.Connected):
 		state = "unpaired — run openmessage pair"
@@ -1869,23 +2067,38 @@ func renderStatus(status localapi.DaemonStatus, riverName, errText, info string)
 	case g.Connected || status.Connected:
 		state = "connected"
 		style = okStyle
+		dot = "●"
 		if !g.PhoneResponding {
 			state = "connected (phone not responding)"
 			style = warnStyle
+			dot = "○"
 		}
 	}
 	riverLabel := strings.TrimSpace(riverName)
 	if riverLabel == "" {
 		riverLabel = "Messages"
 	}
-	line := style.Render("Google Messages: "+state) + "  " + mutedStyle.Render("river:"+riverLabel)
+	sep := dimStyle.Render(" │ ")
+	left := style.Render(dot) + " Google Messages " + style.Render(state) +
+		sep + mutedStyle.Render("river ") + riverLabel
+	if slackBadge != "" {
+		left += sep + slackBadge
+	}
 	if info != "" {
-		line += "  " + mutedStyle.Render(info)
+		left += sep + mutedStyle.Render(info)
 	}
 	if errText != "" {
-		line += "  " + errStyle.Render(errText)
+		left += sep + errStyle.Render(errText)
 	}
-	return line
+	if unread <= 0 {
+		return left
+	}
+	badge := badgeStyle.Render(fmt.Sprintf("%d unread", unread))
+	pad := width - cellWidth(left) - cellWidth(badge)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + badge
 }
 
 func truncate(s string, n int) string {
@@ -1922,6 +2135,11 @@ func Run(session *Session) error {
 	return err
 }
 
+// colorAccent is the TUI's single accent hue (cyan) — already used for "me"
+// messages and now reused consistently for focus/selection/badge chrome
+// instead of introducing new colors per element.
+const colorAccent = "81"
+
 var (
 	titleStyle  = lipgloss.NewStyle().Bold(true)
 	borderStyle = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1)
@@ -1929,5 +2147,16 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	meStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	meStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
+
+	accentStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
+	accentBoldStyle = accentStyle.Bold(true)
+	dimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	focusBorderStyle = borderStyle.BorderForeground(lipgloss.Color(colorAccent))
+	dimBorderStyle   = borderStyle.BorderForeground(lipgloss.Color("240"))
+
+	// badgeStyle renders the unread-count pill: accent text on a dim chip
+	// background, distinct from both the name's own style and status colors.
+	badgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Bold(true)
 )

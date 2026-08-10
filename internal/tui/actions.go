@@ -436,31 +436,43 @@ func (m Model) leaveSlackThread() (tea.Model, tea.Cmd) {
 	return m, m.refreshMessagesCmd(m.activeID, m.msgGeneration)
 }
 
-func renderContextHelp(m Model) string {
+// helpPart is one chord+label pair in the context help footer. chord is
+// empty when an entry has no dedicated key (rendered as a bare label).
+type helpPart struct {
+	chord string
+	label string
+}
+
+// contextHelpParts computes the current footer content as structured
+// chord/label pairs. renderContextHelp joins these as plain text (kept
+// stable for tests and any plain-text consumer); renderContextHelpStyled
+// renders the same parts with the accent/muted hierarchy used in View().
+func contextHelpParts(m Model) []helpPart {
 	ctx := m.actionContext()
 	if ctx.reactPalette {
-		return "1-9 react  esc cancel"
+		return []helpPart{{chord: "1-9", label: "react"}, {chord: "esc", label: "cancel"}}
 	}
 
-	var parts []string
-	add := func(s string) {
-		if s != "" {
-			parts = append(parts, s)
+	var parts []helpPart
+	add := func(chord, label string) {
+		if label == "" {
+			return
 		}
+		parts = append(parts, helpPart{chord: chord, label: label})
 	}
 
 	if ctx.focus == focusSearch {
-		add("esc list")
-		add("enter open")
-		add("ctrl+k commands")
-		return strings.Join(parts, "  ")
+		add("esc", "list")
+		add("enter", "open")
+		add("ctrl+k", "commands")
+		return parts
 	}
 
 	if ctx.threadRootID != "" && (ctx.focus == focusCompose || ctx.focus == focusThread) {
-		add("esc channel")
-		add("enter send")
-		add("ctrl+k commands")
-		return strings.Join(parts, "  ")
+		add("esc", "channel")
+		add("enter", "send")
+		add("ctrl+k", "commands")
+		return parts
 	}
 
 	helpActions := make([]tuiAction, 0, 12)
@@ -516,12 +528,38 @@ func renderContextHelp(m Model) string {
 		if len(a.Keys) > 0 {
 			chord = a.Keys[0]
 		}
-		if chord == "" {
-			add(label)
+		add(chord, label)
+	}
+	add("ctrl+k", "commands")
+	return parts
+}
+
+func renderContextHelp(m Model) string {
+	parts := contextHelpParts(m)
+	joined := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.chord == "" {
+			joined = append(joined, p.label)
 		} else {
-			add(chord + " " + label)
+			joined = append(joined, p.chord+" "+p.label)
 		}
 	}
-	add("ctrl+k commands")
-	return strings.Join(parts, "  ")
+	return strings.Join(joined, "  ")
+}
+
+// renderContextHelpStyled renders the same content as renderContextHelp but
+// with chords bold in the accent color and labels muted, separated by a
+// dim middot instead of raw double-spaces — so the chord and its action
+// read as a scannable pair instead of one undifferentiated blob.
+func renderContextHelpStyled(m Model) string {
+	parts := contextHelpParts(m)
+	rendered := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.chord == "" {
+			rendered = append(rendered, mutedStyle.Render(p.label))
+			continue
+		}
+		rendered = append(rendered, accentBoldStyle.Render(p.chord)+" "+mutedStyle.Render(p.label))
+	}
+	return strings.Join(rendered, dimStyle.Render(" · "))
 }

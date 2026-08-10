@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,43 @@ func TestPaneDimsFitTerminal(t *testing.T) {
 	}
 	if m.viewportWidth != d.threadInnerW {
 		t.Fatalf("viewportWidth field = %d, want %d", m.viewportWidth, d.threadInnerW)
+	}
+}
+
+func TestComposeCharLimitBadge(t *testing.T) {
+	m := NewModel(nil)
+	if got := m.composeCharLimitBadge(); got != "" {
+		t.Fatalf("empty draft should show no badge, got %q", got)
+	}
+
+	m.compose.SetValue(strings.Repeat("a", m.compose.CharLimit-composeCharLimitThreshold-1))
+	if got := m.composeCharLimitBadge(); got != "" {
+		t.Fatalf("draft outside the threshold should show no badge, got %q", got)
+	}
+
+	m.compose.SetValue(strings.Repeat("a", m.compose.CharLimit-100))
+	badge := stripForWidthTest(m.composeCharLimitBadge())
+	want := fmt.Sprintf("%d/%d", m.compose.CharLimit-100, m.compose.CharLimit)
+	if badge != want {
+		t.Fatalf("badge = %q, want %q", badge, want)
+	}
+
+	m.compose.SetValue(strings.Repeat("a", m.compose.CharLimit))
+	atLimit := stripForWidthTest(m.composeCharLimitBadge())
+	wantAtLimit := fmt.Sprintf("%d/%d", m.compose.CharLimit, m.compose.CharLimit)
+	if atLimit != wantAtLimit {
+		t.Fatalf("at-limit badge = %q, want %q", atLimit, wantAtLimit)
+	}
+}
+
+func TestRenderThreadTitleLineExactWidth(t *testing.T) {
+	m := NewModel(nil)
+	m.compose.SetValue(strings.Repeat("a", m.compose.CharLimit))
+	for _, width := range []int{20, 40, 80} {
+		line := m.renderThreadTitleLine("A Very Long Conversation Name That Might Overflow", width)
+		if w := cellWidth(stripForWidthTest(line)); w != width {
+			t.Fatalf("width=%d: title line width = %d (%q)", width, w, stripForWidthTest(line))
+		}
 	}
 }
 

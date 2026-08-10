@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
@@ -75,6 +78,31 @@ func TestResolveMediaMessageThreadSelectionNoFallback(t *testing.T) {
 	got, ok, err = resolveMediaMessage(msgs, 1, false)
 	if err != nil || !ok || got.MessageID != "media" {
 		t.Fatalf("list/compose fallback: got=%#v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestPurgeOldCacheFiles(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.png")
+	newPath := filepath.Join(dir, "new.png")
+	if err := os.WriteFile(oldPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	purgeOldCacheFiles(dir, 24*time.Hour)
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected old file removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("expected new file kept: %v", err)
 	}
 }
 

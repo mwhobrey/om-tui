@@ -1,13 +1,18 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/maxghenis/openmessage/internal/localapi"
 )
+
+var errFakeSend = errors.New("send failed")
 
 func TestComposerLongDraftKeepsTailVisible(t *testing.T) {
 	m := NewModel(nil)
@@ -83,13 +88,29 @@ func TestComposerOpenConversationRestoresDraftScrolled(t *testing.T) {
 	}
 }
 
-func TestComposerCollapsesAfterClear(t *testing.T) {
+// slackSendableModel returns a Model whose active river is Slack, so
+// canSend() passes unconditionally (default Google-river gating requires a
+// paired status these unit tests don't set up) — same pattern as
+// slack_test.go.
+func slackSendableModel(t *testing.T) Model {
+	t.Helper()
 	m := NewModel(nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = next.(Model)
 	m.focus = focusCompose
 	m.activeID = "c1"
+	m.activeRiverID = "slack-T1"
+	m.rivers = []localapi.River{{ID: "slack-T1", Provider: "slack"}}
 	_ = m.compose.Focus()
+	return m
+}
+
+// TestComposerCollapsesAfterClear covers the real send path: pressing enter
+// dispatches sendCmd and optimistically clears the composer immediately
+// (not on the async response — see clearComposeOptimistically), so the
+// returned tea.Cmd is deliberately never invoked here.
+func TestComposerCollapsesAfterClear(t *testing.T) {
+	m := slackSendableModel(t)
 
 	m.compose.SetValue(strings.Repeat("dddd ", 60))
 	m.syncComposeHeight()
@@ -97,13 +118,98 @@ func TestComposerCollapsesAfterClear(t *testing.T) {
 		t.Fatalf("expected grow before clear, got %d", m.composeHeight)
 	}
 
-	next, _ = m.Update(sentMsg{conversationID: "c1"})
+	next, cmd := m.updateComposeKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	cleared := next.(Model)
+	if cmd == nil {
+		t.Fatal("expected sendCmd to be dispatched")
+	}
 	if cleared.composeHeight != composeMinHeight {
 		t.Fatalf("after send composeHeight=%d, want %d", cleared.composeHeight, composeMinHeight)
 	}
 	if cleared.compose.Height() != composeMinHeight {
 		t.Fatalf("after send textarea height=%d, want %d", cleared.compose.Height(), composeMinHeight)
+	}
+}
+
+// TestComposerViewClearsAfterSendShortDraft is a regression test for a
+// short single-line draft (e.g. a URL) appearing to "duplicate" after
+// send — the message shows correctly in history but the composer kept
+// rendering the same text. Waiting for the send's own round-trip to clear
+// the composer raced against the SSE-driven message refresh, which has no
+// ordering guarantee against it; clearing must happen immediately on
+// dispatch (enter), not on the async sentMsg response.
+func TestComposerViewClearsAfterSendShortDraft(t *testing.T) {
+	m := slackSendableModel(t)
+
+	const draft = "https://gprivate.com/6ludx"
+	m.compose.SetValue(draft)
+	m.syncComposeHeight()
+	if m.composeHeight != composeMinHeight {
+		t.Fatalf("short draft should not grow composeHeight: got %d, want %d", m.composeHeight, composeMinHeight)
+	}
+
+	next, cmd := m.updateComposeKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	cleared := next.(Model)
+	if cmd == nil {
+		t.Fatal("expected sendCmd to be dispatched")
+	}
+	if got := cleared.compose.Value(); got != "" {
+		t.Fatalf("compose value after pressing enter = %q, want empty (cleared immediately, not after round-trip)", got)
+	}
+	view := ansi.Strip(cleared.compose.View())
+	if strings.Contains(view, draft) {
+		t.Fatalf("composer still rendering sent draft right after enter:\n%s", view)
+	}
+}
+
+// TestComposerRestoresDraftOnSendFailure ensures the optimistic clear from
+// TestComposerViewClearsAfterSendShortDraft doesn't silently lose the
+// user's message if the send actually fails.
+func TestComposerRestoresDraftOnSendFailure(t *testing.T) {
+	m := slackSendableModel(t)
+	const draft = "hello there"
+	m.compose.SetValue(draft)
+
+	next, cmd := m.updateComposeKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	sent := next.(Model)
+	if cmd == nil {
+		t.Fatal("expected sendCmd to be dispatched")
+	}
+	if got := sent.compose.Value(); got != "" {
+		t.Fatalf("compose should be optimistically cleared, got %q", got)
+	}
+
+	failed, _ := sent.Update(sendFailedMsg{conversationID: "c1", body: draft, err: errFakeSend})
+	restored := failed.(Model)
+	if got := restored.compose.Value(); got != draft {
+		t.Fatalf("draft not restored after send failure: got %q, want %q", got, draft)
+	}
+	if restored.sending {
+		t.Fatal("sending flag should clear on failure")
+	}
+}
+
+// TestComposerRestoresDraftOnSendFailureDoesNotClobberNewDraft ensures that
+// if the user typed something new during the failed send's round-trip,
+// the restore doesn't overwrite it.
+func TestComposerRestoresDraftOnSendFailureDoesNotClobberNewDraft(t *testing.T) {
+	m := slackSendableModel(t)
+	const original = "original message"
+	m.compose.SetValue(original)
+
+	next, cmd := m.updateComposeKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	sent := next.(Model)
+	if cmd == nil {
+		t.Fatal("expected sendCmd to be dispatched")
+	}
+
+	const newDraft = "something else entirely"
+	sent.compose.SetValue(newDraft)
+
+	failed, _ := sent.Update(sendFailedMsg{conversationID: "c1", body: original, err: errFakeSend})
+	restored := failed.(Model)
+	if got := restored.compose.Value(); got != newDraft {
+		t.Fatalf("new draft was clobbered by failed-send restore: got %q, want %q", got, newDraft)
 	}
 }
 
