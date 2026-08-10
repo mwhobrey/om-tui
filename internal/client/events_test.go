@@ -101,6 +101,63 @@ func TestHandleMessage_RemovesOnlyMatchingTmpPlaceholder(t *testing.T) {
 	}
 }
 
+// TestHandleMessage_FallbackReconcilesOrphanedPlaceholderWhenTmpIDMissing
+// covers the short-code SMS case (e.g. USPS/carrier short codes) where
+// Google Messages doesn't reliably echo TmpID on the confirming message —
+// the exact-match cleanup can't fire, so the content+time fallback
+// (DeleteOrphanedSendPlaceholder) must reconcile the duplicate instead. The
+// placeholder ID is idempotency-key-shaped (hex, no "tmp_" prefix) to match
+// what the daemon's legacy /api/send handler actually stores.
+func TestHandleMessage_FallbackReconcilesOrphanedPlaceholderWhenTmpIDMissing(t *testing.T) {
+	store, err := db.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertMessage(&db.Message{
+		MessageID:      "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+		ConversationID: "c1",
+		Body:           "test",
+		IsFromMe:       true,
+		TimestampMS:    1000,
+		Status:         "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &EventHandler{Store: store, Logger: zerolog.Nop()}
+	handler.handleMessage(&libgm.WrappedMessage{
+		Message: &gmproto.Message{
+			MessageID:      "real_msg_no_tmp",
+			ConversationID: "c1",
+			Timestamp:      1500 * 1000,
+			// No TmpID set — the exact-match path can't run.
+			SenderParticipant: &gmproto.Participant{
+				IsMe:     true,
+				FullName: "Me",
+				ID:       &gmproto.SmallInfo{Number: "+15551234567"},
+			},
+			MessageInfo: []*gmproto.MessageInfo{{
+				Data: &gmproto.MessageInfo_MessageContent{
+					MessageContent: &gmproto.MessageContent{Content: "test"},
+				},
+			}},
+		},
+	})
+
+	if got, err := store.GetMessageByID("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"); err != nil {
+		t.Fatalf("lookup placeholder: %v", err)
+	} else if got != nil {
+		t.Fatalf("orphaned placeholder should have been reconciled by the content+time fallback, got %+v", got)
+	}
+	if got, err := store.GetMessageByID("real_msg_no_tmp"); err != nil {
+		t.Fatalf("lookup real message: %v", err)
+	} else if got == nil {
+		t.Fatal("real echoed message should be stored")
+	}
+}
+
 func TestHandleMessage_BumpsConversationTimestamp(t *testing.T) {
 	store, err := db.New(":memory:")
 	if err != nil {

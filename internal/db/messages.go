@@ -648,6 +648,56 @@ func (s *Store) DeleteMessageByID(messageID string) error {
 	return tx.Commit()
 }
 
+// DeleteOrphanedSendPlaceholder is a fallback for the primary send-echo
+// reconciliation in internal/client/events.go: when an outgoing message is
+// sent, a placeholder row is recorded immediately with Status
+// "OUTGOING_SENDING" (its MessageID is a locally-owned value — either a
+// generated "tmp_" ID or, on the daemon's legacy /api/send path, the
+// caller's idempotency key verbatim, so the ID has no fixed shape). It
+// normally gets deleted once the platform echoes the real message back with
+// a matching TmpID. Some Google Messages delivery paths (observed on
+// short-code SMS) don't reliably echo TmpID, leaving that placeholder stuck
+// at "OUTGOING_SENDING" forever and rendering as a duplicate message. This
+// reconciles by content instead: the single closest same-conversation
+// still-"OUTGOING_SENDING" row with an identical body within windowMS of
+// timestampMS (excluding the just-confirmed permanent row) is removed.
+// Matching on status rather than ID shape covers both placeholder formats.
+// Bounded to one row via the ORDER BY/LIMIT subquery so an ambiguous match
+// (e.g. the same text sent twice in quick succession) can't delete more
+// than one placeholder. Reports whether a row was removed.
+func (s *Store) DeleteOrphanedSendPlaceholder(conversationID, body string, timestampMS, windowMS int64, excludeMessageID string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	result, err := s.deleteMessages(tx, `
+		message_id = (
+			SELECT message_id FROM messages
+			WHERE conversation_id = ?
+			  AND is_from_me = 1
+			  AND status = 'OUTGOING_SENDING'
+			  AND message_id != ?
+			  AND body = ?
+			  AND ABS(timestamp_ms - ?) <= ?
+			ORDER BY ABS(timestamp_ms - ?) ASC
+			LIMIT 1
+		)
+	`, conversationID, excludeMessageID, body, timestampMS, windowMS, timestampMS)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 // MessageCount returns the total number of messages, optionally filtered by source platform.
 func (s *Store) MessageCount(sourcePlatform string) (int, error) {
 	var count int

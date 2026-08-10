@@ -978,6 +978,120 @@ func TestDeleteTmpMessages_Comprehensive(t *testing.T) {
 	})
 }
 
+func TestDeleteOrphanedSendPlaceholder(t *testing.T) {
+	store := newTestStore(t)
+
+	// Placeholder IDs deliberately don't start with "tmp_" — the daemon's
+	// legacy /api/send path uses the caller's idempotency key verbatim
+	// (see internal/web/api.go), which has no fixed shape. Matching must
+	// go by Status, not ID prefix.
+	if err := store.UpsertMessage(&Message{
+		MessageID: "a1b2c3d4e5f6", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 1_000, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed placeholder: %v", err)
+	}
+	if err := store.UpsertMessage(&Message{
+		MessageID: "other-conv-placeholder", ConversationID: "c2", Body: "test", IsFromMe: true,
+		TimestampMS: 1_000, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed other-conv placeholder: %v", err)
+	}
+	if err := store.UpsertMessage(&Message{
+		MessageID: "far-placeholder", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 500_000, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed far placeholder: %v", err)
+	}
+	if err := store.UpsertMessage(&Message{
+		MessageID: "wrong-body-placeholder", ConversationID: "c1", Body: "other text", IsFromMe: true,
+		TimestampMS: 1_000, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed wrong-body placeholder: %v", err)
+	}
+	// Already-confirmed message with matching body/time/conversation but
+	// NOT still "OUTGOING_SENDING" — must never be touched by the fallback.
+	if err := store.UpsertMessage(&Message{
+		MessageID: "already-confirmed", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 1_000, Status: "OUTGOING_COMPLETE",
+	}); err != nil {
+		t.Fatalf("seed already-confirmed: %v", err)
+	}
+
+	// The permanent echoed message itself (excluded by ID, never touched).
+	if err := store.UpsertMessage(&Message{
+		MessageID: "real_1", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 1_500, Status: "OUTGOING_COMPLETE",
+	}); err != nil {
+		t.Fatalf("seed real_1: %v", err)
+	}
+
+	removed, err := store.DeleteOrphanedSendPlaceholder("c1", "test", 1_500, 60_000, "real_1")
+	if err != nil {
+		t.Fatalf("DeleteOrphanedSendPlaceholder: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected a placeholder to be removed")
+	}
+
+	got, err := store.GetMessageByID("a1b2c3d4e5f6")
+	if err != nil {
+		t.Fatalf("lookup placeholder: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("non-tmp_-prefixed placeholder should have been removed by status match, got %+v", got)
+	}
+
+	for _, id := range []string{"other-conv-placeholder", "far-placeholder", "wrong-body-placeholder", "already-confirmed", "real_1"} {
+		got, err := store.GetMessageByID(id)
+		if err != nil {
+			t.Fatalf("lookup %s: %v", id, err)
+		}
+		if got == nil {
+			t.Fatalf("%s should NOT have been removed (wrong conversation/time/body/status, or is the real message)", id)
+		}
+	}
+}
+
+func TestDeleteOrphanedSendPlaceholderOnlyRemovesOneOnAmbiguousMatch(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.UpsertMessage(&Message{
+		MessageID: "placeholder-a", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 1_000, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed placeholder-a: %v", err)
+	}
+	if err := store.UpsertMessage(&Message{
+		MessageID: "placeholder-b", ConversationID: "c1", Body: "test", IsFromMe: true,
+		TimestampMS: 1_030, Status: "OUTGOING_SENDING",
+	}); err != nil {
+		t.Fatalf("seed placeholder-b: %v", err)
+	}
+
+	removed, err := store.DeleteOrphanedSendPlaceholder("c1", "test", 1_500, 60_000, "real_1")
+	if err != nil {
+		t.Fatalf("DeleteOrphanedSendPlaceholder: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected exactly one placeholder to be removed")
+	}
+
+	remaining := 0
+	for _, id := range []string{"placeholder-a", "placeholder-b"} {
+		got, err := store.GetMessageByID(id)
+		if err != nil {
+			t.Fatalf("lookup %s: %v", id, err)
+		}
+		if got != nil {
+			remaining++
+		}
+	}
+	if remaining != 1 {
+		t.Fatalf("expected exactly one of placeholder-a/placeholder-b to remain, got %d remaining", remaining)
+	}
+}
+
 func TestDeleteMessageByID_RemovesSearchIndexEntry(t *testing.T) {
 	store := newTestStore(t)
 	if !store.ftsEnabled {

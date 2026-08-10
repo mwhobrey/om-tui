@@ -218,9 +218,26 @@ func (h *EventHandler) handleMessage(evt *libgm.WrappedMessage) {
 	// When our sent message echoes back with a real server ID, clean up the
 	// exact tmp_ placeholder we stored at send time to avoid duplicates.
 	if dbMsg.IsFromMe {
+		cleanedUp := false
 		if tmpID := msg.GetTmpID(); tmpID != "" && tmpID != dbMsg.MessageID {
 			if err := h.Store.DeleteMessageByID(tmpID); err == nil {
+				cleanedUp = true
 				h.Logger.Debug().Str("tmp_id", tmpID).Str("conv_id", dbMsg.ConversationID).Msg("Cleaned up tmp message")
+			}
+		}
+		// Fallback: some Google Messages delivery paths (observed on
+		// short-code SMS) don't reliably echo TmpID, so the exact match
+		// above never fires and the send-time placeholder is orphaned
+		// forever, showing as a duplicate message. Reconcile by content
+		// and a tight time window instead.
+		if !cleanedUp {
+			const tmpPlaceholderWindowMS = 2 * 60 * 1000
+			if removed, err := h.Store.DeleteOrphanedSendPlaceholder(
+				dbMsg.ConversationID, dbMsg.Body, dbMsg.TimestampMS, tmpPlaceholderWindowMS, dbMsg.MessageID,
+			); err != nil {
+				h.Logger.Warn().Err(err).Str("msg_id", dbMsg.MessageID).Msg("Failed to reconcile orphaned send placeholder")
+			} else if removed {
+				h.Logger.Debug().Str("conv_id", dbMsg.ConversationID).Msg("Reconciled orphaned send placeholder by content+time fallback")
 			}
 		}
 	}
