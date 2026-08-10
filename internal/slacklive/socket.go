@@ -3,6 +3,7 @@ package slacklive
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -11,7 +12,43 @@ import (
 	"github.com/maxghenis/openmessage/internal/river"
 )
 
+const (
+	socketReconnectMinBackoff = time.Second
+	socketReconnectMaxBackoff = 30 * time.Second
+)
+
+// socketLoop keeps a Socket Mode session alive for the life of ctx,
+// reconnecting with exponential backoff (capped at socketReconnectMaxBackoff)
+// whenever a session ends. Without this, a single dropped connection would
+// silently fall back to 45s polling forever until the process restarts.
 func (c *Client) socketLoop(ctx context.Context) {
+	backoff := socketReconnectMinBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		connected := c.runSocketSession(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if connected {
+			backoff = socketReconnectMinBackoff
+		}
+		if err := sleepForRetry(ctx, backoff); err != nil {
+			return
+		}
+		backoff *= 2
+		if backoff > socketReconnectMaxBackoff {
+			backoff = socketReconnectMaxBackoff
+		}
+	}
+}
+
+// runSocketSession runs a single Socket Mode session until it ends (fatal
+// error, closed event channel, or ctx cancellation). It reports whether the
+// session ever reached EventTypeConnected, so the caller can reset backoff
+// after a session that connected successfully before later dropping.
+func (c *Client) runSocketSession(ctx context.Context) (connected bool) {
 	api := slack.New(c.token, slack.OptionAppLevelToken(c.appToken))
 	socket := socketmode.New(api)
 	go func() {
@@ -20,16 +57,23 @@ func (c *Client) socketLoop(ctx context.Context) {
 		}
 	}()
 
+	defer func() {
+		c.mu.Lock()
+		c.socketConnected = false
+		c.mu.Unlock()
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return connected
 		case event, ok := <-socket.Events:
 			if !ok {
-				return
+				return connected
 			}
 			switch event.Type {
 			case socketmode.EventTypeConnected:
+				connected = true
 				c.mu.Lock()
 				c.socketConnected = true
 				c.mu.Unlock()

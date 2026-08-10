@@ -188,6 +188,12 @@ func (c *Client) SyncStreams(ctx context.Context) error {
 		}
 		channels, next, err := c.api.GetConversationsContext(ctx, params)
 		if err != nil {
+			if wait, limited := rateLimitRetryAfter(err); limited {
+				if waitErr := sleepForRetry(ctx, wait); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
 			return fmt.Errorf("conversations.list: %w", err)
 		}
 		for _, ch := range channels {
@@ -254,14 +260,29 @@ func (c *Client) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Channel list stays cheap (paginated conversations.list) and
+			// keeps new channels/renames showing up even while Socket Mode
+			// is connected — but the per-channel history resync duplicates
+			// what Socket Mode already delivers live, so skip it when the
+			// socket is healthy to avoid redundant API traffic.
 			if err := c.SyncStreams(ctx); err != nil {
 				c.setError(err)
 				continue
 			}
-			_ = c.SyncRecentMessages(ctx, 25)
+			if !c.socketHealthy() {
+				_ = c.SyncRecentMessages(ctx, 25)
+			}
 			c.setConnected(true)
 		}
 	}
+}
+
+// socketHealthy reports whether Socket Mode is currently configured and
+// connected, meaning live message events are already flowing.
+func (c *Client) socketHealthy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.appToken != "" && c.socketConnected
 }
 
 // SyncRecentMessages pulls recent history for each Slack stream in the river.
@@ -303,12 +324,15 @@ func (c *Client) syncChannelHistory(ctx context.Context, conversationID, channel
 		params.Oldest = cursor.NewestTS
 		params.Inclusive = false
 	}
-	hist, err := c.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
-		ChannelID: params.ChannelID,
-		Limit:     params.Limit,
-		Oldest:    params.Oldest,
-		Inclusive: params.Inclusive,
-	})
+	hist, err := c.api.GetConversationHistoryContext(ctx, params)
+	if err != nil {
+		if wait, limited := rateLimitRetryAfter(err); limited {
+			if waitErr := sleepForRetry(ctx, wait); waitErr != nil {
+				return waitErr
+			}
+			hist, err = c.api.GetConversationHistoryContext(ctx, params)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -486,12 +510,21 @@ func (c *Client) FetchThread(ctx context.Context, conversationID, rootMessageID 
 	var all []slack.Message
 	cursor := ""
 	for {
-		msgs, hasMore, next, err := c.api.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+		repliesParams := &slack.GetConversationRepliesParameters{
 			ChannelID: channelID,
 			Timestamp: rootTS,
 			Cursor:    cursor,
 			Limit:     100,
-		})
+		}
+		msgs, hasMore, next, err := c.api.GetConversationRepliesContext(ctx, repliesParams)
+		if err != nil {
+			if wait, limited := rateLimitRetryAfter(err); limited {
+				if waitErr := sleepForRetry(ctx, wait); waitErr != nil {
+					return nil, waitErr
+				}
+				msgs, hasMore, next, err = c.api.GetConversationRepliesContext(ctx, repliesParams)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
