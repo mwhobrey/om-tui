@@ -80,7 +80,21 @@ type DaemonStatus struct {
 	Auth      struct {
 		DataDir string `json:"data_dir"`
 	} `json:"auth"`
-	Google GoogleStatus `json:"google"`
+	Google GoogleStatus       `json:"google"`
+	Slack  []SlackRiverStatus `json:"slack,omitempty"`
+}
+
+// SlackRiverStatus is one Slack river's connectivity, from the "slack" array
+// in /api/status (internal/app.App.SlackStatusSnapshot). SocketConfigured
+// means an app-level token is set up for Socket Mode; SocketConnected means
+// that connection is live right now — false-but-configured means the river
+// has fallen back to 45s polling.
+type SlackRiverStatus struct {
+	RiverID          string `json:"river_id"`
+	Connected        bool   `json:"connected"`
+	LastError        string `json:"last_error,omitempty"`
+	SocketConfigured bool   `json:"socket_configured"`
+	SocketConnected  bool   `json:"socket_connected"`
 }
 
 // GoogleStatus is the Google Messages block inside /api/status.
@@ -691,6 +705,10 @@ func (c *Client) ReconnectGoogle(ctx context.Context) (DaemonStatus, error) {
 	return status, nil
 }
 
+// maxDownloadMediaBytes mirrors the TUI/HTTP upload cap (128 MiB) so a
+// download can't read an unbounded response fully into memory.
+const maxDownloadMediaBytes = 128 << 20
+
 // DownloadMedia fetches GET /api/media/{messageID} and returns the raw bytes
 // plus the response Content-Type (may be octet-stream for non-inline types).
 func (c *Client) DownloadMedia(ctx context.Context, messageID string) ([]byte, string, error) {
@@ -716,9 +734,12 @@ func (c *Client) DownloadMedia(ctx context.Context, messageID string) ([]byte, s
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return nil, "", &ResponseError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
-	data, err := io.ReadAll(response.Body)
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxDownloadMediaBytes+1))
 	if err != nil {
 		return nil, "", err
+	}
+	if len(data) > maxDownloadMediaBytes {
+		return nil, "", fmt.Errorf("media too large (over %d MB limit)", maxDownloadMediaBytes>>20)
 	}
 	contentType := strings.TrimSpace(response.Header.Get("Content-Type"))
 	if contentType == "" {
