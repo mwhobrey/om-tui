@@ -422,6 +422,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				newSignalSupervisor,
 				signalLifecycle.InputFingerprint,
 			)
+			signalControl.StartParkRetest(signalParkRetestInterval, logger)
 			signalStartupCtx, cancelSignalStartup := context.WithCancel(context.Background())
 			var signalStartupWG sync.WaitGroup
 			defer func() {
