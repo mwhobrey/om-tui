@@ -55,6 +55,41 @@ jobs:
           path: openmessage-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
           retention-days: 7
 
+  build-windows:
+    name: Build Windows TUI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+          - goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          version="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/openmessage.exe .
+          cd dist && zip "../openmessage-windows-${{ matrix.goarch }}.zip" openmessage.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmessage-windows-${{ matrix.goarch }}
+          path: openmessage-windows-${{ matrix.goarch }}.zip
+          retention-days: 7
+
   build-macos-app:
     name: Build macOS .app + .dmg
     runs-on: macos-latest
@@ -141,7 +176,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-cross-platform, build-macos-app]
+    needs: [build-cross-platform, build-windows, build-macos-app]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -167,6 +202,8 @@ jobs:
           cp artifacts/openmessage-darwin-amd64/openmessage-darwin-amd64.tar.gz release/
           cp artifacts/openmessage-linux-arm64/openmessage-linux-arm64.tar.gz release/
           cp artifacts/openmessage-linux-amd64/openmessage-linux-amd64.tar.gz release/
+          cp artifacts/openmessage-windows-amd64/openmessage-windows-amd64.zip release/
+          cp artifacts/openmessage-windows-arm64/openmessage-windows-arm64.zip release/
           cp artifacts/OpenMessage-dmg/OpenMessage.dmg release/
 
           # Generate SHA256 checksums for verification + Homebrew updates
