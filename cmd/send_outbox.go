@@ -95,14 +95,14 @@ func runSendWithDeps(ctx context.Context, deps sendCommandDeps, conversationID, 
 	status, reachable, err := daemon.Status(ctx)
 	if err != nil {
 		if reachable {
-			return fmt.Errorf("check running OpenMessage mode: %w", err)
+			return fmt.Errorf("check running OM-TUI mode: %w", err)
 		}
 		mode, modeErr := deps.mode()
 		if modeErr != nil {
 			return modeErr
 		}
 		if mode.Primary || mode.Send {
-			return fmt.Errorf("OpenMessage isn't running; start it to send: %w", err)
+			return fmt.Errorf("OM-TUI isn't running; start it to send: %w", err)
 		}
 		return deps.legacySend(conversationID, message)
 	}
@@ -247,14 +247,14 @@ func runSendGroupWithDeps(deps sendGroupCommandDeps, phones []string, message st
 	status, reachable, err := daemon.Status(context.Background())
 	if err != nil {
 		if reachable {
-			return fmt.Errorf("check running OpenMessage mode: %w", err)
+			return fmt.Errorf("check running OM-TUI mode: %w", err)
 		}
 		mode, modeErr := deps.mode()
 		if modeErr != nil {
 			return modeErr
 		}
 		if mode.Primary || mode.Send {
-			return fmt.Errorf("OpenMessage isn't running; start it to send: %w", err)
+			return fmt.Errorf("OM-TUI isn't running; start it to send: %w", err)
 		}
 		return deps.legacySend(phones, message)
 	}

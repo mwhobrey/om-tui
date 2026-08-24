@@ -96,7 +96,7 @@ func TestMigrateCheckEmitsSplitReportAndCleansStaging(t *testing.T) {
 	if !bytes.Equal(legacyBefore, legacyAfter) {
 		t.Fatal("legacy database bytes changed during --check")
 	}
-	if got := stderr.String(); !strings.Contains(got, "OpenMessage migration check: PASSED") ||
+	if got := stderr.String(); !strings.Contains(got, "OM-TUI migration check: PASSED") ||
 		!strings.Contains(got, "contact_meta(CRM)") ||
 		!strings.Contains(got, "no v2 store was published") {
 		t.Fatalf("human report missing required evidence:\n%s", got)

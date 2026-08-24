@@ -45,14 +45,14 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/openmessage .
-          tar -C dist -czf "openmessage-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" openmessage
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/om-tui .
+          tar -C dist -czf "om-tui-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" om-tui
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openmessage-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: openmessage-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          name: om-tui-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: om-tui-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
           retention-days: 7
 
   build-windows:
@@ -80,14 +80,14 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/openmessage.exe .
-          cd dist && zip "../openmessage-windows-${{ matrix.goarch }}.zip" openmessage.exe
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o dist/om-tui.exe .
+          cd dist && zip "../om-tui-windows-${{ matrix.goarch }}.zip" om-tui.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openmessage-windows-${{ matrix.goarch }}
-          path: openmessage-windows-${{ matrix.goarch }}.zip
+          name: om-tui-windows-${{ matrix.goarch }}
+          path: om-tui-windows-${{ matrix.goarch }}.zip
           retention-days: 7
 
   build-macos-app:
@@ -197,7 +197,12 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-cross-platform, build-windows, build-macos-app]
+    # build-macos-app deliberately excluded here: it's upstream's own Swift
+    # .app, still bearing the OpenMessage bundle identity that this fork
+    # isn't rebranding. It still runs as a standalone CI check (catches
+    # macOS build breakage), but nothing OpenMessage-branded gets attached
+    # to this fork's own release.
+    needs: [build-cross-platform, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -219,15 +224,14 @@ jobs:
       - name: Stage release files
         run: |
           mkdir -p release
-          cp artifacts/openmessage-darwin-arm64/openmessage-darwin-arm64.tar.gz release/
-          cp artifacts/openmessage-darwin-amd64/openmessage-darwin-amd64.tar.gz release/
-          cp artifacts/openmessage-linux-arm64/openmessage-linux-arm64.tar.gz release/
-          cp artifacts/openmessage-linux-amd64/openmessage-linux-amd64.tar.gz release/
-          cp artifacts/openmessage-windows-amd64/openmessage-windows-amd64.zip release/
-          cp artifacts/openmessage-windows-arm64/openmessage-windows-arm64.zip release/
-          cp artifacts/OpenMessage-dmg/OpenMessage.dmg release/
+          cp artifacts/om-tui-darwin-arm64/om-tui-darwin-arm64.tar.gz release/
+          cp artifacts/om-tui-darwin-amd64/om-tui-darwin-amd64.tar.gz release/
+          cp artifacts/om-tui-linux-arm64/om-tui-linux-arm64.tar.gz release/
+          cp artifacts/om-tui-linux-amd64/om-tui-linux-amd64.tar.gz release/
+          cp artifacts/om-tui-windows-amd64/om-tui-windows-amd64.zip release/
+          cp artifacts/om-tui-windows-arm64/om-tui-windows-arm64.zip release/
 
-          # Generate SHA256 checksums for verification + Homebrew updates
+          # Generate SHA256 checksums for verification
           (cd release && shasum -a 256 * > SHA256SUMS)
 
       - name: Generate release notes
@@ -252,7 +256,7 @@ jobs:
             gh release edit "$tag" --notes-file NOTES.md
           else
             gh release create "$tag" \
-              --title "OpenMessage ${tag}" \
+              --title "OM-TUI ${tag}" \
               --notes-file NOTES.md \
               release/*
           fi

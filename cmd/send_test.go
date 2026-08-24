@@ -190,7 +190,7 @@ func TestRunSendV2PrimaryDaemonAbsentDoesNotConnect(t *testing.T) {
 		legacySend: func(string, string) error { t.Fatal("legacy send called"); return nil },
 	}
 	err := runSendWithDeps(context.Background(), deps, "conv-1", "hello", nil)
-	if err == nil || !strings.Contains(err.Error(), "OpenMessage isn't running; start it to send") {
+	if err == nil || !strings.Contains(err.Error(), "OM-TUI isn't running; start it to send") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -240,7 +240,7 @@ func TestRunSendGroupRoutingCells(t *testing.T) {
 				legacySend: func([]string, string) error { legacyCalls++; return nil },
 			}
 			err := runSendGroupWithDeps(deps, []string{"+15551234567"}, "hello")
-			if tt.wantStop && (err == nil || !strings.Contains(err.Error(), "OpenMessage isn't running")) {
+			if tt.wantStop && (err == nil || !strings.Contains(err.Error(), "OM-TUI isn't running")) {
 				t.Fatalf("error = %v", err)
 			}
 			if !tt.wantStop && !tt.wantLegacy && (err == nil || !strings.Contains(err.Error(), "isn't supported in v2")) {
@@ -298,7 +298,7 @@ func TestRunSendRoutingCells(t *testing.T) {
 				legacySend: func(string, string) error { legacyCalls++; return nil },
 			}
 			err := runSendWithDeps(context.Background(), deps, "conv", "hello", nil)
-			if tt.wantStop != (err != nil && strings.Contains(err.Error(), "OpenMessage isn't running")) {
+			if tt.wantStop != (err != nil && strings.Contains(err.Error(), "OM-TUI isn't running")) {
 				t.Fatalf("error = %v", err)
 			}
 			if legacyCalls != btoi(tt.wantLegacy) {

@@ -103,7 +103,7 @@ func runMigrateCommand(
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: openmessage migrate [--check] [--from <legacy-dir>] [--to <v2-dir>] [--json]")
-		fmt.Fprintln(stderr, "  --from defaults to the OpenMessage data directory")
+		fmt.Fprintln(stderr, "  --from defaults to the OM-TUI data directory")
 		fmt.Fprintln(stderr, "  --to defaults to <from>/v2")
 		fmt.Fprintln(stderr, "  --check validates a complete staged migration without publishing it")
 		fmt.Fprintln(stderr, "  the integrity report is JSON on stdout; human guidance is on stderr")
@@ -112,7 +112,7 @@ func runMigrateCommand(
 	options := migrateOptions{sourceDir: app.DefaultDataDir()}
 	var explicitJSON bool
 	fs.BoolVar(&options.check, "check", false, "validate without publishing")
-	fs.StringVar(&options.sourceDir, "from", options.sourceDir, "legacy OpenMessage data directory")
+	fs.StringVar(&options.sourceDir, "from", options.sourceDir, "legacy OM-TUI data directory")
 	fs.StringVar(&options.targetDir, "to", "", "v2 target directory")
 	fs.BoolVar(&explicitJSON, "json", false, "emit the integrity report as JSON (always enabled)")
 	if err := fs.Parse(args); err != nil {
@@ -228,7 +228,7 @@ func executeMigrate(
 	lockPath := filepath.Join(sourceDir, instanceLockName)
 	lock, err := acquireInstanceLock(lockPath, instanceLockRecord{
 		PID:           os.Getpid(),
-		Process:       "openmessage migrate",
+		Process:       "om-tui migrate",
 		StartedAt:     createdAt.Format(time.RFC3339),
 		BuildID:       deps.version,
 		Commit:        deps.commit,
@@ -239,18 +239,18 @@ func executeMigrate(
 		if errors.Is(err, errInstanceLockHeld) {
 			return result, newMigrateError(
 				migrateLockExitCode,
-				"OpenMessage state is in use: %s is locked; stop the backend and retry",
+				"OM-TUI state is in use: %s is locked; stop the backend and retry",
 				lockPath,
 			)
 		}
 		return result, newMigrateError(
-			migrateLockExitCode, "acquire OpenMessage instance lock %s: %v", lockPath, err,
+			migrateLockExitCode, "acquire OM-TUI instance lock %s: %v", lockPath, err,
 		)
 	}
 	defer func() {
 		if closeErr := lock.Close(); closeErr != nil && resultErr == nil {
 			resultErr = newMigrateError(
-				migrateTransformExitCode, "release OpenMessage instance lock: %v", closeErr,
+				migrateTransformExitCode, "release OM-TUI instance lock: %v", closeErr,
 			)
 		}
 	}()
@@ -259,7 +259,7 @@ func executeMigrate(
 	if probeErr != nil {
 		return result, newMigrateError(
 			migrateLockExitCode,
-			"cannot safely rule out a running OpenMessage backend at %s: %v; stop the backend and retry",
+			"cannot safely rule out a running OM-TUI backend at %s: %v; stop the backend and retry",
 			deps.probeURL,
 			probeErr,
 		)
@@ -267,7 +267,7 @@ func executeMigrate(
 	if running {
 		return result, newMigrateError(
 			migrateLockExitCode,
-			"OpenMessage backend is running at %s; stop it before migrating",
+			"OM-TUI backend is running at %s; stop it before migrating",
 			deps.probeURL,
 		)
 	}
@@ -568,7 +568,7 @@ func writeHumanMigrationReport(writer io.Writer, report migration.Report) {
 	if report.OK && report.Validation.Passed {
 		status = "PASSED"
 	}
-	fmt.Fprintf(writer, "OpenMessage migration %s: %s\n", mode, status)
+	fmt.Fprintf(writer, "OM-TUI migration %s: %s\n", mode, status)
 	fmt.Fprintf(writer, "Source: %s (unchanged=%t, quick_check=%s)\n",
 		report.Source.DatabasePath, report.Source.Unchanged, report.Source.QuickCheck)
 	fmt.Fprintf(writer, "Target: %s (schema=%d, published=%t)\n",

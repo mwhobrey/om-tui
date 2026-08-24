@@ -1150,7 +1150,7 @@ func (m *Model) setThreadContentFollow(content string) {
 
 func (m Model) View() string {
 	if !m.ready {
-		return "Starting OpenMessage TUI…"
+		return "Starting OM-TUI…"
 	}
 	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info, m.activeSlackBadge(), m.list.totalUnread(), m.width)
 	help := renderContextHelpStyled(m)

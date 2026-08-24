@@ -304,7 +304,7 @@ func executeBackup(ctx context.Context, opts backupOptions, deps backupDependenc
 	createdAt := deps.now().UTC().Truncate(time.Second)
 	dataDir, err := canonicalExistingDirectory(opts.dataDir)
 	if err != nil {
-		return backupResult{}, newBackupError(preflightExitCode, "resolve OpenMessage data directory %q: %w", opts.dataDir, err)
+		return backupResult{}, newBackupError(preflightExitCode, "resolve OM-TUI data directory %q: %w", opts.dataDir, err)
 	}
 	sourceDB := filepath.Join(dataDir, legacyDatabaseName)
 	sourceInfo, err := os.Stat(sourceDB)
@@ -320,7 +320,7 @@ func executeBackup(ctx context.Context, opts backupOptions, deps backupDependenc
 
 	lock, err := acquireInstanceLock(filepath.Join(dataDir, instanceLockName), instanceLockRecord{
 		PID:           os.Getpid(),
-		Process:       "openmessage backup",
+		Process:       "om-tui backup",
 		StartedAt:     createdAt.Format(time.RFC3339),
 		BuildID:       deps.version,
 		Commit:        deps.commit,
@@ -329,18 +329,18 @@ func executeBackup(ctx context.Context, opts backupOptions, deps backupDependenc
 	})
 	if err != nil {
 		if errors.Is(err, errInstanceLockHeld) {
-			return backupResult{}, newBackupError(refusedRunningExitCode, "OpenMessage state is in use: %s is locked; stop the backend and retry", filepath.Join(dataDir, instanceLockName))
+			return backupResult{}, newBackupError(refusedRunningExitCode, "OM-TUI state is in use: %s is locked; stop the backend and retry", filepath.Join(dataDir, instanceLockName))
 		}
-		return backupResult{}, newBackupError(preflightExitCode, "acquire OpenMessage instance lock: %w", err)
+		return backupResult{}, newBackupError(preflightExitCode, "acquire OM-TUI instance lock: %w", err)
 	}
 	defer lock.Close()
 
 	running, probeErr := probeBackend(ctx, deps.httpClient, deps.probeURL)
 	if probeErr != nil {
-		return backupResult{}, newBackupError(refusedRunningExitCode, "cannot safely rule out a running OpenMessage backend at %s: %w; stop the backend and retry", deps.probeURL, probeErr)
+		return backupResult{}, newBackupError(refusedRunningExitCode, "cannot safely rule out a running OM-TUI backend at %s: %w; stop the backend and retry", deps.probeURL, probeErr)
 	}
 	if running {
-		return backupResult{}, newBackupError(refusedRunningExitCode, "OpenMessage backend is running at %s; stop it before creating a migration backup", deps.probeURL)
+		return backupResult{}, newBackupError(refusedRunningExitCode, "OM-TUI backend is running at %s; stop it before creating a migration backup", deps.probeURL)
 	}
 
 	destination, err := resolveBackupDestination(dataDir, opts.destination, createdAt)

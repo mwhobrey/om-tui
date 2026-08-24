@@ -23,7 +23,7 @@ func main() {
 		With().Timestamp().Logger().Level(level)
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: openmessage <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status>")
+		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status>")
 		fmt.Fprintln(os.Stderr, "  pair [--google|--google-file path]       - Pair with your phone via QR or Google account cookies")
 		fmt.Fprintln(os.Stderr, "  pair slack [--token xoxp-...] [--name N] - Pair a Slack workspace (river) via user token")
 		fmt.Fprintln(os.Stderr, "  serve [--demo] [--web|--no-web] [--api|--no-api] [--mcp-sse|--no-mcp-sse] [--mcp-stdio] - Start explicit web/API/MCP transports")
@@ -61,13 +61,13 @@ func main() {
 		err = cmd.RunMigrate(logger, os.Args[2:]...)
 	case "read", "search":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage read <query> [--limit N] [--phone NUMBER] [--json]")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui read <query> [--limit N] [--phone NUMBER] [--json]")
 			os.Exit(1)
 		}
 		err = cmd.RunRead(logger, os.Args[2:]...)
 	case "thread":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage thread <name|number|conversation_id> [--limit N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui thread <name|number|conversation_id> [--limit N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]")
 			os.Exit(1)
 		}
 		err = cmd.RunThread(logger, os.Args[2:]...)
@@ -77,7 +77,7 @@ func main() {
 		err = cmd.RunStatus(logger, os.Args[2:]...)
 	case "send":
 		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage send <conversation_id> <message> [--not-before-ms N] [--idempotency-key K]")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui send <conversation_id> <message> [--not-before-ms N] [--idempotency-key K]")
 			os.Exit(1)
 		}
 		var notBeforeMS *int64
@@ -112,26 +112,26 @@ func main() {
 		})
 	case "send-group":
 		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage send-group <phone1,phone2,...> <message>")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui send-group <phone1,phone2,...> <message>")
 			os.Exit(1)
 		}
 		phones := strings.Split(os.Args[2], ",")
 		err = cmd.RunSendGroup(logger, phones, os.Args[3])
 	case "import":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage import <gchat|gchat-conversation|imessage|whatsapp|signal> [args...]")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui import <gchat|gchat-conversation|imessage|whatsapp|signal> [args...]")
 			os.Exit(1)
 		}
 		err = cmd.RunImport(logger, os.Args[2], os.Args[3:])
 	case "debug-media":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: openmessage debug-media <conversation_id>")
+			fmt.Fprintln(os.Stderr, "Usage: om-tui debug-media <conversation_id>")
 			os.Exit(1)
 		}
 		err = cmd.RunDebugMedia(logger, os.Args[2])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		fmt.Fprintln(os.Stderr, "Usage: openmessage <pair|serve|demo|tui|backup|migrate|read|thread|threads|send|import|status>")
+		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|tui|backup|migrate|read|thread|threads|send|import|status>")
 		os.Exit(1)
 	}
 

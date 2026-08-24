@@ -50,7 +50,7 @@ func RunStatus(logger zerolog.Logger, args ...string) error {
 		return writeStatusJSON(dbPath, session.DataDir, total, stats)
 	}
 
-	fmt.Printf("OpenMessage store — %s\n", dbPath)
+	fmt.Printf("OM-TUI store — %s\n", dbPath)
 	if len(stats) == 0 {
 		fmt.Println("\nNo messages stored yet. Pair and serve, or run an `openmessage import …`.")
 		return nil
