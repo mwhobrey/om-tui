@@ -687,7 +687,6 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		if opts.web || opts.api {
 			httpHandler = web.APIHandlerWithOptions(a.Store, nil, logger, mcpHTTPHandler, web.APIOptions{
 				Auth:                  controlAuth,
-				ServeStatic:           opts.web,
 				V2:                    v2Options,
 				V2IngestCounters:      v2IngestCounters,
 				Reads:                 reads,
@@ -754,11 +753,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 			MaxHeaderBytes:    1 << 20,
 		}
 		go func() {
-			if opts.web {
-				logger.Info().Str("addr", listenAddr).Msg("Web UI available at " + baseURL)
-				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize the web UI (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
-			} else if opts.api {
+			if opts.web || opts.api {
 				logger.Info().Str("addr", listenAddr).Msg("Local API available at " + baseURL)
+				fmt.Fprintf(os.Stderr, "Open this single-use URL to authorize local clients (it redirects without exposing the control token):\n%s\n", controlAuth.BootstrapURL(baseURL))
 			}
 			if opts.mcpSSE {
 				logger.Info().Str("addr", listenAddr).Msg("MCP SSE available at " + baseURL + "/mcp/sse")

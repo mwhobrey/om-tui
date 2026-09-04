@@ -2496,34 +2496,6 @@ func TestCachedContactAvatarRoute(t *testing.T) {
 	}
 }
 
-func TestPWAStaticAssets(t *testing.T) {
-	ts := newTestServer(t)
-
-	resp, err := http.Get(ts.server.URL + "/manifest.webmanifest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("manifest status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/manifest+json") {
-		t.Fatalf("manifest content-type = %q", got)
-	}
-
-	resp2, err := http.Get(ts.server.URL + "/sw.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("service worker status = %d, want 200", resp2.StatusCode)
-	}
-	if got := resp2.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") {
-		t.Fatalf("service worker content-type = %q", got)
-	}
-}
-
 func TestWhatsAppLeaveGroupRoute(t *testing.T) {
 	var (
 		leftConversationID string
@@ -3083,24 +3055,6 @@ func TestMediaEndpointWithMimeTypeButNoMediaID(t *testing.T) {
 	// No MediaID means we can't download — return 404
 	if resp.StatusCode != 404 {
 		t.Fatalf("got status %d, want 404 (no media ID available)", resp.StatusCode)
-	}
-}
-
-func TestStaticFileServing(t *testing.T) {
-	ts := newTestServer(t)
-
-	resp, err := http.Get(ts.server.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		t.Fatalf("got status %d, want 200 for index", resp.StatusCode)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if !strings.Contains(ct, "text/html") {
-		t.Fatalf("got content-type %q, want text/html", ct)
 	}
 }
 
