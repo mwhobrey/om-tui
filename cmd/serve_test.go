@@ -22,7 +22,7 @@ import (
 
 func TestInitializeWhatsAppForServeSkipsSupervisorOnInitializationError(t *testing.T) {
 	var logs bytes.Buffer
-	logger := zerolog.New(&logs)
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
 	initErr := errors.New("unable to open WhatsApp database")
 
 	whatsappBridge, initialized := initializeWhatsAppForServe(logger, func() (*whatsapplive.Bridge, error) {
