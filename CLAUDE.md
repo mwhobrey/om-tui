@@ -1,44 +1,50 @@
-# OpenMessage
+# om-tui
 
-Local-first messaging workspace and universal message database with a built-in
-MCP server. Live platforms: Google Messages (SMS/RCS), WhatsApp, Signal, and
-(on this fork) Slack rivers. Imports: Google Chat, iMessage, WhatsApp, Signal Desktop.
+Local-first, cross-platform terminal messaging client and universal message
+database with a built-in MCP server. Live platforms: Google Messages
+(SMS/RCS), WhatsApp, Signal, and Slack rivers. Imports: Google Chat,
+iMessage, WhatsApp, Signal Desktop.
 
-**This checkout** is the `mwhobrey/om-tui` fork (`origin`) of
-`MaxGhenis/openmessage` (`upstream`). Go module path remains
-`github.com/maxghenis/openmessage`. Prefer **`docs/runbook/`** over this file
-when they disagree — the federated runbook is the ground truth for stack,
-gotchas, and current state.
+**This checkout** is `mwhobrey/om-tui` (`origin`), a fork of
+`MaxGhenis/openmessage` (`upstream`) that drops upstream's macOS app and web
+UI to focus solely on the TUI, across Windows, macOS, and Linux. Go module
+path remains `github.com/maxghenis/openmessage` on purpose — see
+[NOTICE.md](NOTICE.md) — so upstream diffs stay easy to compare and port.
+Prefer **`docs/runbook/`** over this file when they disagree — the
+federated runbook is the ground truth for stack, gotchas, and current
+state.
 
 ## Architecture
 
 ```
-├── cmd/                 Go CLI (pair, serve, tui, send, read, status, import, backup, migrate)
+├── cmd/                 Go CLI (pair, serve, tui, send, read, status, import, backup, migrate, repair)
 ├── internal/
 │   ├── app/             Bootstrap, data dir, backfill, Slack rivers
 │   ├── client/          libgm Google Messages protocol
 │   ├── db/              Legacy SQLite (conversations, messages, contacts, rivers, drafts)
 │   ├── river/           Account/workspace identity (messages-default, slack-<team>)
-│   ├── vault/           Per-river sealed credentials (DPAPI on Windows)
+│   ├── vault/           Per-river sealed credentials (DPAPI Windows, Keychain macOS, Secret Service Linux)
 │   ├── slacklive/       Slack Web API client + recent sync + text send
 │   ├── bridge/          Transport contracts, capability registry, supervisors
 │   ├── bridgeadapters/  Google / WhatsApp / Signal / Slack adapters
-│   ├── tui/             Bubble Tea terminal UI (Windows daily driver)
+│   ├── tui/             Bubble Tea terminal UI (the only client this fork ships)
 │   ├── localapi/        Authenticated daemon HTTP client (CLI / TUI / MCP client)
 │   ├── importer/        gchat, imessage, whatsapp, signal desktop
+│   ├── ingest/           V2 ingest workers, decoders, and Google device ID-space repair
 │   ├── story/           Stats + narrative story generation
 │   ├── tools/           MCP tools (24 tools)
 │   ├── viz/             Relationship visualization renderer (self-contained HTML)
 │   ├── storage/         V2 SQLite + blobs (staged cutover)
-│   └── web/             HTTP API + embedded React UI
-├── macos/               Swift macOS app wrapper
-├── docs/
-│   ├── runbook/         Federated agent/developer runbook (START HERE)
-│   ├── agent-runbook.md Live-install support (dual data dirs, MCP fratricide, re-pair)
-│   └── windows-tui.md   Windows TUI + Slack rivers product path
-├── site/                Static website (openmessage.ai)
-└── vercel.json          Vercel config (root — NOT site/vercel.json)
+│   └── web/             Local HTTP+SSE API only — no bundled UI on this fork
+└── docs/
+    ├── runbook/         Federated agent/developer runbook (START HERE)
+    ├── agent-runbook.md Live-install support (data dir, MCP fratricide, re-pair)
+    └── tui.md           TUI + Slack rivers product path (all platforms)
 ```
+
+There is no `macos/` (native app), `internal/web/static/` (React UI), or
+`site/` (marketing site) in this fork — upstream maintains those. See
+[NOTICE.md](NOTICE.md) for credit.
 
 ## Supporting a live install (READ FIRST for support/debug tasks)
 
@@ -46,35 +52,38 @@ If you are debugging a real user's install — sends failing, re-pairing, readin
 their actual messages — read **[docs/agent-runbook.md](docs/agent-runbook.md)**
 and **[docs/runbook/](docs/runbook/)** before touching anything. The traps that cost the most:
 
-- **Platform-specific data dirs.** macOS app live store:
-  `~/Library/Application Support/OpenMessage/` via `OPENMESSAGES_DATA_DIR`.
-  CLI default on macOS/Linux: `~/.local/share/openmessage/` (often stale).
-  Windows default: `%LOCALAPPDATA%\OpenMessage`. Pair / serve / tui / MCP must
-  share one dir.
+- **Data dir defaults.** macOS/Linux: `~/.local/share/openmessage/`.
+  Windows: `%LOCALAPPDATA%\OpenMessage`. Pair / serve / tui / MCP must
+  share one dir (`OPENMESSAGES_DATA_DIR` overrides).
 - **Read live messages via the HTTP API** (`/api/conversations/<id>/messages`,
   `/api/search`, `/api/status`) — the daemon holds the WAL'd DB, so a direct
   `sqlite3` reader hits "unable to open database file (14)".
 - **Re-pairing Google Messages:** QR is dead for many accounts; use Google Account
-  pairing via the cookie method; clear `session.json` from **both** macOS data
-  dirs to reach the pairing screen; don't over-reconnect (it throttles the account).
+  pairing via the cookie method; clear `session.json` to reach the pairing
+  screen; don't over-reconnect (it throttles the account).
 - **One transport owner.** `serve --mcp-stdio` is transportless by default; a
   second process with WhatsApp/Signal credentials logs the other out.
+- **macOS/Linux vault is not yet at parity.** Slack river credentials use
+  Keychain (macOS) / Secret Service via `secret-tool` (Linux) when available;
+  if the backing tool is missing, secrets refuse to store outside
+  `OPENMESSAGES_VAULT_INSECURE=1` (local testing only). See
+  [docs/tui.md](docs/tui.md) "Known cross-platform gaps".
 
-## Windows daily driver (this fork)
+## Daily driver
 
-Windows targets the **TUI + rivers**, not the macOS app or React UI. Full keys,
-Slack scopes, and smoke checklist: **[docs/windows-tui.md](docs/windows-tui.md)**.
+TUI + rivers, on any OS. Full keys and smoke checklist:
+**[docs/tui.md](docs/tui.md)**.
 
-```powershell
+```bash
 # Go is mise-managed on this box — see docs/runbook/03_RULES_AND_STANDARDS.md
-go build -o openmessage.exe .
-.\openmessage.exe pair                          # Google Messages
-.\openmessage.exe pair slack --token xoxp-... --name "Acme"
-.\openmessage.exe tui                           # spawns serve --api --no-web if needed
+go build -o om-tui .                       # om-tui.exe on Windows
+./om-tui pair                              # Google Messages
+./om-tui pair slack --token xoxp-... --name "Acme"
+./om-tui tui                               # spawns serve --api --no-web if needed
 ```
 
 - Rivers: built-in `messages-default`; Slack rivers are `slack-<team-id>`.
-- Credentials: `rivers/<id>/credentials.enc` (DPAPI — not portable across machines/users).
+- Credentials: `rivers/<id>/credentials.enc`, OS-backed sealing (see vault note above).
 - TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media.
 - API daemon: `serve --api --no-web` exposes `/api/rivers`, `/api/conversations?river_id=…`.
 
@@ -84,9 +93,9 @@ These commands open the store directly (repair-free, via `app.NewClient` — no
 startup repair writes to the shared live store) and start no live transports:
 
 ```bash
-openmessage read "<query>" [--limit N] [--phone NUMBER] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
-openmessage search ...                                            # alias for read
-openmessage status [--json]                                       # per-platform counts + sync freshness
+om-tui read "<query>" [--limit N] [--phone NUMBER] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+om-tui search ...                                            # alias for read
+om-tui status [--json]                                       # per-platform counts + sync freshness
 ```
 
 `status` is the fast way to check coverage before trusting a search. Date
@@ -95,12 +104,23 @@ filtering lives in the store via `SearchFilter`/`SearchMessagesFiltered`.
 ## Multi-platform import
 
 ```bash
-openmessage import gchat /path/to/Takeout/Google\ Chat/Groups/ --email you@gmail.com
-openmessage import gchat-conversation /path/to/messages.json --email you@gmail.com
-openmessage import imessage                     # reads ~/Library/Messages/chat.db (needs Full Disk Access)
-openmessage import whatsapp /path/to/chat.txt --name "Your Name"
-openmessage import signal [support-dir]         # Signal Desktop history
+om-tui import gchat /path/to/Takeout/Google\ Chat/Groups/ --email you@gmail.com
+om-tui import gchat-conversation /path/to/messages.json --email you@gmail.com
+om-tui import imessage                     # reads ~/Library/Messages/chat.db (needs Full Disk Access)
+om-tui import whatsapp /path/to/chat.txt --name "Your Name"
+om-tui import signal [support-dir]         # Signal Desktop history
 ```
+
+### Google device ID-space repair
+
+```bash
+om-tui repair google-idspace --since <RFC3339|unix-ms> [--account google-primary] [--apply] [--json] [--report path]
+```
+
+Ported from upstream: a phone swap or backup restore re-keys Google's
+device-local conversation/message IDs, which without this repair causes
+duplicate messages and threads wrongly rebound. See `internal/ingest/idspace.go`,
+`repair_idspace.go`, and `internal/storage/sqlite/{content_dedupe,participants_ensure,rebind}.go`.
 
 ### MCP serving modes
 
@@ -133,6 +153,10 @@ Person/story/viz tools are unavailable while V2 is the serving store.
 - `GET /api/search?q=…` — search across platforms
 - `GET /api/media/<message_id>` — download attachment (requires `MediaID`)
 
+No static UI is served from this fork — `internal/web` is the API/SSE layer
+only. `gifs.go`/`linkpreview.go` handlers exist but are currently dormant
+(no TUI consumer yet).
+
 ### Schema
 
 Messages and conversations have `source_platform`
@@ -140,46 +164,6 @@ Messages and conversations have `source_platform`
 `source_id` for dedup. Conversations also have `river_id`. Unified contacts
 map people across platforms. Rivers table + vault store account/workspace
 instances.
-
-## Vercel deployment (openmessage.ai)
-
-**CRITICAL: Always deploy from the repo root.** Config lives at root
-`vercel.json`, not `site/vercel.json`. Scope: `max-ghenis-projects`.
-
-```bash
-cd /path/to/openmessage && vercel --prod
-curl -s -o /dev/null -w "%{http_code}" https://openmessage.ai
-```
-
-## Building the macOS app
-
-```bash
-./macos/build.sh
-```
-
-This builds: Go universal binary (arm64+amd64) → Swift app → .app bundle → .dmg
-
-**Dev builds get a distinct bundle identity.** Plain `./macos/build.sh` stamps
-`com.openmessage.app.dev`, names the bundle `OpenMessage (dev)`, and emits
-`OpenMessage-dev.dmg`, so a stale build can never shadow the installed app in
-LaunchServices — by id or by name (this caused two live outages —
-see [docs/agent-runbook.md](docs/agent-runbook.md) "Bundle-id shadowing").
-Anything installable or shippable **must** set `RELEASE=1`:
-
-```bash
-RELEASE=1 ./macos/build.sh
-```
-
-Building from a nested `.claude/worktrees/*` checkout also needs `GOWORK=off`
-(Go otherwise finds `~/openmessage/go.work` and resolves the main module to the
-parent).
-
-To install locally (requires `RELEASE=1` above):
-```bash
-cp -R macos/build/OpenMessage.app /Applications/ && xattr -cr /Applications/OpenMessage.app
-```
-
-Not used on the Windows TUI path.
 
 ## Testing
 
@@ -210,11 +194,11 @@ Claude Code slash command: `.claude/commands/generate-story.md`. Uses
 ## Key files
 
 - `docs/runbook/` — architecture, components, standards, current state
-- `docs/windows-tui.md` — Windows TUI / Slack rivers
+- `docs/tui.md` — TUI keys, rivers, smoke checklist, cross-platform gaps
 - `docs/agent-runbook.md` — live-install support traps
+- `NOTICE.md` — fork origin + upstream library credit
 - `internal/app/app.go` — data-dir resolution (`DefaultDataDir`)
 - `internal/river/`, `internal/vault/`, `internal/app/slack.go`, `internal/slacklive/`
 - `internal/tui/` — Bubble Tea UI
 - `internal/db/db.go` — legacy schema (incl. `river_id`, rivers table)
 - `internal/tools/tools.go` — MCP registration
-- `macos/OpenMessage/Sources/BackendManager.swift` — macOS app backend launcher

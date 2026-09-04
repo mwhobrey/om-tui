@@ -1,149 +1,98 @@
-# OpenMessage
+# om-tui
 
-OpenMessage is a local-first messaging workspace for Google Messages, WhatsApp, Signal, and (on Windows / this fork) Slack rivers. Use it from the native macOS app, the localhost web UI, the terminal UI, or any MCP-compatible client.
-
-**Windows:** terminal UI with **rivers** (Google Messages + Slack workspaces) — see [docs/windows-tui.md](docs/windows-tui.md). Agent/developer ground truth: [docs/runbook/](docs/runbook/).
-
-Built on [mautrix/gmessages](https://github.com/mautrix/gmessages) (libgm) for the Google Messages protocol, [whatsmeow](https://github.com/tulir/whatsmeow), local `signal-cli`, [slack-go](https://github.com/slack-go/slack) for Slack rivers, and [mcp-go](https://github.com/mark3labs/mcp-go) for the MCP server.
+om-tui is a local-first terminal messaging client: one inbox for Google
+Messages (SMS/RCS), WhatsApp, Signal, and Slack, driven entirely from a
+Bubble Tea TUI on Windows, macOS, or Linux. It's a fork of
+[MaxGhenis/openmessage](https://github.com/MaxGhenis/openmessage), which
+also ships a native macOS app and a localhost web UI; om-tui drops both to
+focus on one thing — a fast, cross-platform terminal client — while staying
+a drop-in MCP server for Claude Code and other MCP clients. Full credit and
+licensing for everything this is built on lives in [NOTICE.md](NOTICE.md).
 
 ## What it does
 
-- **Google Messages for Mac / Windows** — pair your Android phone and read/send SMS + RCS locally
-- **Live WhatsApp support** — link WhatsApp as a live companion device on your machine
-- **Live Signal support** — link Signal locally and keep its threads in the same inbox
-- **Slack rivers (Windows / om-tui)** — readable users/DMs, unread filters, dedicated reply threads, lazy history, text send, and optional Socket Mode realtime
+- **Google Messages** — pair your Android phone and read/send SMS + RCS locally
+- **Live WhatsApp** — link WhatsApp as a live companion device on your machine
+- **Live Signal** — link Signal locally and keep its threads in the same inbox
+- **Slack rivers** — readable users/DMs, unread filters, dedicated reply threads, lazy history, text send, and optional Socket Mode realtime
 - **One local inbox** — search, route-aware threads, favorites, media, reactions, drafts, scheduled sends, and grouped contacts
-- **Rich compose** — text, media, GIFs, drag/drop attachments, link previews, replies, forwards, and browser-side queued sends while a route reconnects
-- **macOS app + PWA web UI** — native wrapper with notifications and contact photos, plus an installable localhost UI
-- **Windows TUI** — Bubble Tea terminal client attached to `serve --api --no-web`
+- **Rivers** — every account/workspace (Google Messages, each Slack team) is an isolated, independently-paired identity in the same inbox
 - **MCP-ready** — expose the same local inbox to Claude Code and other MCP clients over stdio, Streamable HTTP, or SSE
+- **Local storage** — SQLite, your data stays on your machine
 
 ## Quick start
 
 ### Prerequisites
 
-- **Go 1.22+** ([install](https://go.dev/dl/); this fork often uses [mise](https://mise.jdx.dev/))
+- **Go 1.22+** ([install](https://go.dev/dl/); this repo often uses [mise](https://mise.jdx.dev/))
 - **Google Messages** on your Android phone
 
-### Windows (TUI + rivers)
+### Build and pair
+
+```bash
+git clone https://github.com/mwhobrey/om-tui.git
+cd om-tui
+go build -o om-tui .          # om-tui.exe on Windows
+./om-tui pair
+./om-tui pair slack --token xoxp-... --name "Acme"   # optional, add --app-token xapp-... for Socket Mode
+./om-tui tui
+```
+
+By default, pairing shows a QR code — on your phone, open **Google
+Messages > Settings > Device pairing > Pair a device** and scan it. If
+Google only offers account pairing, pair with cookies copied from browser
+devtools instead:
+
+```bash
+pbpaste | ./om-tui pair --google      # macOS/Linux
+```
 
 ```powershell
-go build -o openmessage.exe .
-.\openmessage.exe pair
-.\openmessage.exe pair slack --token xoxp-... --name "Acme"   # optional
-# Add --app-token xapp-... for Socket Mode realtime
-.\openmessage.exe tui
+Get-Clipboard | .\om-tui.exe pair --google   # Windows
 ```
 
-Default data dir: `%LOCALAPPDATA%\OpenMessage`. Full keys, Slack scopes, media, and smoke checklist: [docs/windows-tui.md](docs/windows-tui.md).
+The CLI accepts either a JSON cookie object or a full `curl` command for
+`messages.google.com/web/config`, then prompts you to confirm an emoji on
+your phone.
 
-### macOS / Linux
+Default data dir: `~/.local/share/openmessage` (macOS/Linux) or
+`%LOCALAPPDATA%\OpenMessage` (Windows). The TUI transparently spawns
+`serve --api --no-web` if no daemon is already running.
 
-#### 1. Clone and build
+### Optional: link WhatsApp or Signal
 
-```bash
-git clone https://github.com/MaxGhenis/openmessage.git
-cd openmessage
-go build -o openmessage .
-```
+From the TUI, switch rivers with `[` / `]` and follow the connection prompts
+for WhatsApp or Signal — both run as local companion-device bridges and land
+in the same inbox as everything else.
 
-#### 2. Pair with your phone
-
-```bash
-./openmessage pair
-```
-
-By default, a QR code appears in your terminal. On your phone, open **Google Messages > Settings > Device pairing > Pair a device** and scan it. The session saves to `~/.local/share/openmessage/session.json`.
-
-If Google only offers account pairing, you can also pair with Google account cookies copied from browser devtools:
-
-```bash
-pbpaste | ./openmessage pair --google
-```
-
-The CLI accepts either a JSON cookie object or a full `curl` command for `messages.google.com/web/config`, then prompts you to confirm an emoji on your phone.
-
-#### 3. Start the server
-
-```bash
-./openmessage serve
-```
-
-This starts the **Web UI** at [http://127.0.0.1:7007](http://127.0.0.1:7007). A bare `serve` is web-only.
-
-MCP transports require an explicit opt-in:
-
-- `./openmessage serve --mcp-sse` starts MCP Streamable HTTP and SSE without the web UI.
-- `./openmessage serve --web --mcp-sse` starts the web UI and both HTTP MCP endpoints.
-- `./openmessage serve --mcp-stdio` starts MCP over stdio for pipe-based clients.
-- `./openmessage serve --api --no-web` starts the API+SSE daemon used by the TUI.
-
-#### 3a. Optional: link WhatsApp or Signal
-
-After `serve` is running, open the local UI and link WhatsApp or Signal from the Connections surface. OpenMessage keeps those bridges local and syncs them into the same inbox as Google Messages.
-
-#### 3b. Safe demo mode for screenshots and recordings
-
-```bash
-./openmessage demo
-```
-
-or:
-
-```bash
-./openmessage serve --demo
-```
-
-Demo mode starts the same local UI on the normal port, but:
-- uses a fresh temporary data directory instead of your real message store
-- seeds fake SMS and WhatsApp conversations for screenshots and demos
-- disables live Google Messages, WhatsApp, and local desktop import sync
-
-This is the safest way to capture website screenshots, App Store assets, or demo recordings without real messages bleeding back in.
-
-#### 4. Connect to Claude Code
+### Connect to Claude Code
 
 Add to `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "openmessage": {
-      "command": "/path/to/openmessage",
+    "om-tui": {
+      "command": "/path/to/om-tui",
       "args": ["serve", "--mcp-stdio"]
     }
   }
 }
 ```
 
-Restart Claude Code. The MCP tools appear automatically.
+Restart Claude Code — the MCP tools appear automatically. To connect over
+HTTP instead, start with `--mcp-sse` and point a client at
+`http://127.0.0.1:7007/mcp` (Streamable HTTP) or `/mcp/sse` (SSE).
 
-Pin `OPENMESSAGES_DATA_DIR` (and `OPENMESSAGES_V2_PRIMARY=1` after cutover) when the macOS app owns the live store — see [docs/agent-runbook.md](docs/agent-runbook.md).
+## TUI
 
-To let a client connect over HTTP, start OpenMessage with `--mcp-sse` (or `--web --mcp-sse` to keep the web UI), then point it at:
+- `[` / `]` — switch rivers (Google Messages, each paired Slack workspace)
+- `/` — jump filter across conversations
+- `Ctrl+F` — message search
+- `o` / `s` — open / save media
+- Standard message flows: read, reply, react, forward, drafts, scheduled sends
 
-- Streamable HTTP: `http://127.0.0.1:7007/mcp`
-- SSE: `http://127.0.0.1:7007/mcp/sse`
-
-## Features
-
-- **Read messages** — full conversation history, search, media, replies, reactions, and route-aware conversation previews
-- **Send messages** — SMS/RCS plus live WhatsApp and Signal text, media, reactions, replies, forwards, and send-later scheduling
-- **Queued compose** — browser-side pending sends keep text and attachment previews visible while a route reconnects, then flush with idempotency keys to avoid duplicate sends
-- **GIF picker** — Klipy-backed GIF search, preview proxying, favorites, captions, and media sends from the web composer
-- **Attachment workflow** — upload, paste, drag/drop, preview, fullscreen viewing, PDFs, audio/video, and generic file cards
-- **Link previews** — local preview/image proxying for message URLs with SSRF-safe URL validation
-- **Favorite threads** — star important conversations and jump to them from the favorites rail
-- **Live WhatsApp sync** — pair a local WhatsApp companion device for inbound messages, typing indicators, read state, and media
-- **Live Signal sync** — pair a local Signal linked device for inbound messages, media, reactions, and group threads
-- **React to messages** — emoji reactions on any message
-- **Image/media display** — inline images, video, audio, and fullscreen viewer
-- **Contact workspace** — grouped people across routes, contact metadata, tags, reach-out cadence, and relationship summaries
-- **Google repair flows** — detects expired Google cookies, stuck sessions, and dead credentials, then offers guided reconnect or re-pair flows
-- **Desktop notifications** — native macOS notifications and Windows toasts for fresh inbound messages
-- **Web UI + macOS app** — real-time conversation view at localhost:7007 and a native wrapper
-- **MCP tools** — conversation lookup, route-aware text/media/reaction sends, media download, import helpers, and story/viz tools
-- **Local storage** — SQLite database, your data stays on your machine
+Full keys and a smoke checklist: [docs/tui.md](docs/tui.md).
 
 ## MCP tools
 
@@ -161,9 +110,9 @@ To let a client connect over HTTP, start OpenMessage with `--mcp-sse` (or `--web
 | `list_conversations` | List recent conversations |
 | `list_contacts` | List/search contacts |
 | `resolve_contact_routes` | Resolve a person or phone number to the available SMS/WhatsApp/Signal routes |
-| `get_status` | Google Messages, WhatsApp, and Signal connection status |
+| `get_status` | Google Messages, WhatsApp, Signal, and Slack river connection status |
 | `download_media` | Return the local `/api/media/<message-id>` URL and metadata for an attachment |
-| `draft_message` | Save a draft for the local app to review/send later |
+| `draft_message` | Save a draft for later review/send |
 | `import_messages` | Import Google Chat, iMessage, WhatsApp export, or Signal Desktop history |
 | `get_person_messages` | Load messages for conversations matching a person's name |
 | `get_person_messages_range` | Load a bounded time range of messages matching a person's name |
@@ -186,123 +135,70 @@ To let a client connect over HTTP, start OpenMessage with `--mcp-sse` (or `--web
 - Review one person's cross-platform history: `get_person_messages(name="Taylor", limit=50)`
 - Import Signal Desktop history: `import_messages(source="signal", path="$HOME/Library/Application Support/Signal", name="Your Name", address="+15551230000")`
 
-## Web UI
-
-The web UI runs at `http://localhost:7007` when the server is started. It provides:
-
-- Conversation list with search and grouped multi-route contacts
-- Message view with images, video, audio, reactions, and reply threads
-- Favorites rail and thread-level shortcuts
-- Route-aware compose, send, reply, forward, react, and send later
-- GIF picker, emoji picker, media upload, drag/drop attachments, paste attachments, captions, and attachment previews
-- Link previews and document/file cards
-- Browser-side queued sends for temporarily disconnected routes
-- Contact popovers, copied numbers, person-level summaries, tags, and reach-out cadence
-- Google Messages + WhatsApp + Signal connection controls
-- Google reconnect, cookie-expiry, and re-pair affordances
-- Live typing indicators, read-state rendering, and notifications
-
-## Native macOS app
-
-The repo also includes a native Swift wrapper around the same local backend:
-
-- embedded local OpenMessage backend
-- native notifications
-- contact photos
-- the same Google Messages, WhatsApp, and Signal pairing/runtime model as the web UI
-
-The macOS app target lives under `OpenMessage/`.
-
 ## Configuration
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `OPENMESSAGES_DATA_DIR` | macOS/Linux: `~/.local/share/openmessage`; Windows: `%LOCALAPPDATA%\OpenMessage`; macOS app: `~/Library/Application Support/OpenMessage` | Data directory (DB + session + rivers vault) |
+| `OPENMESSAGES_DATA_DIR` | macOS/Linux: `~/.local/share/openmessage`; Windows: `%LOCALAPPDATA%\OpenMessage` | Data directory (DB + session + rivers vault) |
 | `OPENMESSAGES_LOG_LEVEL` | `info` | Log level (debug/info/warn/error/trace) |
-| `OPENMESSAGES_PORT` | `7007` | Web UI / API port |
-| `OPENMESSAGES_HOST` | `127.0.0.1` | Host/interface to bind the local web server to |
+| `OPENMESSAGES_PORT` | `7007` | Local API port |
+| `OPENMESSAGES_HOST` | `127.0.0.1` | Host/interface to bind the local API server to |
 | `OPENMESSAGES_VAULT_INSECURE` | unset | Non-Windows test-only vault (never set in production) |
 | `OPENMESSAGES_MY_NAME` | system user name | Display name for outgoing imported iMessage/WhatsApp messages |
 | `OPENMESSAGES_STARTUP_BACKFILL` | `auto` | Startup history sync mode: `auto`, `shallow`, `deep`, or `off` |
 | `OPENMESSAGES_BACKFILL_DISCOVER_ORPHANS` | `0` | Opt in to deep backfill's Phase C (contact-based orphan discovery). **Off by default** because it creates an empty SMS thread on your phone for each contact without prior message history. Enable with `1`/`true`/`yes`/`on` only if you understand the side effect. |
-| `OPENMESSAGES_KLIPY_API_KEY` | unset | Optional Klipy API key for the web compose GIF picker. GIF search is unavailable until this is set. `KLIPY_API_KEY` is also accepted as a fallback. |
-| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` | unset | Optional command run before reconnect when Google session cookies expire. If unset, OpenMessage backs off and prompts for manual re-pair instead of hammering Google's auth endpoint. |
-| `OPENMESSAGES_MACOS_NOTIFICATIONS` | interactive macOS `serve` sessions only | Enable/disable native macOS notifications for fresh inbound live messages (`1`/`0`). Click-through opens the matching thread when `terminal-notifier` is available. The macOS app sets this to `0` and posts its own notifications (with tap-to-open and active-thread suppression) instead. |
+| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` | unset | Optional command run before reconnect when Google session cookies expire. If unset, om-tui backs off and prompts for manual re-pair instead of hammering Google's auth endpoint. |
 | `OPENMESSAGES_WINDOWS_NOTIFICATIONS` | on for Windows `serve` | Enable/disable Windows toast notifications for fresh inbound live messages (`1`/`0`). Daemon-side (including `serve --api` / TUI-spawned daemon). Respects conversation mute / mentions mode. |
 | `OPENMESSAGES_WINDOWS_TOAST_APP_ID` | PowerShell's registered AUMID | Windows toast AppUserModelID. Unregistered IDs often show nothing; default uses PowerShell's AUMID so toasts actually appear (branded as PowerShell). |
-| `OPENMESSAGES_SIGNAL_TMP_SWEEP` | enabled | Set to `0` to disable the cleanup of stale signal-cli temp directories (the app-owned run dirs plus `libsignal*` dirs older than 24h that pre-v0.2.10 builds leaked into the system temp dir — see #27). |
+| `OPENMESSAGES_SIGNAL_TMP_SWEEP` | enabled | Set to `0` to disable the cleanup of stale signal-cli temp directories (run dirs plus `libsignal*` dirs older than 24h that pre-v0.2.10 builds leaked into the system temp dir). |
 | `OPENMESSAGES_SIGNAL_CLI` | auto-detected `signal-cli` | Optional path to a specific `signal-cli` binary. |
 | `OPENMESSAGES_GOOGLE_AVATAR_SYNC` | enabled | Set to `0` to disable Google contact avatar sync. The older singular `OPENMESSAGE_GOOGLE_AVATAR_SYNC` name is also accepted. |
 | `OPENMESSAGES_EXPORT_DIR` | `~/Documents/OpenMessage` | Directory for `generate_viz` / `render_story` HTML outputs and photo inputs when using the default confined export mode. |
 | `OPENMESSAGES_ALLOW_ANY_EXPORT_PATH` | unset (off) | Set to `1`/`true`/`yes`/`on` to allow viz/story tools to read photos from, or write HTML to, arbitrary local paths. |
-| `OPENMESSAGE_TELEMETRY` | unset (off) | Set to `1` to send one anonymous heartbeat per launch (max one per 24h). Reports only: random install ID, version, OS/arch, and which platforms are paired (Google Messages / WhatsApp / Signal). No message content, no contact info, no IP-based identity. See `internal/telemetry/`. |
+| `OPENMESSAGE_TELEMETRY` | unset (off) | Set to `1` to send one anonymous heartbeat per launch (max one per 24h). Reports only: random install ID, version, OS/arch, and which platforms are paired. No message content, no contact info, no IP-based identity. See `internal/telemetry/`. |
 
-`OPENMESSAGES_HOST` defaults to localhost for safety. If you bind the server to another interface for LAN testing, keep it on a trusted network; local-control APIs and MCP endpoints are meant for same-origin/local clients.
-
-### GIF picker setup
-
-The web compose GIF picker uses Klipy search. To enable it:
-
-1. Create a Klipy API key.
-2. Start OpenMessage with the key in the environment:
-
-   ```bash
-   export OPENMESSAGES_KLIPY_API_KEY=<your key>
-   ./openmessage serve
-   ```
-
-3. Optional: verify the local endpoint can reach Klipy:
-
-   ```bash
-   curl "http://127.0.0.1:7007/api/gifs/trending?limit=1"
-   ```
-
-4. Open the web UI and use the `GIF` button in a media-capable conversation. GIF sends use the same media path as other attachments, so they are only enabled for routes that currently support media.
-
-OpenMessage does not include a bundled GIF provider key. Without `OPENMESSAGES_KLIPY_API_KEY`, GIF search endpoints return a setup error and the rest of messaging continues to work normally.
-
-If you launch OpenMessage from the macOS app, launchd, systemd, or another supervisor, configure the environment there too; exporting the key in a shell only affects `serve` processes started from that shell.
+`OPENMESSAGES_HOST` defaults to localhost for safety. If you bind the
+server to another interface for LAN testing, keep it on a trusted network —
+the local API and MCP endpoints are meant for same-origin/local clients.
 
 ## Architecture
 
 - **libgm** handles the Google Messages protocol (pairing, encryption, long-polling)
 - **whatsmeow** handles live WhatsApp pairing, sync, text/media send, receipts, typing, and avatars through a separate local session store
 - **signal-cli** powers the local Signal linked-device bridge, message sync, media, and reactions
-- **slack-go** + sealed river vault power Slack workspace rivers (text send + recent history sync on this fork)
+- **slack-go** + sealed river vault power Slack workspace rivers (text send + recent history sync)
 - **Rivers** are account/workspace instances (`messages-default`, `slack-<team-id>`); credentials live under `rivers/<id>/credentials.enc`
-- **SQLite** (WAL mode, pure Go) stores messages, conversations, contacts, and rivers locally
-- Real-time events from the phone are written to SQLite as they arrive
-- The native macOS app and the localhost web UI run against the same local backend; on Windows the Bubble Tea TUI attaches to `serve --api --no-web`
-- WhatsApp Desktop import remains as a fallback/repair path when the live bridge is not active
-- Signal Desktop history can be imported into the same local store for backfill and repair workflows
+- **SQLite** (WAL mode, pure Go) stores messages, conversations, contacts, and rivers locally; real-time events from each platform are written as they arrive
+- The Bubble Tea **TUI** talks to a local daemon (`serve --api --no-web`) over the same HTTP+SSE API used by MCP tools
+- WhatsApp Desktop and Signal Desktop imports remain available as backfill/repair paths when a live bridge isn't active
 - On first run, a deep backfill fetches full SMS/RCS history in the background; later runs do a lighter incremental sync by default
 - Scheduled messages live in SQLite, are claimed atomically by the background scheduler, and retry when the target platform is temporarily disconnected
-- The web composer stores pending browser-side sends in local storage/IndexedDB and attaches idempotency keys to prevent duplicate delivery during retry
 - MCP tool handlers read from SQLite for queries and route sends through the same local runtime
 - MCP HTTP transport supports both Streamable HTTP at `/mcp` and SSE at `/mcp/sse` when enabled with `--mcp-sse`; stdio is available with `--mcp-stdio`
-- GIF and link-preview proxies validate remote URLs, cap downloads, and keep provider fetches inside the local backend
 - Auth tokens auto-refresh and persist to `session.json`; expired Google cookies can be refreshed by an optional script or surfaced as a guided re-pair flow
 
 ## Development
 
 ```bash
 go test ./...        # Run all tests
-go build .           # Build binary
-npm install          # Install Playwright test runner
-npx playwright install chromium
-npm run test:e2e     # Run browser-level web UI tests
-./openmessage pair  # Pair with phone
-./openmessage serve # Start server
-./openmessage demo  # Start isolated fake-data demo mode
-./openmessage tui   # Terminal UI (spawns serve --api if needed)
+go test -race ./...  # Run with the race detector
+go build .            # Build binary
+./om-tui pair        # Pair with phone
+./om-tui tui          # Terminal UI (spawns serve --api --no-web if needed)
 ```
 
-Before publishing a build or website update, run through [the release checklist](docs/release-checklist.md).
+Debugging a live install (failing sends, re-pairing, the two-data-dir
+gotcha, signal-cli version)? See [docs/agent-runbook.md](docs/agent-runbook.md).
 
-Debugging a live install (failing sends, re-pairing, the two-data-dir gotcha, signal-cli version)? See [docs/agent-runbook.md](docs/agent-runbook.md).
+Architecture, components, and current fork state: [docs/runbook/](docs/runbook/).
 
-Architecture, components, Windows baseline, and current fork state: [docs/runbook/](docs/runbook/).
+## Credit
+
+om-tui is a fork of [MaxGhenis/openmessage](https://github.com/MaxGhenis/openmessage).
+Full attribution for that project and every library this is built on —
+mautrix/gmessages, whatsmeow, signal-cli, slack-go, mcp-go — is in
+[NOTICE.md](NOTICE.md).
 
 ## License
 
-MIT
+[Unlicense](LICENSE) (public domain).

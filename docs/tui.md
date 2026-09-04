@@ -1,36 +1,49 @@
-# Windows: om-tui (Rivers)
+# TUI + rivers
 
-OpenMessage on Windows targets a terminal UI with **rivers** (account/workspace
-instances). Google Messages is the built-in river; Slack workspaces are
-additional rivers. There is no macOS app or React web UI on this path.
+om-tui's only client is a Bubble Tea terminal UI with **rivers**
+(account/workspace instances). Google Messages is the built-in river; Slack
+workspaces are additional rivers. It runs on Windows, macOS, and Linux.
 
 ## Data directory
 
 Default store location:
 
-`%LOCALAPPDATA%\OpenMessage`
+- Windows: `%LOCALAPPDATA%\OpenMessage`
+- macOS/Linux: `~/.local/share/openmessage`
 
-Override with `OPENMESSAGES_DATA_DIR`. Pairing, `serve`, and `tui` must share the same directory.
+Override with `OPENMESSAGES_DATA_DIR`. Pairing, `serve`, and `tui` must
+share the same directory.
 
-River credentials live under `rivers/<river_id>/credentials.enc`, sealed with
-**Windows DPAPI** (tied to your Windows user). Restoring a backup on another
-machine/user will not decrypt those blobs.
+River credentials live under `rivers/<river_id>/credentials.enc`. On
+**Windows** this is sealed with DPAPI (tied to your Windows user) —
+restoring a backup on another machine/user will not decrypt those blobs.
+
+**On macOS/Linux, river credential sealing is not yet production-ready.**
+The vault refuses to store real secrets unless
+`OPENMESSAGES_VAULT_INSECURE=1` is set, and even then it falls back to a
+machine-local file-derived key (`internal/vault/seal_other.go`) rather than
+Keychain or Secret Service — meaning **Slack river tokens on macOS/Linux
+currently have no OS-backed encryption at rest**. Google Messages pairing
+itself (`session.json`) is unaffected by this. Native Keychain (macOS) and
+Secret Service/libsecret (Linux) backends are a known gap, tracked as
+follow-up work for real cross-platform parity — don't rely on
+`OPENMESSAGES_VAULT_INSECURE=1` outside local testing.
 
 ## Quick start
 
-```powershell
-go build -o openmessage.exe .
-.\openmessage.exe pair
-.\openmessage.exe tui
+```bash
+go build -o om-tui .        # om-tui.exe on Windows
+./om-tui pair
+./om-tui tui
 ```
 
 ### Slack river
 
-```powershell
-.\openmessage.exe pair slack --token xoxp-... --name "Acme"
+```bash
+./om-tui pair slack --token xoxp-... --name "Acme"
 # Optional realtime push (tokens must come from the same Slack app):
-.\openmessage.exe pair slack --token xoxp-... --app-token xapp-... --name "Acme"
-.\openmessage.exe serve --api --no-web   # or restart tui so it respawns the daemon
+./om-tui pair slack --token xoxp-... --app-token xapp-... --name "Acme"
+./om-tui serve --api --no-web   # or restart tui so it respawns the daemon
 ```
 
 Use a Slack **user token** with scopes sufficient to list channels/DMs, read
@@ -38,7 +51,7 @@ history, and `chat:write` (e.g. `channels:history`, `channels:read`,
 `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`,
 `mpim:read`, `chat:write`, `users:read`). Tokens are stored only in the vault.
 
-OpenMessage caches Slack profiles locally so DMs, senders, `<@mentions>`, and
+om-tui caches Slack profiles locally so DMs, senders, `<@mentions>`, and
 channel references render as names instead of IDs. The cache refreshes from
 `users.list` and falls back to `users.info`.
 
@@ -54,25 +67,25 @@ in the list for the active river.
 `tui` attaches to a local API daemon on `http://127.0.0.1:7007` (or `OPENMESSAGES_PORT`). If none is running, it starts:
 
 ```text
-openmessage serve --api --no-web
+om-tui serve --api --no-web
 ```
 
 and stops that child when you quit the TUI. A daemon you started yourself is left running.
 
 ## Standalone API daemon
 
-```powershell
-.\openmessage.exe serve --api --no-web
-.\openmessage.exe tui   # attaches; does not spawn a second daemon
+```bash
+./om-tui serve --api --no-web
+./om-tui tui   # attaches; does not spawn a second daemon
 ```
 
-`--api` exposes REST + SSE (`/api/status`, `/api/conversations?river_id=…`, `/api/rivers`, `/api/events`, …) without the React static UI.
+`--api` exposes REST + SSE (`/api/status`, `/api/conversations?river_id=…`, `/api/rivers`, `/api/events`, …).
 
 ## TUI keys
 
 Opening a conversation focuses the **composer**. Message actions that must work
 there use **Ctrl** chords — bare letters type into the draft, and Shift is not a
-usable modifier on Windows Terminal for these panes.
+usable modifier in some terminals for these panes.
 
 The footer is **context-aware** (only shows chords that apply to the current
 focus / river / Slack-thread / react-palette state) and always ends with
@@ -92,7 +105,7 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `Ctrl+K` | Universal palette (jump or `>` commands; `j`/`k`/arrows move; Enter runs; Esc closes) |
 | `[` / `]` | Switch river (Messages, Slack workspaces, …) — list focus |
 | `j` / `k` / arrows | Move in the conversation list; in **thread** focus, select a message |
-| mouse wheel | Scroll the pane under the cursor (list or thread). Mouse capture also prevents Windows Terminal from smearing the alt-screen buffer. |
+| mouse wheel | Scroll the pane under the cursor (list or thread) |
 | `/` | Jump: filter by name / `#channel` / contact / id. Slack also accepts `type:dm`, `type:channel`, `is:unread`, and combinations such as `type:dm is:unread alice`. |
 | `Ctrl+F` | Search message text (works from list / thread / composer) |
 | `Space` | Multi-select conversations for broadcast (`*` mark) — list focus |
@@ -103,10 +116,10 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `Ctrl+T` | Open the selected Slack message's dedicated reply thread |
 | `PgUp` / `Ctrl+U` | Fetch an older page for the active Slack channel (composer or thread focus) |
 | `Ctrl+E` | React: open emoji palette on the selected message, then `1`–`9` to add/remove (composer or thread; bare `e` only in thread focus) |
-| `Ctrl+A` | Attach file (Windows picker). Composer text becomes the caption. Bare `a` works from list/thread only. |
-| `Ctrl+V` | Paste media from the OS clipboard (Explorer file copy or screenshot/image) and send; falls back to pasting text into the composer |
-| `Ctrl+O` | Open latest media (or the selected message in thread focus). Bare `o` works from list/thread only — in the composer letters always type. |
-| `Ctrl+S` | Save media (same focus rules as open). |
+| `Ctrl+A` | Attach file (OS file picker on Windows; drop a path elsewhere). Composer text becomes the caption. Bare `a` works from list/thread only. |
+| `Ctrl+V` | Paste media from the OS clipboard and send; falls back to pasting text into the composer |
+| `Ctrl+O` | Open latest media (or the selected message in thread focus) with the OS default app (`open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows). Bare `o` works from list/thread only — in the composer letters always type. |
+| `Ctrl+S` | Save media (same focus rules as open) |
 | `Ctrl+R` / `r` | Reconnect Google Messages (`r` from list/thread; `Ctrl+R` also from composer) |
 | `Esc` | Return from a Slack reply thread to its channel / back to conversation list / clear jump filter / leave search |
 | `q` / `Ctrl+C` | Quit |
@@ -127,7 +140,7 @@ Broadcast is text-only in v1 (clear selection to send media to a single open thr
 
 ### Palette files (data dir)
 
-Under `%LOCALAPPDATA%\OpenMessage` (or `OPENMESSAGES_DATA_DIR`):
+Under the data dir (see above):
 
 - `palette-frecency.json` — auto-written usage scores for jump targets and commands
 - `commands.json` — optional user shortcuts (reloaded each time the palette opens):
@@ -166,8 +179,8 @@ Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[
 
 ### Receive / open
 
-- **`Ctrl+O`** downloads via `GET /api/media/{message_id}` into a temp cache and opens with the default app (`cmd /c start` on Windows). Bare `o` works from list/thread only.
-- **`Ctrl+S`** downloads to `%USERPROFILE%\Documents\OpenMessage\media\` (override root with `OPENMESSAGES_EXPORT_DIR`). The status line shows the saved path.
+- **`Ctrl+O`** downloads via `GET /api/media/{message_id}` into a temp cache and opens with the OS default app. Bare `o` works from list/thread only.
+- **`Ctrl+S`** downloads to `<data dir>/media/` under your documents/export dir (override root with `OPENMESSAGES_EXPORT_DIR`). The status line shows the saved path.
 - Target is the **selected** media message in thread focus (`j`/`k`), otherwise the
   latest downloadable attachment in the loaded thread. MimeType-only stubs are not
   downloadable; text/empty rows no longer silently fall back to another message.
@@ -176,9 +189,9 @@ Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[
 
 Uses the daemon's media send (`/api/v1/outbox/media` or legacy `/api/send-media`).
 
-- **`Ctrl+A`** — Windows file picker; optional caption = current composer text. Bare `a` from list/thread only.
-- **Path + Enter** — if the composer is an existing local file path (quotes/`~`/`%USERPROFILE%` ok), Enter sends that file.
-- **`Ctrl+V`** — reads the OS clipboard: Explorer-copied file first, else image/screenshot saved to a temp PNG, else text inserted into the composer.
+- **`Ctrl+A`** — file picker (Windows) or path entry; optional caption = current composer text. Bare `a` from list/thread only.
+- **Path + Enter** — if the composer is an existing local file path (quotes/`~` ok), Enter sends that file.
+- **`Ctrl+V`** — reads the OS clipboard: copied file first, else image/screenshot saved to a temp PNG, else text inserted into the composer.
 
 Inline terminal previews remain out of scope.
 
@@ -206,36 +219,38 @@ Slack remains text-first.
 
 ## Smoke checklist
 
-1. `go build -o openmessage.exe .`
-2. `.\openmessage.exe serve --api --no-web` in one terminal (temp `OPENMESSAGES_DATA_DIR` is fine)
-3. `curl http://127.0.0.1:7007/api/status` returns JSON (not the web app HTML)
-4. `.\openmessage.exe tui` attaches (“Attached to local API daemon…”)
+1. `go build -o om-tui .`
+2. `./om-tui serve --api --no-web` in one terminal (temp `OPENMESSAGES_DATA_DIR` is fine)
+3. `curl http://127.0.0.1:7007/api/status` returns JSON
+4. `./om-tui tui` attaches ("Attached to local API daemon…")
 5. Quit TUI — standalone daemon still running
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
-7. Press `r` when disconnected; unpaired state tells you to run `openmessage pair`
-8. In a thread with an image: `o` opens Photos (or default viewer); `s` writes under Documents\OpenMessage\media
-9. Attach: `Ctrl+A` opens a file picker and sends; paste a path and Enter; or copy a file/screenshot and `Ctrl+V`
+7. Press `r` when disconnected; unpaired state tells you to run `om-tui pair`
+8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
+9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes
 11. Slack: `Ctrl+T` opens a reply thread; `PgUp` / `Ctrl+U` from the composer loads older history
 12. From the composer (default after open): `Ctrl+F` search, `Ctrl+R` reconnect, `Ctrl+A` attach — bare letters stay typable
 13. `Ctrl+K` opens the palette: bare text jumps across rivers; `>react` / `>msg name::hi` run commands; Esc closes without changing the draft; footer stays context-aware
-14. Optional `%LOCALAPPDATA%\OpenMessage\commands.json` custom send/open shortcuts appear under `>`
+14. Optional `commands.json` custom send/open shortcuts appear under `>`
 
 ## Notifications
 
-`serve --api` shows Windows toast notifications for fresh inbound Google Messages (daemon-side, so they work even when the TUI is unfocused or closed).
-
-- Respects per-conversation `notification_mode` (`all` / `mentions` / `muted`)
-- Skips outgoing messages and duplicates by message id
-- Default **on** on Windows; set `OPENMESSAGES_WINDOWS_NOTIFICATIONS=0` to disable, or `=1` to force on
-- Optional `OPENMESSAGES_WINDOWS_TOAST_APP_ID` overrides the toast AppUserModelID (defaults to PowerShell's registered AUMID so toasts actually show; unregistered IDs like `OpenMessage.Cli` often silently no-op)
-- Restart the API daemon after rebuilding so it picks up notifier changes (`tui` will respawn an owned child)
+- **Windows**: `serve --api` shows toast notifications for fresh inbound Google Messages (daemon-side, so they work even when the TUI is unfocused or closed). Respects per-conversation `notification_mode` (`all` / `mentions` / `muted`); skips outgoing messages and duplicates by message id. Default **on**; set `OPENMESSAGES_WINDOWS_NOTIFICATIONS=0` to disable. Optional `OPENMESSAGES_WINDOWS_TOAST_APP_ID` overrides the toast AppUserModelID (defaults to PowerShell's registered AUMID so toasts actually show).
+- **macOS/Linux**: no native desktop notification path yet from the daemon (the macOS notification code that existed for the native app is being removed along with that app — see NOTICE.md) — another known cross-platform gap.
+- Restart the API daemon after rebuilding so it picks up notifier changes (`tui` will respawn an owned child).
 
 Unread badges in the conversation list come from `unread_count`. Fresh inbound Google messages increment it; opening a thread (or receiving while that thread is open) clears it via `/api/mark-read`.
 
-## Non-goals on Windows
+## Known cross-platform gaps
+
+- **Vault**: Slack river credentials have no OS-backed encryption on macOS/Linux (see "Data directory" above). Windows DPAPI is the only production-ready backend today.
+- **Notifications**: Windows toast notifications only; no native macOS/Linux equivalent yet.
+- **File picker**: `Ctrl+A` opens a native picker on Windows; macOS/Linux currently require typing/pasting a path.
+
+## Non-goals
 
 - Native GUI / tray app
-- iMessage, WhatsApp live, Signal
+- iMessage live sync (import-only)
 - Inline Kitty/sixel/ASCII media thumbs (for now)
-- Signed MSI installer
+- Signed installers
