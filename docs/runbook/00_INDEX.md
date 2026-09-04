@@ -1,19 +1,28 @@
-# OpenMessage — Master Runbook
+# om-tui — Master Runbook
 
-Local-first messaging workspace and universal message database. Stores conversations on-device, exposes them via localhost HTTP/SSE, a Bubble Tea TUI, a macOS app, and MCP clients.
+Local-first, cross-platform terminal messaging client and universal message
+database. Stores conversations on-device, exposes them via localhost
+HTTP/SSE, a Bubble Tea TUI, and MCP clients. Fork of
+[MaxGhenis/openmessage](https://github.com/MaxGhenis/openmessage) — see
+[../../NOTICE.md](../../NOTICE.md) for full credit; om-tui drops the
+upstream macOS app and web UI to focus solely on the TUI.
 
 ## North Star
 
-One local inbox for every messaging river you care about — searchable, agent-accessible, and owned by you — without cloud sync of your message history.
+One local inbox for every messaging river you care about — searchable,
+agent-accessible, and owned by you — without cloud sync of your message
+history, from one terminal client on Windows, macOS, or Linux.
 
 ## This checkout
 
 | Remote | URL |
 |---|---|
-| `origin` | `https://github.com/mwhobrey/om-tui.git` (Windows TUI / rivers fork) |
+| `origin` | `https://github.com/mwhobrey/om-tui.git` |
 | `upstream` | `https://github.com/MaxGhenis/openmessage` |
 
-Default branch: `main`. Go module path remains `github.com/maxghenis/openmessage`.
+Default branch: `main`. Go module path remains
+`github.com/maxghenis/openmessage` (kept unchanged on purpose — see
+NOTICE.md — so upstream diffs stay easy to compare and port).
 
 ## Federated TOC
 
@@ -28,31 +37,31 @@ Default branch: `main`. Go module path remains `github.com/maxghenis/openmessage
 
 | Doc | Role |
 |---|---|
-| [../agent-runbook.md](../agent-runbook.md) | Live-install support: dual data dirs, WAL, MCP transport ownership, re-pair recipes |
-| [../windows-tui.md](../windows-tui.md) | Windows TUI + Slack rivers product path |
+| [../agent-runbook.md](../agent-runbook.md) | Live-install support: data dir, WAL, MCP transport ownership, re-pair recipes |
+| [../tui.md](../tui.md) | TUI + Slack rivers product path (all platforms) |
 | [../migration-backup.md](../migration-backup.md) | Offline `backup` / cutover prep |
 | [../release-checklist.md](../release-checklist.md) | Pre-release dogfood + privacy checklist |
+| [../../NOTICE.md](../../NOTICE.md) | Fork origin + upstream library credit |
 | [../../CLAUDE.md](../../CLAUDE.md) | Agent-facing project overview (kept in sync with this runbook) |
 
 ## Fast paths
 
 ```bash
 # Build
-go build -o openmessage.exe .          # Windows
-go build -o openmessage .
+go build -o om-tui.exe .          # Windows
+go build -o om-tui .              # macOS/Linux
 
 # Read-only CLI (no live transports; repair-free store open)
-openmessage status --json
-openmessage read "query" --limit 20
+./om-tui status --json
+./om-tui read "query" --limit 20
 
-# Windows daily driver
-openmessage pair
-openmessage tui                        # spawns serve --api --no-web if needed
+# Daily driver
+./om-tui pair
+./om-tui tui                      # spawns serve --api --no-web if needed
 
-# Daemon shapes
-openmessage serve                      # web UI (default port 7007)
-openmessage serve --api --no-web       # API+SSE for TUI
-openmessage serve --mcp-stdio          # transportless MCP client (default)
+# Standalone daemon
+./om-tui serve --api --no-web     # API+SSE for TUI/MCP
+./om-tui serve --mcp-stdio        # transportless MCP client (default)
 
 # Tests
 go test ./...
@@ -66,6 +75,6 @@ go test -race ./...
 | Google Messages (SMS/RCS) | yes | — | libgm / mautrix-gmessages fork |
 | WhatsApp | yes | text export / Desktop | whatsmeow; single-owner session |
 | Signal | yes | Desktop | local `signal-cli` ≥ 0.14.5 |
-| Slack | yes (this fork) | — | rivers + vault; text send + recent sync; not on V2 ingest |
+| Slack | yes | — | rivers + vault; text send + recent sync; not on V2 ingest |
 | Google Chat | — | Takeout | importer only |
 | iMessage | — | `chat.db` | macOS Full Disk Access |

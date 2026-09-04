@@ -59,6 +59,8 @@ func main() {
 		err = cmd.RunBackup(logger, os.Args[2:]...)
 	case "migrate":
 		err = cmd.RunMigrate(logger, os.Args[2:]...)
+	case "repair":
+		err = cmd.RunRepair(logger, os.Args[2:]...)
 	case "read", "search":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: om-tui read <query> [--limit N] [--phone NUMBER] [--json]")

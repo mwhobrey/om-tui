@@ -4,23 +4,22 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 
 ## Working (shipped upstream + usable here)
 
-- Google Messages pair / live sync / send (legacy path); cookie-based account pair; self-heal paths on macOS
-- WhatsApp + Signal live bridges on daemon shapes (macOS/Linux primary; respect single-owner rule)
-- Local web UI + REST/SSE on `serve`
+- Google Messages pair / live sync / send (legacy path); cookie-based account pair
+- WhatsApp + Signal live bridges on daemon shapes (respect single-owner rule)
+- Local REST/SSE API on `serve` (TUI + MCP clients; no bundled web UI on this fork)
 - MCP stdio **client mode** (transportless) + optional `--mcp-sse`
 - Repair-free `app.NewClient` for `read` / `status` / MCP clients
 - Multi-platform importers (gchat, imessage, whatsapp, signal desktop)
 - Story / stats / viz MCP tools on **legacy** store
 - Offline `backup` + `migrate` toward V2 (staged flags)
-- macOS app packaging + CI (Go, race, E2E, Swift, gmessages fork drift)
-- Windows defaults: `%LOCALAPPDATA%\OpenMessage`, TUI entrypoint
+- Cross-platform TUI entrypoint (Windows/macOS/Linux); data dir defaults per-OS
 
 ## Working on this fork (committed on `main`)
 
 | Area | Status |
 |---|---|
 | Rivers model (`messages-default`, Slack rivers) | Shipped in `internal/river`, `internal/db/rivers*` |
-| Vault (DPAPI Windows) | Shipped; insecure path for tests |
+| Vault (DPAPI Windows, Keychain macOS, Secret Service Linux) | Shipped; insecure path for tests only |
 | `pair slack --token [--app-token]` | Shipped; optional `xapp` token enables Socket Mode |
 | Slack identity + readable mrkdwn | Durable per-river user cache; DM/sender/mention/channel names resolved |
 | Slack sync + unread + history | Incremental per-channel cursors, dedupe-safe IDs, lazy older pages, SSE invalidation |
@@ -29,7 +28,9 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
 | TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Shipped; context-aware help; `Ctrl+K` universal palette (all-river jump, `>` commands, frecency, `commands.json`, `>msg contact::body`) |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |
-| Docs: `docs/windows-tui.md` + `docs/runbook/` | Present |
+| Google device ID-space reset repair (`repair google-idspace`) | Ported from upstream |
+| Docs: `docs/tui.md` + `docs/runbook/` + `NOTICE.md` | Present |
+| macOS app, web UI, marketing site | Removed — see NOTICE.md; upstream maintains its own |
 
 ## Explicitly incomplete / broken / out of scope
 
@@ -39,18 +40,16 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Slack media / reaction mutation / Block Kit | Text-first; expand later |
 | V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
 | Daemon honors `instance.lock` | Still backup/migrate-only |
-| Native Windows GUI | Non-goal for om-tui |
-| Live WhatsApp/Signal on Windows TUI product path | Documented non-goals |
+| Native GUI / desktop notifications on macOS/Linux | Non-goal for om-tui; Windows-only toasts today |
 | QR Google pair | Dead for many accounts — cookie method only |
-| CLAUDE.md / README / agent-runbook | Synced for rivers + Windows data dirs; prefer this runbook if anything drifts |
-| Fork CI | Actions appear disabled on `mwhobrey/om-tui` |
+| CLAUDE.md / README / agent-runbook | Synced for the TUI-only, cross-platform fork; prefer this runbook if anything drifts |
 
 ## Immediate next steps (suggested)
 
 1. **Dogfood the Slack daily-driver path** — names, unread filters, dedicated threads, older history, and optional Socket Mode.
 2. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
-3. **Optional:** enable Actions on the fork, or add a Windows-focused smoke script that skips the POSIX-baseline failures.
-4. ~~Refresh CLAUDE.md / README~~ — done; prefer this runbook when docs disagree.
+3. Smoke-test the macOS/Linux vault backends (Keychain, Secret Service) on real hardware — only cross-compile-checked so far, not runtime-verified.
+4. Branch protection + PR template + CodeRabbit review app — see workstream 4 in the standing repo plan.
 
 ## How to verify right now
 

@@ -41,7 +41,7 @@ func daemonDownResult(err error) *mcp.CallToolResult {
 func daemonProbeFailureResult(err error) *mcp.CallToolResult {
 	if localapi.IsAuthError(err) {
 		return errorResult(fmt.Sprintf(
-			"the OpenMessage app rejected this MCP server's control token: %v. Point OPENMESSAGES_DATA_DIR at the app's data directory (macOS: ~/Library/Application Support/OpenMessage) in the MCP server config so it reads the app's control token.", err,
+			"the running om-tui daemon rejected this MCP server's control token: %v. Point OPENMESSAGES_DATA_DIR at the same data directory the daemon uses in the MCP server config so it reads the daemon's control token.", err,
 		))
 	}
 	return errorResult(fmt.Sprintf("check running OpenMessage mode: %v", err))
