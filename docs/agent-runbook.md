@@ -1,34 +1,28 @@
 # Agent & operator runbook
 
-Hard-won operational knowledge for working on a **live** OpenMessage install
+Hard-won operational knowledge for working on a **live** om-tui install
 (supporting a real user, debugging sends, re-pairing). If you are an automated
 agent doing a support task, read this first — most of it cost hours to learn
-the hard way.
+the hard way. Some of this knowledge predates this fork dropping the macOS
+app and web UI — the daemon/store behavior it describes still applies; the
+app-specific sections have been removed (see NOTICE.md / CLAUDE.md for what
+changed).
 
-## Data layout — the #1 gotcha
-
-There are **multiple separate data directories**, and they are **not the same store**:
+## Data layout
 
 | Used by | Path | Notes |
 |---|---|---|
-| **macOS app** (live) | `~/Library/Application Support/OpenMessage/` | The real `messages.db` + `session.json`. `BackendManager` launches the backend with `OPENMESSAGES_DATA_DIR` set to this. |
-| **CLI default (macOS/Linux)** | `~/.local/share/openmessage/` | What `openmessage read/status/pair/serve` use when run with **no** env var. Frequently **stale** relative to the app. |
-| **Windows CLI / TUI** | `%LOCALAPPDATA%\OpenMessage` | Default for this fork's Windows path. Pair, `serve`, and `tui` must share it. River credentials: `rivers/<id>/credentials.enc` (DPAPI). |
+| **CLI default (macOS/Linux)** | `~/.local/share/openmessage/` | What `om-tui read/status/pair/serve/tui` use with **no** env var set. |
+| **Windows CLI / TUI** | `%LOCALAPPDATA%\OpenMessage` | Default on Windows. Pair, `serve`, and `tui` must share it. River credentials: `rivers/<id>/credentials.enc`. |
 
 Consequences:
 
-- To read or modify the **app's live data** from the CLI on macOS, set
-  `OPENMESSAGES_DATA_DIR="$HOME/Library/Application Support/OpenMessage"`.
-  Querying `~/.local/share/openmessage/messages.db` shows a different
-  (usually older) message history — do not trust it for "what did the user
-  just receive/send."
+- Pair, `serve`, `tui`, and MCP must all point at the **same**
+  `OPENMESSAGES_DATA_DIR` (explicit or default) — a mismatch shows a stale or
+  empty store even though pairing succeeded elsewhere.
 - On Windows, point everything at `%LOCALAPPDATA%\OpenMessage` (or a shared
-  `OPENMESSAGES_DATA_DIR`). Product path: [windows-tui.md](windows-tui.md).
-  Architecture / current state: [runbook/](runbook/).
-- `BackendManager.migrateOldDataIfNeeded()` copies `session.json` (+ db files)
-  from `~/.local/share/openmessage` → App Support **only when App Support has
-  no `session.json`**. So to force the app unpaired you must clear the session
-  in **both** dirs (see re-pairing below), or the migration restores it.
+  `OPENMESSAGES_DATA_DIR`). Product path: [tui.md](tui.md). Architecture /
+  current state: [runbook/](runbook/).
 
 ## Reading the user's live messages
 
@@ -100,31 +94,31 @@ running app:
   stack — so use the MCP client shape or `openmessage read` for store access
   instead.
 
-**MCP config (`~/.mcp.json`) for a macOS app install:**
+**MCP config (`~/.mcp.json`):**
 
 ```json
-"openmessage": {
-  "command": "/usr/local/bin/openmessage",
+"om-tui": {
+  "command": "/usr/local/bin/om-tui",
   "args": ["serve", "--mcp-stdio"],
   "env": {
-    "OPENMESSAGES_DATA_DIR": "/Users/<user>/Library/Application Support/OpenMessage",
+    "OPENMESSAGES_DATA_DIR": "/Users/<user>/.local/share/openmessage",
     "OPENMESSAGES_V2_PRIMARY": "1"
   }
 }
 ```
 
-Pin `OPENMESSAGES_DATA_DIR` to the app's dir so reads, the control token, and
-daemon-truth detection all line up (two-data-dirs trap above). On a migrated
-(v2-primary) install, also set `OPENMESSAGES_V2_PRIMARY=1` — the legacy
-`messages.db` froze at cutover, and this keeps MCP reads on the v2 store even
-when the app is closed or predates the `auth.data_dir` status field (drop the
-line on a non-migrated install). Keep the PATH binary in lockstep with the
-installed app — both open the same SQLite stores and a version-skewed binary
+Pin `OPENMESSAGES_DATA_DIR` to the same directory the daemon/TUI use. On a
+migrated (v2-primary) install, also set `OPENMESSAGES_V2_PRIMARY=1` — the
+legacy `messages.db` froze at cutover, and this keeps MCP reads on the v2
+store even when the daemon isn't running (drop the line on a non-migrated
+install). Keep the PATH binary in lockstep with whatever's running the
+daemon/TUI — both open the same SQLite stores and a version-skewed binary
 can migrate the schema under the older one.
 
 **Never** configure MCP to run `serve --web`, `serve --mcp-sse`, or
-`serve ... --transports` alongside the app: those are daemon shapes and will
-fight the app for the WhatsApp/Signal sessions exactly as described above.
+`serve ... --transports` alongside a running daemon/TUI: those are daemon
+shapes and will fight for the WhatsApp/Signal sessions exactly as described
+above.
 
 ## Pairing & the "zombie session"
 
@@ -136,35 +130,26 @@ session is dead for sends.
 
 Key facts:
 
-- The native macOS **Platforms** view (`OpenMessageApp.swift`) only offers a
-  re-pair control when the session is **absent** (`!google.paired` →
-  `ContentView` shows `PairingView`). While it believes it's connected it shows
-  "Open inbox / Sync history" with **no re-pair button**. That "Open inbox"
-  string is **native Swift, not a stale webview cache** — don't go chasing
-  WKWebView caches (a red herring that cost real time). As of PR #42 the **web
-  UI** surfaces a "Google Messages isn't sending — Re-pair" banner when
-  `google.needs_repair` is set (3 consecutive Google send failures while
-  connected). Issue #43 tracks adding the same affordance to the native view.
+- `/api/status` surfaces `google.needs_repair` (set after 3 consecutive
+  Google send failures while still reporting connected) — check that field
+  rather than trusting `google.connected` alone.
 - **QR pairing is dead** — Google disabled device-pairing QR for many accounts.
   Use **Google Account pairing**.
 
 ### Re-pair recipe (the one that works)
 
-1. `osascript -e 'quit app "OpenMessage"'`.
-2. Force the native pairing screen by removing `session.json` from **both**
-   data dirs (back them up first):
-   `~/Library/Application Support/OpenMessage/session.json` **and**
-   `~/.local/share/openmessage/session.json` (else migration copies the old one
-   back). Other platforms' sessions (`whatsapp-session.db`, `signal-cli/`) are
-   independent — leave them.
-3. **Clear the stale session FIRST (don't skip).** Running `pair --google` while a dead `session.json` is still in the data dir floods the pairing with `failed to decrypt data event: HMAC mismatch` and yields a new session that 401s on token refresh **immediately** (dead on arrival). Removing both `session.json` files (step 2) before pairing is what produces a healthy session that connects *and* syncs (`/api/status` freshness `behind_days` drops to 0). Some HMAC-mismatch lines are normal noise (events from the phone's own session the pairing client can't read) — the tell for a bad pair is an immediate post-pair 401, not the noise itself.
-4. The embedded Google sign-in inside `PairingView` is **blocked by Google**
-   ("sign-in not allowed in this app") and dead-ends in Google's troubleshooter.
-   Use the **cookie method** instead — extract Google cookies from the user's
-   signed-in Chrome and run:
+1. Stop the daemon (`om-tui serve` / any process holding the data dir).
+2. Force a clean pairing state by removing `session.json` from the data dir
+   (back it up first). Other platforms' sessions (`whatsapp-session.db`,
+   `signal-cli/`) are independent — leave them.
+3. **Clear the stale session FIRST (don't skip).** Running `pair --google` while a dead `session.json` is still in the data dir floods the pairing with `failed to decrypt data event: HMAC mismatch` and yields a new session that 401s on token refresh **immediately** (dead on arrival). Removing `session.json` (step 2) before pairing is what produces a healthy session that connects *and* syncs (`/api/status` freshness `behind_days` drops to 0). Some HMAC-mismatch lines are normal noise (events from the phone's own session the pairing client can't read) — the tell for a bad pair is an immediate post-pair 401, not the noise itself.
+4. Google's embedded sign-in flow is **blocked by Google**
+   ("sign-in not allowed in this app") and dead-ends in Google's troubleshooter
+   for any third-party client. Use the **cookie method** instead — extract
+   Google cookies from the user's signed-in Chrome and run:
    ```
-   OPENMESSAGES_DATA_DIR="$HOME/Library/Application Support/OpenMessage" \
-     openmessage pair --google-file <cookiefile>
+   OPENMESSAGES_DATA_DIR="$HOME/.local/share/openmessage" \
+     om-tui pair --google-file <cookiefile>
    ```
    Decrypting Chrome cookies on macOS:
    - key: `security find-generic-password -w -s "Chrome Safe Storage"`
@@ -187,7 +172,7 @@ Key facts:
 
 ### Self-healing (as of #74; requirements fixed 2026-07-20) — try this before any manual cookie surgery
 
-The macOS app **refreshes expired Google cookies in-process** and reconnects
+The daemon **refreshes expired Google cookies in-process** and reconnects
 on its own. When the reconnect watchdog sees an expired session
 (`auth token: HTTP 401` / `SESSION_COOKIE_INVALID`) it reads the user's
 signed-in Chrome cookies, rewrites `auth_data.cookies` in `session.json`, and
@@ -210,34 +195,17 @@ messages.google.com:OSID` and the app looped in `needs_repair` forever — a
 re-pair bought minutes, then died again.)
 
 **Expected steady-state — check WHICH BINARY first.** Before diagnosing any
-latched `needs_repair`, confirm the running backend is the fixed build:
+latched `needs_repair`, confirm the running daemon is the build you think it
+is (a rebuild that didn't actually restart the daemon is a common
+red herring):
 
 ```bash
 RUNBIN=$(ps -o command= -p "$(lsof -nP -iTCP:7007 -sTCP:LISTEN -t | head -1)" | awk '{print $1}')
 echo "$RUNBIN"; strings "$RUNBIN" | grep -c 'persisted rotated Google cookies'   # 0 = pre-fix build
 ```
 
-**This is the single highest-yield check** — it has explained both stale-build
-outages so far (2026-07-22, ~11 min latched; 2026-07-25, 06:54→13:21 local,
-~6h26m). Many `.app` bundles on
-a dev machine share `CFBundleIdentifier com.openmessage.app` (stale worktree
-builds, dated backups, the R8 rollback copy), so LaunchServices can resolve
-Spotlight/Dock/`open -a OpenMessage`/notification clicks to a **pre-fix**
-build, which then latches `needs_repair` exactly like the original bug. Verify
-the resolution and always launch by explicit path:
-
-```bash
-osascript -e 'tell application "Finder" to get POSIX path of (application file id "com.openmessage.app" as alias)'
-open /Applications/OpenMessage.app
-```
-
-Stale-listener hazard (observed 2026-07-25): after quitting the GUI and
-launching `/Applications/OpenMessage.app`, port 7007 was **still served by the
-old bundle's backend**. (`BackendManager` has adopt/stop logic for existing
-backends — `BackendManager.swift` "Reusing existing backend pid" / "Stopping
-conflicting backend pid" — but with two same-ID bundles the outcome was a stale
-listener.) After any relaunch, verify the listener is the binary you intended
-and that the old PID exited:
+After any rebuild-and-restart, confirm the old process actually exited and
+the new one is what's listening:
 
 ```bash
 ps -o pid=,command= -p "$(lsof -nP -iTCP:7007 -sTCP:LISTEN -t | head -1)"
@@ -298,12 +266,11 @@ are gone": Chrome/keychain/profile access, missing or undecryptable cookies, a
 session-file write failure, network or server rejection, or a genuinely revoked
 device link. Re-check the running binary (above) and whether Chrome still holds
 the five `.google.com` account cookies first; only once those are ruled out
-fall back to the manual re-pair recipe above. The app also posts a **health notification**
+fall back to the manual re-pair recipe above. The daemon also posts a **health notification**
 (once, on the rising edge) when Google flips to `needs_repair` or WhatsApp
 logs out, so a dead platform can't sit silent for days.
 
-Prereq: the app must be **non-sandboxed** (it is — `OpenMessage.entitlements`
-is hardened-runtime only) so the backend can read Chrome's cookie DB and the
+Prereq: the daemon process needs read access to Chrome's cookie DB and the
 `Chrome Safe Storage` keychain item. First keychain read may prompt once;
 Always Allow persists it.
 
@@ -364,15 +331,13 @@ Hard-won facts from the 2026-07-03/04 re-pair ordeal:
   extends it). If a single clean attempt after cleanup + cooldown still
   fails, remove the WhatsApp passkey (Settings → Account → Passkeys), link,
   re-add it.
-- **Debugging:** whatsmeow logs used to be discarded (`waLog.Noop`); they now
-  flow through the bridge logger (`component=whatsmeow`). Debug-level os_log
-  lines are NOT persisted — capture live with
-  `log stream --predicate 'subsystem == "com.openmessage.app"' --level debug`
-  **before** the attempt; `log show` after the fact only has warn/error.
-- **`go.work` gotcha:** the repo root had an untracked `go.work` whose
-  `use ../tmp/whatsmeow` silently overrode go.mod's whatsmeow pin for every
-  workspace-mode build (including `macos/build.sh`). If a dependency bump
-  mysteriously doesn't take, check `go.work`.
+- **Debugging:** whatsmeow logs flow through the bridge logger
+  (`component=whatsmeow`) at debug level — run the daemon with
+  `OPENMESSAGES_LOG_LEVEL=debug` and capture live output **before** the
+  attempt; there's no persisted debug log to check after the fact.
+- **`go.work` gotcha:** an untracked `go.work` whose `use ../tmp/whatsmeow`
+  silently overrides go.mod's whatsmeow pin for every workspace-mode build.
+  If a dependency bump mysteriously doesn't take, check `go.work`.
 
 ## signal-cli
 
@@ -418,92 +383,16 @@ loss.
 
 ## Deploying a new build to a live install
 
-**`RELEASE=1` is required.** Without it `build.sh` stamps the dev bundle id
-(`com.openmessage.app.dev`) on purpose — see [bundle-id
-shadowing](#bundle-id-shadowing--only-one-app-may-claim-comopenmessageapp).
-Copying a dev-id build into `/Applications` would silently orphan the
-`defaults write com.openmessage.app V2Primary` lever and the notification grant.
-
-```
-RELEASE=1 DEVELOPER_ID="Developer ID Application: Max Ghenis (8VB5UKQZC6)" ./macos/build.sh
-osascript -e 'quit app "OpenMessage"'      # fully quit; `open -a` on a running app won't relaunch it
-rm -rf /Applications/OpenMessage.app && cp -R macos/build/OpenMessage.app /Applications/
-xattr -cr /Applications/OpenMessage.app
-open -a OpenMessage
-```
-
-Confirm the deployed bundle kept the release id:
-
-```
-/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' /Applications/OpenMessage.app/Contents/Info.plist
-# -> com.openmessage.app   (NOT ...app.dev)
-```
+Rebuild (`go build -o om-tui .`), stop the running daemon, replace the
+binary, restart (`om-tui serve ...` or `om-tui tui`). The user's data and
+pairing **persist** in the data dir, independent of the binary. A fresh
+restart re-establishes the Google long-poll, which can briefly show
+"reconnecting" before it settles (see throttling note above).
 
 **Building from a nested `.claude/worktrees/*` checkout needs `GOWORK=off`.**
 Go walks up, finds `~/openmessage/go.work`, and resolves the main module to the
 parent — `go build .` then fails with "main module … does not contain package
 …/.claude/worktrees/<name>". Prefix the build with `GOWORK=off`.
-
-## Bundle-id shadowing — only one .app may claim `com.openmessage.app`
-
-LaunchServices resolves "OpenMessage" (Spotlight, Dock, `open -a OpenMessage`,
-notification clicks) to *any* registered bundle declaring
-`CFBundleIdentifier = com.openmessage.app`. Every build output, backup, and
-Xcode archive used to declare it, so a stale build could be launched instead of
-the installed app. This caused two outages; on 2026-07-25 a build predating the
-self-heal OSID fix (PR #148) latched Google Messages in `needs_repair` for
-~10.5h (06:54 → ~17:20).
-
-Two fixes that **don't** work — verified 2026-07-25:
-
-- `lsregister -u <path>` is **not durable**. Any LaunchServices rescan
-  re-registers the bundle; a forced rescan brought all 14 straight back.
-- Renaming `Foo.app` → `Foo.app.disabled` does nothing. LaunchServices
-  registers on bundle *structure*, not the `.app` extension — it re-registered
-  every renamed bundle at its new path.
-
-What works:
-
-- **Build outputs:** unless `RELEASE=1`, `build.sh` stamps
-  `com.openmessage.app.dev` **and** names the bundle `OpenMessage (dev)`
-  (`CFBundleName` + `CFBundleDisplayName`). Both matter: id-based launches
-  (notification clicks, `open -b`) resolve by `CFBundleIdentifier`, but
-  name-based launches (`open -a OpenMessage`, Spotlight) resolve by the
-  registered *name*, which comes from the plist — **not** the `.app`
-  filename (a bundle renamed on disk still registered as "OpenMessage" from
-  its plist). With both stamped, neither launch path can land on a dev build.
-- **Backups/archives kept on disk:** rename `Contents/Info.plist` →
-  `Contents/Info.plist.disabled`. With no `Info.plist` LaunchServices can't read
-  a bundle id. Lossless and reversible; see `~/openmessage-ROLLBACK-README.md`
-  for the restore recipe.
-
-**Sharp edge — don't run a dev GUI on the live machine.** Because the dev id
-differs, macOS no longer dedupes it against the installed app: launching a dev
-build alongside it starts a real second GUI. That GUI *adopts* the daemon
-already listening on port 7007 (`BackendManager.reuseExistingBackendIfNeeded`
-— transport-safe, it won't spawn a competing stack), but its stop path
-SIGTERMs the adopted PID — **quitting the dev GUI kills the live backend out
-from under the installed app.** If that happens, relaunch the installed app.
-Tracked with the other dev-id-scoped traps in issue #165.
-
-Audit (should print exactly `/Applications/OpenMessage.app`):
-
-```
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump \
- | awk '/^[[:space:]]*path:[[:space:]]/ { p=$0; sub(/^[[:space:]]*path:[[:space:]]*/,"",p); sub(/ \(0x[0-9a-f]*\)$/,"",p) }
-        /^[[:space:]]*identifier:[[:space:]]/ { id=$0; sub(/^[[:space:]]*identifier:[[:space:]]*/,"",id);
-        if (id=="com.openmessage.app") print p; p="" }' | sort -u
-```
-
-Note `mdfind "kMDItemCFBundleIdentifier == 'com.openmessage.app'"` is **not** a
-reliable audit — Spotlight keeps stale metadata for neutralized bundles and
-skips dot-directories entirely (two hidden rollback bundles were found only by
-a forced `lsregister -R -f`). Filter the `lsregister` dump by `identifier:` as
-above.
-
-The user's data and pairing **persist** — they live in the data dir, not in the
-`.app` bundle. A fresh restart re-establishes the Google long-poll, which can
-briefly show "reconnecting" before it settles (see throttling note above).
 
 ## Verifying after support work
 

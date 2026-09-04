@@ -5,9 +5,6 @@
 ```
 cmd/                 CLI commands + serve composition + V2 stack wiring
 internal/            Application implementation (all product logic)
-macos/               Swift macOS app wrapper + build.sh / DMG
-site/                Marketing site (Vercel)
-e2e/                 Browser E2E helpers
 docs/                Operational docs + this runbook/
 scripts/             Support scripts (cookie watchdog, etc.)
 .github/workflows/   test, release, gmessages-fork-drift
@@ -112,17 +109,6 @@ Authoritative usage strings live in `main.go`.
 | Add bridge platform | `internal/bridge` contracts + `bridgeadapters/<name>` + supervisor wiring in serve/V2 stack |
 | Change TUI keys/layout | `internal/tui/` |
 | Change Slack pair/send | `cmd/pair_slack.go`, `internal/app/slack.go`, `internal/slacklive/` |
-| Change vault seal | `internal/vault/seal_windows.go` / `seal_other.go` |
+| Change vault seal | `internal/vault/seal_windows.go` / `seal_darwin.go` / `seal_linux.go` / `seal_other.go` |
 | Legacy schema | `internal/db/db.go` |
 | V2 schema | `internal/storage/sqlite/migrations.go` |
-
-## macOS app
-
-```
-macos/OpenMessage/Sources/
-  BackendManager.swift   launches Go binary with OPENMESSAGES_DATA_DIR=App Support
-  PairingView / ContentView / …
-macos/build.sh           universal Go + Swift → .app → .dmg
-```
-
-Windows path does **not** use this wrapper — see [../windows-tui.md](../windows-tui.md).
