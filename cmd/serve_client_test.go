@@ -81,7 +81,7 @@ func TestRunServeMCPStdioStartsZeroTransportSupervisors(t *testing.T) {
 	setClientModeTestEnv(t, dataDir)
 
 	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 
@@ -112,7 +112,7 @@ func TestRunServeMCPStdioStartsZeroTransportSupervisors(t *testing.T) {
 	daemonDataDir := t.TempDir()
 	setClientModeTestEnv(t, daemonDataDir)
 	var daemonLogs bytes.Buffer
-	if err := RunServe(zerolog.New(&daemonLogs), "--mcp-stdio", "--transports"); err != nil {
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&daemonLogs)), "--mcp-stdio", "--transports"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio --transports): %v\n%s", err, daemonLogs.String())
 	}
 	if _, err := os.Stat(filepath.Join(daemonDataDir, "whatsapp-session.db")); err != nil {
@@ -163,7 +163,7 @@ func TestRunServeMCPClientAdoptsDaemonTruth(t *testing.T) {
 	t.Setenv("OPENMESSAGES_PORT", daemonURL.Port())
 
 	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	logOutput := logs.String()
@@ -210,7 +210,7 @@ func TestRunServeMCPClientAdoptsDaemonDataDir(t *testing.T) {
 	}
 
 	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	logOutput := logs.String()
@@ -285,7 +285,7 @@ func TestRunServeMCPClientDoesNotRepairStore(t *testing.T) {
 	seedLegacyReactionPlaceholder(t, dataDir)
 
 	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	if !strings.Contains(logs.String(), "MCP client mode") {

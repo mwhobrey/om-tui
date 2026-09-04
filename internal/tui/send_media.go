@@ -48,7 +48,7 @@ func expandUserPath(s string) string {
 	if strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			return filepath.Join(home, s[2:])
+			return filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(s[2:], `\`, "/")))
 		}
 	}
 	if strings.HasPrefix(strings.ToUpper(s), "%USERPROFILE%") {
@@ -57,7 +57,7 @@ func expandUserPath(s string) string {
 			rest := s[len("%USERPROFILE%"):]
 			rest = strings.TrimPrefix(rest, `\`)
 			rest = strings.TrimPrefix(rest, `/`)
-			return filepath.Join(home, rest)
+			return filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(rest, `\`, "/")))
 		}
 	}
 	return s
