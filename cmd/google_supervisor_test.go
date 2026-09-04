@@ -204,7 +204,7 @@ func TestGoogleCredentialRepairCooldownPacesTooSoonRepair(t *testing.T) {
 		},
 		minInterval: minInterval,
 		now:         clock.Now,
-		logger:      zerolog.New(&logs),
+		logger:      zerolog.New(zerolog.SyncWriter(&logs)),
 	}
 
 	if err := repairer.RepairCredentials(context.Background(), "", bridge.OpError{}); err != nil {
