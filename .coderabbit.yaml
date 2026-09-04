@@ -1,0 +1,33 @@
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.lock"
+    - "!**/testdata/**"
+    - "!internal/web/static/**"
+  path_instructions:
+    - path: "internal/vault/**"
+      instructions: |
+        This package seals/unseals river credentials (Slack tokens, etc.) at
+        rest. Flag anything that could weaken the crypto (key reuse, missing
+        auth tag, disabled nonce randomness) or fall back silently to the
+        insecure dev-only path outside an explicit OPENMESSAGES_VAULT_INSECURE
+        opt-in.
+    - path: "internal/tui/**"
+      instructions: |
+        This is the only client this fork ships. Prefer noting UX
+        regressions (a key chord that stops working, a focus state that
+        leaks into the composer) over generic Go style nits.
+    - path: "internal/ingest/**"
+      instructions: |
+        Ingest is append-only and idempotent by design — flag anything that
+        could double-project a message or lose data on a retry.
+
+chat:
+  auto_reply: true
