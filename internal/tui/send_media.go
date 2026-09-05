@@ -45,7 +45,17 @@ func expandUserPath(s string) string {
 	if s == "" {
 		return s
 	}
-	if strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
+	// `~/` is already unambiguous Unix-style input — a literal backslash in
+	// the rest of the path is a filename character (valid on Linux/macOS),
+	// not a separator, so leave it alone. Only `~\` is unambiguous
+	// Windows-style input where every backslash is a separator to normalize.
+	if strings.HasPrefix(s, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, s[2:])
+		}
+	}
+	if strings.HasPrefix(s, `~\`) {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			return filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(s[2:], `\`, "/")))

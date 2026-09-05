@@ -26,12 +26,13 @@ Consequences:
 
 ## Reading the user's live messages
 
-The running app holds `messages.db` open in WAL mode, so a second SQLite reader
-often fails with `unable to open database file (14)`, and `?immutable=1` opens
-but misses WAL-only (recent) writes. **Prefer the running app's HTTP API**
-(loopback-guarded; `curl` from localhost passes the origin check):
+The running daemon holds `messages.db` open in WAL mode, so a second SQLite
+reader often fails with `unable to open database file (14)`, and
+`?immutable=1` opens but misses WAL-only (recent) writes. **Prefer the
+daemon's HTTP API** (loopback-guarded; `curl` from localhost passes the
+origin check):
 
-```
+```http
 GET /api/status
 GET /api/conversations?limit=500
 GET /api/conversations/<conversation_id>/messages?limit=N
@@ -43,7 +44,7 @@ Outgoing message rows carry a `Status`: `OUTGOING_SENDING` → `OUTGOING_SENT`/
 
 ## MCP serving — exactly one process may own live transports
 
-**The failure mode (empirically confirmed 2026-07-20):** `openmessage serve
+**The failure mode (empirically confirmed 2026-07-20):** `om-tui serve
 --mcp-stdio` used to start the **full transport stack** — the Google,
 WhatsApp, and Signal supervisors auto-started in every serve mode. MCP hosts
 (Claude Code via `~/.mcp.json`, Claude Desktop) spawn one such process **per
@@ -58,16 +59,16 @@ this same fratricide). `instance.lock` never protected against this — only
 
 **The fix: MCP client mode.** `serve --mcp-stdio` with no other transport
 (the exact shape MCP hosts spawn) is now a **transportless client** of the
-running app:
+running daemon:
 
 - **Zero transport supervisors, zero dispatchers, zero sync loops, zero
-  schedulers, zero telemetry.** The app daemon owns all of those. Regression
+  schedulers, zero telemetry.** The daemon owns all of those. Regression
   tests: `TestRunServeMCPStdioStartsZeroTransportSupervisors` (cmd) and
   `TestBuiltBinaryMCPStdioClientShapeStartsNoTransports` (binary-level).
 - **Reads stay local** (store attach, WAL-safe). At startup the client probes
   the daemon (`/api/status`); if the daemon serves the same data dir and
   reports v2-primary, the client reads the v2 store. With the daemon down it
-  falls back to `OPENMESSAGES_V2_*` env exactly like `openmessage read`.
+  falls back to `OPENMESSAGES_V2_*` env exactly like `om-tui read`.
   If `OPENMESSAGES_DATA_DIR` is unset, the client adopts the data dir the
   daemon reports — set it explicitly in the MCP config anyway (see below).
 - **The store opens repair-free** (`app.NewClient`): the startup repair
@@ -82,16 +83,18 @@ running app:
   `TestOpenCommandReadSourceLegacyDoesNotRepairStore` (cmd).
 - **Sends/reactions route through the daemon** (`/api/v1/outbox` on v2,
   `/api/send`+`/api/react` on legacy), like the CLI has done since PR #140,
-  with the same do-not-resend idempotency contract. With the app closed,
-  send tools return an actionable "start the OpenMessage app" error — they
-  never fall back to opening their own connections.
+  with the same do-not-resend idempotency contract. With the daemon down,
+  send tools return an actionable "start the daemon" error — they never
+  fall back to opening their own connections. Local reads/status keep
+  working from the store directly even with the daemon down (see above) —
+  only sends and reactions require it running.
 - Escape hatches: `--transports` forces the old standalone full-stack stdio
-  behavior (only for machines where the MCP process is the *only* OpenMessage
+  behavior (only for machines where the MCP process is the *only* om-tui
   process, ever); `--no-transports` strips transports from a **legacy-mode**
   web/SSE shape (degraded debug instance: local reads work, sends fail with
   "not connected"). On a **v2-primary** install a `--web --no-transports`
   process refuses to start — the v2 read path there needs the dispatcher
-  stack — so use the MCP client shape or `openmessage read` for store access
+  stack — so use the MCP client shape or `om-tui read` for store access
   instead.
 
 **MCP config (`~/.mcp.json`):**
@@ -146,8 +149,11 @@ Key facts:
 4. Google's embedded sign-in flow is **blocked by Google**
    ("sign-in not allowed in this app") and dead-ends in Google's troubleshooter
    for any third-party client. Use the **cookie method** instead — extract
-   Google cookies from the user's signed-in Chrome and run:
-   ```
+   Google cookies from the user's signed-in Chrome. `pair --google-file
+   <path>` (read from a file), `pair --google-stdin` (piped), and `pair
+   --google` (interactive paste) are the same Google Account pairing flow,
+   differing only in how the cookie data is supplied:
+   ```bash
    OPENMESSAGES_DATA_DIR="$HOME/.local/share/openmessage" \
      om-tui pair --google-file <cookiefile>
    ```
@@ -164,11 +170,13 @@ Key facts:
    - **Extract cookies immediately before pairing** — pairing with an older
      extract has returned HTTP 401 (the staleness threshold is not
      established; don't rely on any grace window).
-4. `pair --google` prints `EMOJI: <emoji>`. The user taps that emoji in Google
-   Messages **on the phone** (notification shade, or profile → Device pairing)
-   to confirm. The Gaia client init can time out once — just retry.
-6. On confirmation the session saves to the app dir; relaunch the app and sends
-   work. Wipe the cookie file afterwards.
+5. Whichever variant you ran prints `EMOJI: <emoji>`. The user taps that emoji
+   in Google Messages **on the phone** (notification shade, or profile →
+   Device pairing) to confirm. The Gaia client init can time out once — just
+   retry.
+6. On confirmation the session saves to the data dir; restart `om-tui serve`
+   (or `om-tui tui`, which respawns it) and sends work. Wipe the cookie file
+   afterwards.
 
 ### Self-healing (as of #74; requirements fixed 2026-07-20) — try this before any manual cookie surgery
 

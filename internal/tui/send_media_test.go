@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,19 @@ func TestExpandUserPath(t *testing.T) {
 	want = filepath.Join(home, "Documents", "b.jpg")
 	if got != want {
 		t.Fatalf("expand USERPROFILE = %q, want %q", got, want)
+	}
+
+	// `~/`-prefixed input is already unambiguous Unix-style: a literal
+	// backslash in the rest of the path is a filename character (valid on
+	// Linux/macOS, where `\` is not a separator), not a separator, and must
+	// not be rewritten into one. Meaningless on Windows, where `\` is always
+	// a separator and can't appear in a filename.
+	if runtime.GOOS != "windows" {
+		got = expandUserPath(`~/weird` + "\\" + `file.png`)
+		want = home + string(filepath.Separator) + `weird\file.png`
+		if got != want {
+			t.Fatalf("expand ~/ with literal backslash = %q, want %q", got, want)
+		}
 	}
 }
 
