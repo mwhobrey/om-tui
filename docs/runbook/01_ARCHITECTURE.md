@@ -15,11 +15,7 @@
 | MCP | `github.com/mark3labs/mcp-go` |
 | TUI | Bubble Tea / Bubbles / Lip Gloss |
 | Logging | `zerolog` |
-| Vault | DPAPI on Windows (`internal/vault`); insecure test path via `OPENMESSAGES_VAULT_INSECURE=1` |
-| macOS shell | Swift package under `macos/OpenMessage` |
-| Local web UI | Embedded static assets in `internal/web/static` |
-| Marketing site | `site/` → Vercel (`vercel.json` at **repo root**, `outputDirectory`-style build of `site`) |
-| E2E | Playwright (`npm run test:e2e`) |
+| Vault | DPAPI (Windows), Keychain (macOS), Secret Service via `secret-tool` (Linux) in `internal/vault`; insecure test path via `OPENMESSAGES_VAULT_INSECURE=1` |
 
 ## Design patterns
 

@@ -54,10 +54,6 @@ Full operational recipes: [../agent-runbook.md](../agent-runbook.md).
 go test ./...
 go test -race ./...
 go build .
-npm ci && npx playwright install --with-deps chromium && npm run test:e2e
-# macOS only:
-swift test --package-path macos/OpenMessage
-bash macos/build.sh
 ```
 
 ### Go toolchain on this Windows box
@@ -90,16 +86,16 @@ Packages that **do** pass on Windows and should stay passing: `internal/app`, `d
 `river`, `vault`, `tui`, `localapi`, `bridge`, `bridgeadapters/*`, `importer`, `story`,
 `viz`, `v2read`, `v2keys`, `notify`, `telemetry`, `googlecookies`.
 
-CI runs on `ubuntu-latest`, so the real gate is green there. Note that GitHub Actions
-appears to be **disabled on the `mwhobrey/om-tui` fork** (`gh run list` returns nothing),
-so pushes to this fork currently get no CI at all.
+CI runs on `ubuntu-latest`, so the real gate is green there. `main` is
+branch-protected: PRs required, `Go Test` and `Go Race` must pass and be
+up to date before merging.
 
 ### CI (`.github/workflows/`)
 
 | Workflow | What |
 |---|---|
-| `test.yml` | `go test` + **40% coverage floor**, race suite, Playwright E2E (Node 22), site build, Swift build/test + package |
-| `release.yml` | Tagged/manual CLI artifacts + macOS DMG / checksums |
+| `test.yml` | `go test` + **40% coverage floor**, race suite, lightweight `go build`/`go test` on `macos-latest` |
+| `release.yml` | Tagged/manual cross-platform CLI artifacts + checksums |
 | `gmessages-fork-drift.yml` | Weekly: pinned gmessages fork stays exactly one carried patch over recorded base |
 
 ### Regression tests that encode hard rules
@@ -112,8 +108,7 @@ Do not weaken these when "simplifying" serve.
 
 ## Gotchas (read before support work)
 
-1. **Two data dirs on macOS** — App Support vs `~/.local/share/openmessage`. CLI without env hits the stale one.
-2. **WAL lock** — direct `sqlite3` → error 14 or missing recent rows. Use `/api/*`.
+1. **WAL lock** — direct `sqlite3` → error 14 or missing recent rows. Use `/api/*`.
 3. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
 4. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
 5. **Google QR is dead** for many accounts — cookie / Google Account pairing.
@@ -122,7 +117,7 @@ Do not weaken these when "simplifying" serve.
 8. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
 9. **`go.work` overrides** can make dependency bumps look ignored.
 10. **Keep PATH binary = app binary** — schema migrations from a newer CLI against an older app are hostile.
-11. **Windows non-goals** (this fork): native GUI/tray, iMessage, live WA/Signal on Windows TUI path, inline media previews, MSI — see [../windows-tui.md](../windows-tui.md).
+11. **Non-goals** (this fork): native GUI/tray, iMessage live sync (import-only), inline media previews, signed installers — see [../tui.md](../tui.md).
 12. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
 
 ## MCP tools (24)

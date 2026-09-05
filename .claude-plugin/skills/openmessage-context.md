@@ -1,16 +1,23 @@
 ---
-description: Context for OpenMessage MCP integration
+description: Context for om-tui MCP integration
 ---
 
-# OpenMessage
+# om-tui
 
-OpenMessage connects to Google Messages via the libgm protocol, bridging SMS/RCS to a local web UI and MCP server.
+om-tui is a cross-platform terminal messaging client (fork of MaxGhenis/openmessage)
+connecting Google Messages (libgm), WhatsApp, Signal, and Slack to one local
+inbox and MCP server. There is no macOS app or web UI on this fork — the TUI
+is the only client.
 
 ## Architecture
 
-- **Go backend** (`openmessage serve`): Connects to Google Messages, serves web UI on port 7007, and exposes MCP via SSE at `/mcp/sse`
-- **macOS app**: Swift wrapper that launches the Go backend and displays the web UI in a WKWebView
-- **MCP server**: SSE transport at `http://localhost:7007/mcp/sse` — provides tools for listing conversations, reading/sending messages, searching
+- **Go daemon** (`om-tui serve`): owns the live platform connections, serves
+  the local REST/SSE API, and exposes MCP over stdio, Streamable HTTP, or SSE
+- **TUI** (`om-tui tui`): the Bubble Tea terminal client; spawns
+  `serve --api --no-web` if no daemon is already running
+- **MCP server**: stdio by default (`serve --mcp-stdio`); SSE/Streamable HTTP
+  at `http://localhost:7007/mcp/sse` and `/mcp` when started with `--mcp-sse`
+  — provides tools for listing conversations, reading/sending messages, searching
 
 ## MCP tools
 
@@ -28,4 +35,6 @@ The MCP server exposes these tools (prefix: `mcp__openmessage__`):
 
 ## Prerequisites
 
-The OpenMessage macOS app must be running (it starts the backend). If the MCP connection fails, the user needs to launch OpenMessage.app.
+The om-tui daemon must be running (paired and reachable). If the MCP
+connection fails, the user needs to run `om-tui pair` and then either
+`om-tui tui` (spawns the daemon automatically) or `om-tui serve --api`.
