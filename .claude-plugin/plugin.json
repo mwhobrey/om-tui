@@ -1,7 +1,7 @@
 {
-  "name": "openmessage",
+  "name": "om-tui",
   "version": "0.2.9",
-  "description": "OpenMessage: read and send SMS/RCS messages via Google Messages",
+  "description": "om-tui: read and send messages across Google Messages, WhatsApp, Signal, and Slack",
   "commands": "commands/",
   "skills": "skills/"
 }

@@ -109,16 +109,16 @@ Do not weaken these when "simplifying" serve.
 ## Gotchas (read before support work)
 
 1. **WAL lock** — direct `sqlite3` → error 14 or missing recent rows. Use `/api/*`.
-3. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
-4. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
-5. **Google QR is dead** for many accounts — cookie / Google Account pairing.
-6. **Clear `session.json` in both dirs** to force unpaired, or migration restores it.
-7. **Don't thrash Google reconnect/pair** — account throttling.
-8. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
-9. **`go.work` overrides** can make dependency bumps look ignored.
-10. **Keep PATH binary = app binary** — schema migrations from a newer CLI against an older app are hostile.
-11. **Non-goals** (this fork): native GUI/tray, iMessage live sync (import-only), inline media previews, signed installers — see [../tui.md](../tui.md).
-12. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
+2. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
+3. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
+4. **Google QR is dead** for many accounts — cookie / Google Account pairing.
+5. **Clear `session.json`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
+6. **Don't thrash Google reconnect/pair** — account throttling.
+7. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
+8. **`go.work` overrides** can make dependency bumps look ignored.
+9. **Keep PATH binary = daemon binary** — schema migrations from a newer CLI against an older running daemon are hostile.
+10. **Non-goals** (this fork): native GUI/tray, iMessage live sync (import-only), inline media previews, signed installers — see [../tui.md](../tui.md).
+11. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
 
 ## MCP tools (24)
 

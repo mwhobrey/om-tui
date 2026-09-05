@@ -5,11 +5,13 @@ user_invocable: true
 
 # Messages
 
-Use the OpenMessage MCP tools to help the user with their SMS/RCS messages.
+Use the om-tui MCP tools to help the user with their messages (SMS/RCS,
+WhatsApp, Signal, Slack).
 
 ## Available MCP tools
 
-All tools are prefixed with `mcp__openmessage__`:
+Prefix depends on the server key configured in the user's `~/.mcp.json`
+(this repo's README examples use `om-tui`, i.e. `mcp__om-tui__<tool>`):
 
 - `list_conversations` - List recent conversations (params: `limit`)
 - `get_messages` - Get messages from a conversation (params: `conversation_id`, `limit`)

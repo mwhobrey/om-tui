@@ -21,7 +21,9 @@ is the only client.
 
 ## MCP tools
 
-The MCP server exposes these tools (prefix: `mcp__openmessage__`):
+The MCP server exposes these tools (prefix depends on the server key in the
+user's `~/.mcp.json`; this repo's README examples use `om-tui`, i.e.
+`mcp__om-tui__<tool>`):
 
 | Tool | Description | Key params |
 |------|-------------|------------|
@@ -35,6 +37,8 @@ The MCP server exposes these tools (prefix: `mcp__openmessage__`):
 
 ## Prerequisites
 
-The om-tui daemon must be running (paired and reachable). If the MCP
-connection fails, the user needs to run `om-tui pair` and then either
-`om-tui tui` (spawns the daemon automatically) or `om-tui serve --api`.
+The account must be **paired** (`om-tui pair`) at least once. Reads/search
+work directly against the local store even with no daemon running. Sends
+and reactions need a **running** daemon (`om-tui serve --api` or `om-tui
+tui`, which spawns one) — if those fail with a "start the daemon" error,
+that's what's missing.

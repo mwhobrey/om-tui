@@ -38,7 +38,7 @@ Authoritative usage strings live in `main.go`.
 | `signallive/` | signal-cli bridge + recovery |
 | `slacklive/` | Slack Web API client, recent sync, text send |
 | `river/` | River identity model (`messages-default`, `slack-<team>`) |
-| `vault/` | Encrypted per-river credentials (DPAPI on Windows) |
+| `vault/` | Encrypted per-river credentials (DPAPI on Windows, Keychain on macOS, Secret Service via `secret-tool` on Linux; insecure test-only path via `OPENMESSAGES_VAULT_INSECURE=1`) |
 | `googlecookies/` | macOS Chrome cookie refresh for Google self-heal |
 | `notify/` | macOS / Windows notifications |
 
