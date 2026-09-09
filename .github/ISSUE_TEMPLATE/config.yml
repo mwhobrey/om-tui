@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/mwhobrey/om-tui/security/advisories/new
+    about: Private advisory. Do not file a public issue for unreleased security bugs.
+  - name: OpenMessage (upstream)
+    url: https://github.com/MaxGhenis/openmessage/issues
+    about: Bugs in the macOS app or localhost web UI belong on the upstream repo.

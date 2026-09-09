@@ -1,0 +1,34 @@
+name: Feature request
+description: A change you want in om-tui
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This fork is TUI-only. Native GUI, a bundled web UI, and a marketing site are non-goals — those live on [upstream OpenMessage](https://github.com/MaxGhenis/openmessage).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - TUI
+        - Slack river
+        - Google Messages / WhatsApp / Signal
+        - MCP / CLI / API
+        - Vault / pairing
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Optional. A short sketch is enough; do not paste secrets or message bodies.

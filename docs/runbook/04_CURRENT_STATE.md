@@ -49,7 +49,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 1. **Dogfood the Slack daily-driver path** — names, unread filters, dedicated threads, older history, and optional Socket Mode.
 2. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
 3. Smoke-test the macOS/Linux vault backends (Keychain, Secret Service) on real hardware — only cross-compile-checked so far, not runtime-verified.
-4. Branch protection + PR template + CodeRabbit review app — see workstream 4 in the standing repo plan.
+4. V2 parity for `get_person_messages` / person-story MCP tools (deferred while V2 is the serving store).
 
 ## How to verify right now
 
@@ -60,11 +60,11 @@ Go comes from `mise` on this box — see the toolchain note in
 $env:PATH = "$env:LOCALAPPDATA\mise\installs\go\1.26.5\bin;" + $env:PATH
 go build ./... ; go vet ./...
 go test ./internal/river/ ./internal/vault/ ./internal/db/ ./internal/slacklive/ ./internal/localapi/ ./internal/tui/ ./internal/app/ -count=1
-.\openmessage.exe status --json
+.\om-tui.exe status --json
 # With a token:
-.\openmessage.exe pair slack --token xoxp-... --app-token xapp-... --name "Test"
-.\openmessage.exe serve --api --no-web
-.\openmessage.exe tui
+.\om-tui.exe pair slack --token xoxp-... --app-token xapp-... --name "Test"
+.\om-tui.exe serve --api --no-web
+.\om-tui.exe tui
 ```
 
 As of the rivers/TUI push: `go build ./...` and `go vet ./...` are clean, and every

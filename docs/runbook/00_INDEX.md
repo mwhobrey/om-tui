@@ -41,6 +41,8 @@ NOTICE.md — so upstream diffs stay easy to compare and port).
 | [../tui.md](../tui.md) | TUI + Slack rivers product path (all platforms) |
 | [../migration-backup.md](../migration-backup.md) | Offline `backup` / cutover prep |
 | [../release-checklist.md](../release-checklist.md) | Pre-release dogfood + privacy checklist |
+| [../../SECURITY.md](../../SECURITY.md) | Vulnerability reporting (private advisory) |
+| [../../CONTRIBUTING.md](../../CONTRIBUTING.md) | Issues belong here, not upstream; PR + CI gate |
 | [../../NOTICE.md](../../NOTICE.md) | Fork origin + upstream library credit |
 | [../../CLAUDE.md](../../CLAUDE.md) | Agent-facing project overview (kept in sync with this runbook) |
 
