@@ -24,7 +24,7 @@ licensing for everything this is built on lives in [NOTICE.md](NOTICE.md).
 
 ### Prerequisites
 
-- **Go 1.25+** ([install](https://go.dev/dl/); this repo often uses [mise](https://mise.jdx.dev/); see `go.mod`)
+- **Go 1.26.6+** ([install](https://go.dev/dl/); this repo often uses [mise](https://mise.jdx.dev/); see `go.mod`)
 - **Google Messages** on your Android phone
 
 ### Build and pair

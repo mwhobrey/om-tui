@@ -4,7 +4,7 @@
 
 | Layer | Choice |
 |---|---|
-| Language | Go **1.25.0** (`go.mod`) |
+| Language | Go **1.26.6** (`go.mod`) |
 | Module | `github.com/maxghenis/openmessage` |
 | Legacy DB | SQLite via `modernc.org/sqlite` — `messages.db`, WAL, FK on, 5s busy timeout |
 | V2 DB | `<data-dir>/v2/store.sqlite3` + `<data-dir>/v2/blobs` |
