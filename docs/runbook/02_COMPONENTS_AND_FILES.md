@@ -68,7 +68,7 @@ Authoritative usage strings live in `main.go`.
 
 | Package | Responsibility |
 |---|---|
-| `web/` | Loopback REST, SSE, MCP HTTP, static UI, auth |
+| `web/` | Loopback REST, SSE, MCP HTTP, auth (no bundled static UI on this fork) |
 | `localapi/` | Authenticated daemon HTTP client (CLI / TUI / MCP client) |
 | `tui/` | Bubble Tea UI: rivers, list/thread/composer, media, reactions, broadcast |
 | `tools/` | MCP tool registration + handlers (24 tools) |

@@ -24,7 +24,7 @@ licensing for everything this is built on lives in [NOTICE.md](NOTICE.md).
 
 ### Prerequisites
 
-- **Go 1.22+** ([install](https://go.dev/dl/); this repo often uses [mise](https://mise.jdx.dev/))
+- **Go 1.25+** ([install](https://go.dev/dl/); this repo often uses [mise](https://mise.jdx.dev/); see `go.mod`)
 - **Google Messages** on your Android phone
 
 ### Build and pair
@@ -38,22 +38,25 @@ go build -o om-tui .          # om-tui.exe on Windows
 ./om-tui tui
 ```
 
-By default, pairing shows a QR code — on your phone, open **Google
-Messages > Settings > Device pairing > Pair a device** and scan it. If
-Google only offers account pairing, pair with cookies copied from browser
-devtools instead:
+Google Account pairing (cookie method) is the path that works for most
+accounts. Copy cookies from browser devtools (or a `curl` of
+`messages.google.com/web/config`) and pipe them in:
 
 ```bash
-pbpaste | ./om-tui pair --google      # macOS/Linux
+pbpaste | ./om-tui pair --google      # macOS
+wl-paste | ./om-tui pair --google     # Linux Wayland (or: xclip -o)
 ```
 
 ```powershell
 Get-Clipboard | .\om-tui.exe pair --google   # Windows
 ```
 
-The CLI accepts either a JSON cookie object or a full `curl` command for
-`messages.google.com/web/config`, then prompts you to confirm an emoji on
-your phone.
+The CLI accepts either a JSON cookie object or a full `curl` command, then
+prompts you to confirm an emoji on your phone.
+
+QR pairing still works on some accounts: `./om-tui pair` prints a QR code
+to scan under **Google Messages > Settings > Device pairing > Pair a device**.
+If Google only offers account pairing, use the cookie method above.
 
 Default data dir: `~/.local/share/openmessage` (macOS/Linux) or
 `%LOCALAPPDATA%\OpenMessage` (Windows). The TUI transparently spawns
@@ -198,6 +201,11 @@ om-tui is a fork of [MaxGhenis/openmessage](https://github.com/MaxGhenis/openmes
 Full attribution for that project and every library this is built on —
 mautrix/gmessages, whatsmeow, signal-cli, slack-go, mcp-go — is in
 [NOTICE.md](NOTICE.md).
+
+## Contributing / security
+
+Issues and PRs: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerability reports:
+[SECURITY.md](SECURITY.md) (private advisory, not a public issue).
 
 ## License
 

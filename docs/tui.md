@@ -14,20 +14,23 @@ Default store location:
 Override with `OPENMESSAGES_DATA_DIR`. Pairing, `serve`, and `tui` must
 share the same directory.
 
-River credentials live under `rivers/<river_id>/credentials.enc`. On
-**Windows** this is sealed with DPAPI (tied to your Windows user) —
-restoring a backup on another machine/user will not decrypt those blobs.
+River credentials live under `rivers/<river_id>/credentials.enc`. Sealing
+is OS-backed and fails closed if the backing tool is missing:
 
-**On macOS/Linux, river credential sealing is not yet production-ready.**
-The vault refuses to store real secrets unless
-`OPENMESSAGES_VAULT_INSECURE=1` is set, and even then it falls back to a
-machine-local file-derived key (`internal/vault/seal_other.go`) rather than
-Keychain or Secret Service — meaning **Slack river tokens on macOS/Linux
-currently have no OS-backed encryption at rest**. Google Messages pairing
-itself (`session.json`) is unaffected by this. Native Keychain (macOS) and
-Secret Service/libsecret (Linux) backends are a known gap, tracked as
-follow-up work for real cross-platform parity — don't rely on
-`OPENMESSAGES_VAULT_INSECURE=1` outside local testing.
+- **Windows:** DPAPI (tied to your Windows user). Restoring a backup on
+  another machine/user will not decrypt those blobs.
+- **macOS:** login Keychain via the `security` CLI (`om-tui` /
+  `river-vault-key`).
+- **Linux:** Secret Service via `secret-tool` (install `libsecret-tools`
+  and a provider such as gnome-keyring).
+
+`OPENMESSAGES_VAULT_INSECURE=1` is the test-only fallback (machine-local
+file-derived key in `internal/vault/seal_other.go`). Do not set it outside
+local testing. Google Messages pairing itself (`session.json`) is not
+sealed by this vault.
+
+The macOS/Linux backends are shipped in tree and cross-compile-checked;
+they have not yet been runtime-smoked on real hardware.
 
 ## Quick start
 
@@ -244,7 +247,7 @@ Unread badges in the conversation list come from `unread_count`. Fresh inbound G
 
 ## Known cross-platform gaps
 
-- **Vault**: Slack river credentials have no OS-backed encryption on macOS/Linux (see "Data directory" above). Windows DPAPI is the only production-ready backend today.
+- **Vault**: Keychain (macOS) and Secret Service (Linux) backends are shipped but not yet runtime-verified on real hardware (see "Data directory" above). Windows DPAPI is the daily-driver path today.
 - **Notifications**: Windows toast notifications only; no native macOS/Linux equivalent yet.
 - **File picker**: `Ctrl+A` opens a native picker on Windows; macOS/Linux currently require typing/pasting a path.
 

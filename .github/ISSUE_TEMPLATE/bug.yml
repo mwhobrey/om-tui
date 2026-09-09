@@ -1,0 +1,57 @@
+name: Bug report
+description: Something is broken in om-tui
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste message bodies, contact lists, session cookies, Slack tokens, or vault contents.
+        Security bugs: use a [private advisory](https://github.com/mwhobrey/om-tui/security/advisories/new).
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: river
+    attributes:
+      label: Platform / river
+      options:
+        - Google Messages (SMS/RCS)
+        - WhatsApp
+        - Signal
+        - Slack
+        - MCP / CLI / API
+        - Import
+        - Multiple / unsure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: om-tui version or commit
+      placeholder: "v0.3.0 or 8ec4f00"
+  - type: textarea
+    id: data-dir
+    attributes:
+      label: Data directory
+      description: Default or `OPENMESSAGES_DATA_DIR`. Do not paste the contents of the directory.
+      placeholder: "%LOCALAPPDATA%\\OpenMessage or ~/.local/share/openmessage"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got. Redact names and numbers.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: Relevant `serve` log lines only. Strip message text and tokens.

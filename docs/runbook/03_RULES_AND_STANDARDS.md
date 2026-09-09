@@ -94,9 +94,17 @@ up to date before merging.
 
 | Workflow | What |
 |---|---|
-| `test.yml` | `go test` + **40% coverage floor**, race suite, lightweight `go build`/`go test` on `macos-latest` |
+| `test.yml` | `go test` + **40% coverage floor**, race suite, lightweight `go build`/`go test` on `macos-latest`, `govulncheck ./...` (not a required merge check) |
 | `release.yml` | Tagged/manual cross-platform CLI artifacts + checksums |
 | `gmessages-fork-drift.yml` | Weekly: pinned gmessages fork stays exactly one carried patch over recorded base |
+
+Repo security surface (GitHub settings + files, not required CI):
+
+- Dependabot: weekly grouped `gomod` + `github-actions` PRs ([`.github/dependabot.yml`](../../.github/dependabot.yml)); alerts and security-update PRs enabled
+- `SECURITY.md` + private vulnerability reporting (do not file public issues for unreleased vulns)
+- CodeQL default setup on `main` / PRs (GitHub SAST; not a required merge check)
+- Secret scanning + push protection enabled
+- `govulncheck` currently fails on Go **1.25.0** stdlib CVEs (fixed in 1.25.13+). Leave it non-required until the toolchain in `go.mod` is bumped; this box already runs 1.26.5 via mise.
 
 ### Regression tests that encode hard rules
 

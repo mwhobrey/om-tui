@@ -15,7 +15,6 @@ test-results/
 /OpenMessage.app/
 /OpenMessage.pkg
 *.dSYM.zip
-fastlane/report.xml
 site/out/
 site/.claude/
 site/bun.lock
