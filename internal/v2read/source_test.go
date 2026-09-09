@@ -333,6 +333,61 @@ func TestSourceCrossAccountRecencyPaginationAndLIKEFilters(t *testing.T) {
 	assertMessageIDs(t, searchResults, "message-new", "message-tie-b")
 }
 
+func TestSourceGetMessagesByConversationsNewestLimitAscending(t *testing.T) {
+	store, messages, source := openSourceTestStore(t)
+	seedSourceAccount(t, store, "google-account", "google_messages")
+	seedSourceConversation(t, store, sqlite.Conversation{
+		ConversationID:       "conv-1",
+		AccountID:            "google-account",
+		RemoteConversationID: "remote-conv-1",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Conv 1",
+		NotificationMode:     sqlite.NotificationModeAll,
+	})
+	seedSourceConversation(t, store, sqlite.Conversation{
+		ConversationID:       "conv-2",
+		AccountID:            "google-account",
+		RemoteConversationID: "remote-conv-2",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Conv 2",
+		NotificationMode:     sqlite.NotificationModeAll,
+	})
+	for i := 0; i < 6; i++ {
+		importSourceMessage(t, messages, sqlite.Message{
+			MessageID:       fmt.Sprintf("conv-1-%d", i),
+			ConversationID:  "conv-1",
+			AccountID:       "google-account",
+			RemoteMessageID: fmt.Sprintf("remote-conv-1-%d", i),
+			Direction:       sqlite.MessageDirectionIncoming,
+			Body:            fmt.Sprintf("c1 %d", i),
+			State:           sqlite.MessageStateActive,
+			OccurredAtMS:    int64(1000 + i*100),
+		})
+		importSourceMessage(t, messages, sqlite.Message{
+			MessageID:       fmt.Sprintf("conv-2-%d", i),
+			ConversationID:  "conv-2",
+			AccountID:       "google-account",
+			RemoteMessageID: fmt.Sprintf("remote-conv-2-%d", i),
+			Direction:       sqlite.MessageDirectionIncoming,
+			Body:            fmt.Sprintf("c2 %d", i),
+			State:           sqlite.MessageStateActive,
+			OccurredAtMS:    int64(1050 + i*100),
+		})
+	}
+
+	newest, err := source.GetMessagesByConversations([]string{"conv-1", "conv-2"}, 5)
+	if err != nil {
+		t.Fatalf("GetMessagesByConversations(): %v", err)
+	}
+	assertMessageIDs(t, newest, "conv-2-3", "conv-1-4", "conv-2-4", "conv-1-5", "conv-2-5")
+
+	ranged, err := source.GetMessagesByConversationsRange([]string{"conv-1", "conv-2"}, 1200, 1600, 4)
+	if err != nil {
+		t.Fatalf("GetMessagesByConversationsRange(): %v", err)
+	}
+	assertMessageIDs(t, ranged, "conv-1-4", "conv-2-4", "conv-1-5", "conv-2-5")
+}
+
 func TestSourceStatsCountsLatestAndPreviewsPageAllMessages(t *testing.T) {
 	store, messages, source := openSourceTestStore(t)
 	seedSourceAccount(t, store, "google-account", "google_messages")

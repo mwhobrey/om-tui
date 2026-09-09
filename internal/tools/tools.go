@@ -91,13 +91,13 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 	s.AddTool(draftMessageTool(), draftMessageHandler(a))
 	s.AddTool(downloadMediaTool(), downloadMediaHandler(a))
 	s.AddTool(importMessagesTool(), importMessagesHandler(a))
-	s.AddTool(getPersonMessagesTool(), unavailableInV2Primary(v2Primary, getPersonMessagesHandler(a)))
+	s.AddTool(getPersonMessagesTool(), getPersonMessagesHandler(a, options))
 	s.AddTool(conversationStatsTool(), unavailableInV2Primary(v2Primary, conversationStatsHandler(a)))
 	s.AddTool(generateStoryTool(), unavailableInV2Primary(v2Primary, generateStoryHandler(a)))
 	s.AddTool(personStatsTool(), unavailableInV2Primary(v2Primary, personStatsHandler(a)))
 	s.AddTool(generatePersonStoryTool(), unavailableInV2Primary(v2Primary, generatePersonStoryHandler(a)))
 	s.AddTool(generateVizTool(), unavailableInV2Primary(v2Primary, generateVizHandler(a)))
-	s.AddTool(getPersonMessagesRangeTool(), unavailableInV2Primary(v2Primary, getPersonMessagesRangeHandler(a)))
+	s.AddTool(getPersonMessagesRangeTool(), getPersonMessagesRangeHandler(a, options))
 	s.AddTool(renderStoryTool(), unavailableInV2Primary(v2Primary, renderStoryHandler(a)))
 	switch {
 	case options.Daemon != nil:

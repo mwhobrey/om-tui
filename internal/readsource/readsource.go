@@ -10,6 +10,8 @@ type ReadSource interface {
 	ListConversations(limit int) ([]*db.Conversation, error)
 	GetConversation(id string) (*db.Conversation, error)
 	GetMessagesByConversation(conversationID string, limit int) ([]*db.Message, error)
+	GetMessagesByConversations(conversationIDs []string, limit int) ([]*db.Message, error)
+	GetMessagesByConversationsRange(conversationIDs []string, afterMS, beforeMS int64, limit int) ([]*db.Message, error)
 	GetMessagesByConversationBefore(conversationID string, beforeMS int64, beforeID string, limit int) ([]*db.Message, error)
 	GetMessagesByConversationAfter(conversationID string, afterMS int64, afterID string, limit int) ([]*db.Message, error)
 	GetMessagesAroundMessage(conversationID, messageID string, before, after int) ([]*db.Message, error)

@@ -43,7 +43,7 @@
 |---|---|---|---|
 | Legacy primary (default) | unset V2 flags | `messages.db` | direct bridge + legacy rows |
 | V2 send/ingest (shadow) | `OPENMESSAGES_V2_SEND` / `_INGEST` | mostly legacy | durable outbox/inbox; projector → legacy |
-| V2 primary | `OPENMESSAGES_V2_PRIMARY=1` (+ migrated store) | `v2read` | outbox only; story/person/viz MCP tools **unavailable** |
+| V2 primary | `OPENMESSAGES_V2_PRIMARY=1` (+ migrated store) | `v2read` | outbox only; story/stats/viz MCP tools **unavailable** (`get_person_messages` / `_range` go through `v2read`) |
 
 Cutover path: `openmessage backup` → `openmessage migrate` → set `OPENMESSAGES_V2_PRIMARY=1`. Details in [../migration-backup.md](../migration-backup.md).
 

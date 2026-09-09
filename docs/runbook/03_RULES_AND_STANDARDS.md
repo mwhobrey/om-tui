@@ -23,7 +23,7 @@
 2. **One transport owner.** Daemon owns Google/WA/Signal/(Slack). MCP stdio is transportless by default.
 3. **`app.New` vs `app.NewClient`:** only store-owning processes run repair sweeps.
 4. **Do not sqlite3 the live DB** while the daemon holds WAL — use HTTP API.
-5. **V2 primary freezes legacy reads** for story/person/viz MCP tools; do not "fix" by reading stale `messages.db` after cutover.
+5. **V2 primary freezes legacy reads** for story/stats/viz MCP tools; do not "fix" by reading stale `messages.db` after cutover. Person-history tools (`get_person_messages`, `get_person_messages_range`) read through `readsource.ReadSource` (`v2read` when primary).
 6. **Windows vault is DPAPI-bound** to user/machine — backups of `credentials.enc` are useless on another box without re-pair.
 
 ## Environment variables (high-signal)
@@ -134,4 +134,4 @@ Registered in `internal/tools/tools.go` → `RegisterWithOptions`:
 
 `get_messages`, `get_conversation`, `search_messages`, `send_message`, `send_to_conversation`, `send_media_to_conversation`, `react_to_message`, `set_message_transcript`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `get_status`, `draft_message`, `download_media`, `import_messages`, `get_person_messages`, `conversation_stats`, `generate_story`, `person_stats`, `generate_person_story`, `generate_viz`, `get_person_messages_range`, `render_story`, `send_group_message`
 
-Person/story/viz tools return unavailable while V2 is the serving store. Message-content results prepend an untrusted-content warning.
+Story/stats/viz tools return unavailable while V2 is the serving store. `get_person_messages` and `get_person_messages_range` stay live via `ReadSource`. Message-content results prepend an untrusted-content warning.

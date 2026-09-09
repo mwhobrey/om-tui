@@ -136,13 +136,13 @@ See [docs/agent-runbook.md](docs/agent-runbook.md) ("MCP serving").
 24 tools registered (see `internal/tools/tools.go` `RegisterWithOptions`):
 - `get_messages`, `get_conversation`, `search_messages` — cross-platform by default
 - `list_conversations` — optional `source_platform` filter (sms, gchat, imessage, whatsapp, signal, slack)
-- `get_person_messages` / `get_person_messages_range` — cross-platform person history
+- `get_person_messages` / `get_person_messages_range` — cross-platform person history (V2-primary via `ReadSource`)
 - `import_messages` — import from any supported source
 - `conversation_stats`, `generate_story`, `person_stats`, `generate_person_story`, `generate_viz`, `render_story`
 - `send_message`, `send_to_conversation`, `send_media_to_conversation`, `send_group_message`
 - `react_to_message`, `draft_message`, `download_media`, `list_contacts`, `resolve_contact_routes`, `get_status`
 
-Person/story/viz tools are unavailable while V2 is the serving store.
+Story/stats/viz tools are unavailable while V2 is the serving store. Person-history tools stay live.
 
 ### HTTP API (high-signal)
 
