@@ -83,7 +83,9 @@ func (c *Client) runSocketSession(ctx context.Context) (connected bool) {
 				c.mu.Unlock()
 			case socketmode.EventTypeEventsAPI:
 				if event.Request != nil {
-					socket.Ack(*event.Request)
+					if err := socket.Ack(*event.Request); err != nil {
+						c.setError(fmt.Errorf("Slack Socket Mode ack: %w", err))
+					}
 				}
 				apiEvent, ok := event.Data.(slackevents.EventsAPIEvent)
 				if !ok || apiEvent.Type != slackevents.CallbackEvent {
