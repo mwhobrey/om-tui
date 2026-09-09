@@ -104,7 +104,7 @@ Repo security surface (GitHub settings + files, not required CI):
 - `SECURITY.md` + private vulnerability reporting (do not file public issues for unreleased vulns)
 - CodeQL default setup on `main` / PRs (GitHub SAST; not a required merge check)
 - Secret scanning + push protection enabled
-- `govulncheck` is not a required merge check. Revisit once the job is green on `main` after the 1.26.5 toolchain bump.
+- `govulncheck` is not a required merge check. Stdlib findings track the patch Go in `go.mod` (1.26.6+ as of this bump). This box's mise pin is 1.26.5; GOTOOLCHAIN will fetch 1.26.6 when needed.
 
 ### Regression tests that encode hard rules
 
