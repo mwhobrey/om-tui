@@ -43,7 +43,8 @@ accounts. Copy cookies from browser devtools (or a `curl` of
 `messages.google.com/web/config`) and pipe them in:
 
 ```bash
-pbpaste | ./om-tui pair --google      # macOS/Linux
+pbpaste | ./om-tui pair --google      # macOS
+wl-paste | ./om-tui pair --google     # Linux Wayland (or: xclip -o)
 ```
 
 ```powershell
