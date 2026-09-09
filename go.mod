@@ -13,7 +13,7 @@ require (
 	github.com/rivo/uniseg v0.4.7
 	github.com/rs/zerolog v1.35.1
 	github.com/sahilm/fuzzy v0.1.1
-	github.com/slack-go/slack v0.17.3
+	github.com/slack-go/slack v0.23.1
 	go.mau.fi/mautrix-gmessages v0.2601.0
 	go.mau.fi/util v0.9.10
 	go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b
