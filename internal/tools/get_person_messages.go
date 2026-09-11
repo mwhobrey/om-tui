@@ -9,6 +9,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/maxghenis/openmessage/internal/app"
+	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/readsource"
 )
 
 func getPersonMessagesTool() mcp.Tool {
@@ -21,7 +23,8 @@ func getPersonMessagesTool() mcp.Tool {
 	)
 }
 
-func getPersonMessagesHandler(a *app.App) server.ToolHandlerFunc {
+func getPersonMessagesHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -30,49 +33,29 @@ func getPersonMessagesHandler(a *app.App) server.ToolHandlerFunc {
 		}
 		limit := intArg(args, "limit", 50)
 
-		// Find all conversations that mention this person
-		allConvs, err := a.Store.ListConversations(1000)
+		matches, err := findPersonConversations(options.Reads, name, true)
 		if err != nil {
-			return errorResult(fmt.Sprintf("list conversations: %v", err)), nil
+			return errorResult(err.Error()), nil
 		}
-
-		nameLower := strings.ToLower(name)
-		var matchingConvIDs []string
-		for _, c := range allConvs {
-			if strings.Contains(strings.ToLower(c.Name), nameLower) ||
-				strings.Contains(strings.ToLower(c.Participants), nameLower) {
-				matchingConvIDs = append(matchingConvIDs, c.ConversationID)
-			}
-		}
-
-		if len(matchingConvIDs) == 0 {
+		if len(matches) == 0 {
 			return textResult(fmt.Sprintf("No conversations found with '%s'.", name)), nil
 		}
 
-		// Build a map of conversation metadata for display
-		convMap := make(map[string]*struct{ name, platform string })
-		for _, c := range allConvs {
-			for _, id := range matchingConvIDs {
-				if c.ConversationID == id {
-					platform := c.SourcePlatform
-					if platform == "" {
-						platform = "sms"
-					}
-					convMap[id] = &struct{ name, platform string }{c.Name, platform}
-				}
-			}
+		convMap := make(map[string]*db.Conversation, len(matches))
+		ids := make([]string, 0, len(matches))
+		for _, c := range matches {
+			ids = append(ids, c.ConversationID)
+			convMap[c.ConversationID] = c
 		}
 
-		// Batch fetch all messages in one query
-		msgs, err := a.Store.GetMessagesByConversations(matchingConvIDs, limit)
+		msgs, err := options.Reads.GetMessagesByConversations(ids, limit)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get messages: %v", err)), nil
 		}
 
-		// Group messages by conversation for display
 		var sb strings.Builder
 		sb.WriteString(messagePreamble)
-		fmt.Fprintf(&sb, "Messages with '%s' across %d conversation(s):\n\n", name, len(matchingConvIDs))
+		fmt.Fprintf(&sb, "Messages with '%s' across %d conversation(s):\n\n", name, len(ids))
 
 		currentConv := ""
 		totalMsgs := 0
@@ -83,7 +66,11 @@ func getPersonMessagesHandler(a *app.App) server.ToolHandlerFunc {
 				}
 				currentConv = m.ConversationID
 				if info, ok := convMap[currentConv]; ok {
-					fmt.Fprintf(&sb, "--- %s [%s] (ID: %s) ---\n", info.name, info.platform, currentConv)
+					platform := info.SourcePlatform
+					if platform == "" {
+						platform = "sms"
+					}
+					fmt.Fprintf(&sb, "--- %s [%s] (ID: %s) ---\n", info.Name, platform, currentConv)
 				}
 			}
 
@@ -92,7 +79,27 @@ func getPersonMessagesHandler(a *app.App) server.ToolHandlerFunc {
 			totalMsgs++
 		}
 
-		fmt.Fprintf(&sb, "\nTotal: %d messages across %d conversation(s)\n", totalMsgs, len(matchingConvIDs))
+		fmt.Fprintf(&sb, "\nTotal: %d messages across %d conversation(s)\n", totalMsgs, len(ids))
 		return textResult(sb.String()), nil
 	}
+}
+
+func findPersonConversations(reads readsource.ReadSource, name string, includeGroups bool) ([]*db.Conversation, error) {
+	allConvs, err := reads.ListConversations(1000)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %v", err)
+	}
+
+	nameLower := strings.ToLower(name)
+	var matching []*db.Conversation
+	for _, c := range allConvs {
+		if !includeGroups && c.IsGroup {
+			continue
+		}
+		if strings.Contains(strings.ToLower(c.Name), nameLower) ||
+			strings.Contains(strings.ToLower(c.Participants), nameLower) {
+			matching = append(matching, c)
+		}
+	}
+	return matching, nil
 }

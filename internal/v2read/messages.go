@@ -85,6 +85,34 @@ func (s *Source) GetMessagesAroundMessage(
 	return s.mapMessages(messages)
 }
 
+// GetMessagesByConversations returns the newest `limit` messages across the
+// given conversations, oldest-first — the person-history MCP query shape.
+func (s *Source) GetMessagesByConversations(
+	conversationIDs []string,
+	limit int,
+) ([]*db.Message, error) {
+	return s.GetMessagesByConversationsRange(conversationIDs, 0, 0, limit)
+}
+
+// GetMessagesByConversationsRange is GetMessagesByConversations with optional
+// inclusive timestamp bounds (0 means unbounded on that side).
+func (s *Source) GetMessagesByConversationsRange(
+	conversationIDs []string,
+	afterMS, beforeMS int64,
+	limit int,
+) ([]*db.Message, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	messages, err := s.messages.ListMessagesByConversations(
+		context.Background(), conversationIDs, afterMS, beforeMS, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return s.mapMessages(messages)
+}
+
 func (s *Source) walkConversationMessages(
 	conversationID string,
 	visit func(sqlite.Message),

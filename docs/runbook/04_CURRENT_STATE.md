@@ -39,7 +39,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 |---|---|
 | Slack → V2 ingest/outbox | No Slack decoder / V2 account wiring |
 | Slack media / reaction mutation / Block Kit | Text-first; expand later |
-| V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
+| V2 primary as default | Still opt-in; story/stats/viz unavailable when primary; person-history MCP tools read V2 |
 | Daemon honors `instance.lock` | Still backup/migrate-only |
 | Native GUI / desktop notifications on macOS/Linux | Non-goal for om-tui; Windows-only toasts today |
 | QR Google pair | Dead for many accounts — TUI paste / `pair --google` cookie method |
@@ -48,10 +48,10 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 
 ## Immediate next steps (suggested)
 
-1. **Dogfood the Slack daily-driver path** — names, unread filters, dedicated threads, older history, and optional Socket Mode.
+1. **Keep watching the Slack daily-driver** — already in use and working after a multi-day idle; still worth checking names, unread, threads, older history, and Socket Mode after reconnects.
 2. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
 3. Smoke-test the macOS/Linux vault backends (Keychain, Secret Service) on real hardware — only cross-compile-checked so far, not runtime-verified.
-4. V2 parity for `get_person_messages` / person-story MCP tools (deferred while V2 is the serving store).
+4. V2 parity for remaining story/stats/viz MCP tools (`conversation_stats`, `person_stats`, `generate_story`, `generate_person_story`, `generate_viz`, `render_story`). `get_person_messages` / `_range` already read through `ReadSource`.
 
 ## How to verify right now
 

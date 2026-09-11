@@ -20,8 +20,13 @@ type toolRoutingReadSource struct {
 	searchCalls  int
 	statusCalls  int
 	getConvCalls int
-	lastQuery   string
-	lastFilter  db.SearchFilter
+	personCalls  int
+	lastQuery    string
+	lastFilter   db.SearchFilter
+	lastIDs      []string
+	lastAfterMS  int64
+	lastBeforeMS int64
+	lastLimit    int
 }
 
 func (s *toolRoutingReadSource) ListConversations(limit int) ([]*db.Conversation, error) {
@@ -67,6 +72,30 @@ func (s *toolRoutingReadSource) GetMessagesByConversation(conversationID string,
 
 func (s *toolRoutingReadSource) GetConversation(id string) (*db.Conversation, error) {
 	return &db.Conversation{ConversationID: id, Name: "V2 Thread", SourcePlatform: "sms"}, nil
+}
+
+func (s *toolRoutingReadSource) GetMessagesByConversations(conversationIDs []string, limit int) ([]*db.Message, error) {
+	return s.GetMessagesByConversationsRange(conversationIDs, 0, 0, limit)
+}
+
+func (s *toolRoutingReadSource) GetMessagesByConversationsRange(
+	conversationIDs []string,
+	afterMS, beforeMS int64,
+	limit int,
+) ([]*db.Message, error) {
+	s.personCalls++
+	s.lastIDs = append([]string{}, conversationIDs...)
+	s.lastAfterMS = afterMS
+	s.lastBeforeMS = beforeMS
+	s.lastLimit = limit
+	return []*db.Message{{
+		MessageID:      "v2-person-message",
+		ConversationID: "v2-conversation",
+		SenderName:     "V2 Alice",
+		Body:           "v2 person body",
+		TimestampMS:    200,
+		SourcePlatform: "sms",
+	}}, nil
 }
 
 func TestR5MCPReadHandlersUseConfiguredSource(t *testing.T) {
@@ -190,14 +219,77 @@ func TestR5MCPGetStatusReadsV2CoverageWithoutChangingLegacyShape(t *testing.T) {
 	}
 }
 
+func TestR5MCPPersonMessageHandlersUseConfiguredSource(t *testing.T) {
+	a := testApp(t)
+	reads := &toolRoutingReadSource{}
+	options := Options{Reads: reads, V2Primary: true}
+
+	result, err := getPersonMessagesHandler(a, options)(context.Background(), toolRequest(map[string]any{
+		"name":  "V2",
+		"limit": float64(7),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || !strings.Contains(resultText(t, result), "v2 person body") {
+		t.Fatalf("unexpected get_person_messages result: %#v", result)
+	}
+	if reads.listCalls != 1 || reads.personCalls != 1 {
+		t.Fatalf("get_person_messages calls list=%d person=%d, want 1/1", reads.listCalls, reads.personCalls)
+	}
+	if reads.lastLimit != 7 || len(reads.lastIDs) != 1 || reads.lastIDs[0] != "v2-conversation" {
+		t.Fatalf("get_person_messages ids=%v limit=%d", reads.lastIDs, reads.lastLimit)
+	}
+
+	rangeResult, err := getPersonMessagesRangeHandler(a, options)(context.Background(), toolRequest(map[string]any{
+		"name":   "V2",
+		"after":  "2024-01-01",
+		"before": "2024-03-31",
+		"limit":  float64(9),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rangeResult.IsError || !strings.Contains(resultText(t, rangeResult), "v2 person body") {
+		t.Fatalf("unexpected get_person_messages_range result: %#v", rangeResult)
+	}
+	if reads.personCalls != 2 || reads.lastLimit != 9 || reads.lastAfterMS == 0 || reads.lastBeforeMS == 0 {
+		t.Fatalf("range calls person=%d after=%d before=%d limit=%d", reads.personCalls, reads.lastAfterMS, reads.lastBeforeMS, reads.lastLimit)
+	}
+}
+
+func TestR5MCPPersonHistoryToolsStayAvailableInV2Primary(t *testing.T) {
+	a := testApp(t)
+	mcpServer := server.NewMCPServer("r5-routing", "test")
+	RegisterWithOptions(mcpServer, a, Options{Reads: a.Store, V2Primary: true})
+
+	for _, name := range []string{"get_person_messages", "get_person_messages_range"} {
+		t.Run(name, func(t *testing.T) {
+			registered := mcpServer.GetTool(name)
+			if registered == nil {
+				t.Fatalf("tool %q was not registered", name)
+			}
+			result, err := registered.Handler(context.Background(), toolRequest(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := resultText(t, result)
+			if strings.Contains(got, "not available while v2 is the serving store") {
+				t.Fatalf("tool %q is still gated in v2 primary: %q", name, got)
+			}
+			if !result.IsError || !strings.Contains(got, "name is required") {
+				t.Fatalf("tool %q = error=%v text=%q, want name required", name, result.IsError, got)
+			}
+		})
+	}
+}
+
 func TestR5MCPPersonStoryAndVizToolsUnavailableInV2Primary(t *testing.T) {
 	a := testApp(t)
 	mcpServer := server.NewMCPServer("r5-routing", "test")
 	RegisterWithOptions(mcpServer, a, Options{Reads: a.Store, V2Primary: true})
 
 	for _, name := range []string{
-		"get_person_messages",
-		"get_person_messages_range",
 		"conversation_stats",
 		"generate_story",
 		"person_stats",

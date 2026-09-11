@@ -329,6 +329,67 @@ func TestListMessagesByConversationPaginationAndAround(t *testing.T) {
 	}
 }
 
+func TestListMessagesByConversationsReturnsNewestLimitAscending(t *testing.T) {
+	store, repository := openMessageTestRepository(
+		t,
+		func() time.Time { return time.UnixMilli(messageTestTimeMS) },
+	)
+	seedMessageAccount(t, store, "account-a", "google_messages")
+	seedMessageConversation(t, store, "conv-1", "account-a")
+	seedMessageConversation(t, store, "conv-2", "account-a")
+
+	importMessage := func(id, conversationID string, occurredAtMS int64) {
+		t.Helper()
+		message := messageTestMessage(id, conversationID, "account-a", "remote-"+id, nil)
+		message.OccurredAtMS = occurredAtMS
+		if err := repository.ImportMessage(context.Background(), MessageProjection{Message: message}); err != nil {
+			t.Fatalf("ImportMessage(%q): %v", id, err)
+		}
+	}
+	for i := 0; i < 6; i++ {
+		importMessage(fmt.Sprintf("conv-1-%d", i), "conv-1", int64(1000+i*100))
+		importMessage(fmt.Sprintf("conv-2-%d", i), "conv-2", int64(1050+i*100))
+	}
+
+	assertIDs := func(name string, got []Message, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s IDs = %d rows %+v, want %d %v", name, len(got), got, len(want), want)
+		}
+		for i, wantID := range want {
+			if got[i].MessageID != wantID {
+				t.Fatalf("%s ID %d = %q, want %q", name, i, got[i].MessageID, wantID)
+			}
+		}
+	}
+
+	newest, err := repository.ListMessagesByConversations(
+		context.Background(), []string{"conv-1", "conv-2"}, 0, 0, 5,
+	)
+	if err != nil {
+		t.Fatalf("ListMessagesByConversations(): %v", err)
+	}
+	assertIDs("newest", newest, "conv-2-3", "conv-1-4", "conv-2-4", "conv-1-5", "conv-2-5")
+
+	ranged, err := repository.ListMessagesByConversations(
+		context.Background(), []string{"conv-1", "conv-2"}, 1200, 1600, 4,
+	)
+	if err != nil {
+		t.Fatalf("ListMessagesByConversations(range): %v", err)
+	}
+	assertIDs("range", ranged, "conv-1-4", "conv-2-4", "conv-1-5", "conv-2-5")
+
+	empty, err := repository.ListMessagesByConversations(
+		context.Background(), nil, 0, 0, 5,
+	)
+	if err != nil {
+		t.Fatalf("ListMessagesByConversations(empty ids): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty IDs = %d rows, want 0", len(empty))
+	}
+}
+
 func TestSearchMessagesLIKEFiltersAndOrdersDeterministically(t *testing.T) {
 	store, repository := openMessageTestRepository(
 		t,

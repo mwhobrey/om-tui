@@ -461,6 +461,55 @@ func (r *MessageRepository) ListMessagesAroundMessage(
 	return result, nil
 }
 
+// ListMessagesByConversations returns the newest `limit` messages across the
+// given conversations, then reorders them oldest-first. afterMS/beforeMS of 0
+// mean no bound on that side. Empty IDs or a non-positive limit yield no rows.
+func (r *MessageRepository) ListMessagesByConversations(
+	ctx context.Context,
+	conversationIDs []string,
+	afterMS, beforeMS int64,
+	limit int,
+) ([]Message, error) {
+	if len(conversationIDs) == 0 || limit <= 0 {
+		return []Message{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(conversationIDs)), ",")
+	conditions := "conversation_id IN (" + placeholders + ")"
+	args := make([]any, 0, len(conversationIDs)+3)
+	for _, id := range conversationIDs {
+		args = append(args, id)
+	}
+	if afterMS > 0 {
+		conditions += " AND occurred_at_ms >= ?"
+		args = append(args, afterMS)
+	}
+	if beforeMS > 0 {
+		conditions += " AND occurred_at_ms <= ?"
+		args = append(args, beforeMS)
+	}
+	args = append(args, limit)
+	query := `
+		SELECT ` + messageColumns + `
+		FROM (
+			SELECT ` + messageColumns + `
+			FROM messages
+			WHERE ` + conditions + `
+			ORDER BY occurred_at_ms DESC, message_id DESC
+			LIMIT ?
+		)
+		ORDER BY occurred_at_ms ASC, message_id ASC
+	`
+	rows, err := r.store.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by conversations: %w", err)
+	}
+	messages, err := collectRows(rows, scanMessage)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by conversations: %w", err)
+	}
+	return messages, nil
+}
+
 // SearchMessages performs the R5 substring-compatible LIKE scan. FTS and
 // relevance ranking are intentionally deferred; rows are ordered by recency
 // with message ID as a deterministic tie-breaker.

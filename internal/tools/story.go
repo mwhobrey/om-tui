@@ -331,7 +331,8 @@ func getPersonMessagesRangeTool() mcp.Tool {
 	)
 }
 
-func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
+func getPersonMessagesRangeHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -362,16 +363,26 @@ func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
 		afterMS := afterTime.UnixMilli()
 		beforeMS := beforeTime.UnixMilli()
 
-		// Find matching conversation IDs (reuse collectPersonMessages logic)
-		convIDs, convNames, err := findPersonConversations(a, name)
+		matches, err := findPersonConversations(options.Reads, name, false)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
-		if len(convIDs) == 0 {
+		if len(matches) == 0 {
 			return textResult(fmt.Sprintf("No conversations found with '%s'.", name)), nil
 		}
 
-		msgs, err := a.Store.GetMessagesByConversationsRange(convIDs, afterMS, beforeMS, limit)
+		convIDs := make([]string, 0, len(matches))
+		convNames := make([]string, 0, len(matches))
+		for _, c := range matches {
+			convIDs = append(convIDs, c.ConversationID)
+			platform := c.SourcePlatform
+			if platform == "" {
+				platform = "sms"
+			}
+			convNames = append(convNames, fmt.Sprintf("%s [%s]", c.Name, platform))
+		}
+
+		msgs, err := options.Reads.GetMessagesByConversationsRange(convIDs, afterMS, beforeMS, limit)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get messages: %v", err)), nil
 		}
@@ -403,44 +414,27 @@ func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
 	}
 }
 
-// findPersonConversations returns matching conversation IDs and display names
-// for a person. Extracted from collectPersonMessages for reuse.
-func findPersonConversations(a *app.App, name string) ([]string, []string, error) {
-	allConvs, err := a.Store.ListConversations(1000)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list conversations: %v", err)
-	}
-
-	nameLower := strings.ToLower(name)
-	var matchingConvIDs []string
-	var convNames []string
-	for _, c := range allConvs {
-		if c.IsGroup {
-			continue
-		}
-		if strings.Contains(strings.ToLower(c.Name), nameLower) ||
-			strings.Contains(strings.ToLower(c.Participants), nameLower) {
-			matchingConvIDs = append(matchingConvIDs, c.ConversationID)
-			platform := c.SourcePlatform
-			if platform == "" {
-				platform = "sms"
-			}
-			convNames = append(convNames, fmt.Sprintf("%s [%s]", c.Name, platform))
-		}
-	}
-	return matchingConvIDs, convNames, nil
-}
-
 // collectPersonMessages finds all 1:1 conversations matching the name, loads
 // all messages, deduplicates cross-platform duplicates, and returns them sorted
 // chronologically. Also returns conversation display names for context.
 func collectPersonMessages(a *app.App, name string) ([]*db.Message, []string, error) {
-	matchingConvIDs, convNames, err := findPersonConversations(a, name)
+	matches, err := findPersonConversations(a.Store, name, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(matchingConvIDs) == 0 {
+	if len(matches) == 0 {
 		return nil, nil, nil
+	}
+
+	matchingConvIDs := make([]string, 0, len(matches))
+	convNames := make([]string, 0, len(matches))
+	for _, c := range matches {
+		matchingConvIDs = append(matchingConvIDs, c.ConversationID)
+		platform := c.SourcePlatform
+		if platform == "" {
+			platform = "sms"
+		}
+		convNames = append(convNames, fmt.Sprintf("%s [%s]", c.Name, platform))
 	}
 
 	msgs, err := a.Store.GetMessagesByConversations(matchingConvIDs, 500000)
