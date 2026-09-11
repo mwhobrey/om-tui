@@ -228,6 +228,7 @@ type googleSupervisorControl struct {
 	inputFingerprint  string
 	supervisorStopped bool
 	stopping          bool
+	unpairing         bool
 	closed            bool
 	pairing           *googlePairRuntime
 }
@@ -363,6 +364,14 @@ func (c *googleSupervisorControl) parkSupervisor() error {
 }
 
 func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
+	c.mu.Lock()
+	c.unpairing = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.unpairing = false
+		c.mu.Unlock()
+	}()
 	c.CancelGoogleAccountPair()
 	c.waitPairingDone()
 	if err := c.parkSupervisor(); err != nil {

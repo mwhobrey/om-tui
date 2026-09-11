@@ -71,3 +71,12 @@ func TestAdoptOwnedDaemonLeavesLiveOwner(t *testing.T) {
 		t.Fatal("must not steal a daemon from a live TUI owner")
 	}
 }
+
+func TestProcessAlive(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Fatal("current process should look alive")
+	}
+	if processAlive(0) {
+		t.Fatal("pid 0 should not look alive")
+	}
+}

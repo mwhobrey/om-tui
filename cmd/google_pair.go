@@ -53,7 +53,7 @@ func (c *googleSupervisorControl) StartGoogleAccountPair(cookies map[string]stri
 	}
 
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.unpairing {
 		c.mu.Unlock()
 		return bridge.ErrSupervisorStopped
 	}

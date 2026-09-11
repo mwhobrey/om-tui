@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -85,10 +86,14 @@ func processAlive(pid int) bool {
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return false
+		return !processDefinitelyGone(err)
 	}
 	_ = windows.CloseHandle(h)
 	return true
+}
+
+func processDefinitelyGone(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) || errors.Is(err, windows.ERROR_INVALID_HANDLE)
 }
 
 func windowsProcessImage(pid int) (string, error) {

@@ -307,3 +307,54 @@ func TestStopAndUnpairRemovesSessionBackup(t *testing.T) {
 		t.Fatal("unpair should remove the session backup")
 	}
 }
+
+func TestStartGoogleAccountPairRejectedDuringUnpair(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath, []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+
+	unpairStarted := make(chan struct{})
+	unpairRelease := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- control.StopAndUnpair(func() error {
+			close(unpairStarted)
+			<-unpairRelease
+			return os.Remove(sessionPath)
+		})
+	}()
+	select {
+	case <-unpairStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unpair did not start")
+	}
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "sid-value"}); !errors.Is(err, bridge.ErrSupervisorStopped) {
+		t.Fatalf("StartGoogleAccountPair() during unpair = %v, want ErrSupervisorStopped", err)
+	}
+	close(unpairRelease)
+	if err := <-errCh; err != nil {
+		t.Fatalf("StopAndUnpair(): %v", err)
+	}
+}

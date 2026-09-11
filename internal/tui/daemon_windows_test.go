@@ -48,3 +48,12 @@ func TestKillOnCloseJobReapsChild(t *testing.T) {
 		t.Fatal("child still running after job close")
 	}
 }
+
+func TestProcessDefinitelyGone(t *testing.T) {
+	if processDefinitelyGone(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("access denied is unknown, not gone")
+	}
+	if !processDefinitelyGone(windows.ERROR_INVALID_PARAMETER) {
+		t.Fatal("invalid parameter means the pid is gone")
+	}
+}
