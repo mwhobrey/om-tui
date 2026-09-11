@@ -152,9 +152,9 @@ Key facts:
 **CLI (daemon down):**
 
 1. Stop the daemon (`om-tui serve` / any process holding the data dir).
-2. Force a clean pairing state by removing `session.json` from the data dir
-   (back it up first). Other platforms' sessions (`whatsapp-session.db`,
-   `signal-cli/`) are independent — leave them.
+2. Force a clean pairing state by removing `session.json` and `session.json.bak`
+   from the data dir (back them up first). Other platforms' sessions
+   (`whatsapp-session.db`, `signal-cli/`) are independent — leave them.
 3. **Clear the stale session FIRST (don't skip).** Running `pair --google` while a dead `session.json` is still in the data dir floods the pairing with `failed to decrypt data event: HMAC mismatch` and yields a new session that 401s on token refresh **immediately** (dead on arrival). Removing `session.json` (step 2) before pairing is what produces a healthy session that connects *and* syncs (`/api/status` freshness `behind_days` drops to 0). Some HMAC-mismatch lines are normal noise (events from the phone's own session the pairing client can't read) — the tell for a bad pair is an immediate post-pair 401, not the noise itself.
 4. Google's embedded sign-in flow is **blocked by Google**
    ("This browser or app may not be secure") for WebViews **and** for Chrome

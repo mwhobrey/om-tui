@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -127,8 +128,12 @@ func TestBackupAndRemoveSessionRestoresWhenMissing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old-session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := backupAndRemoveSession(path); err != nil {
+	created, err := backupAndRemoveSession(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected a backup for an existing session")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("session should be moved aside")
@@ -214,5 +219,91 @@ func TestStopAndUnpairCancelsInFlightPairing(t *testing.T) {
 	}
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Fatal("unpair should remove the session")
+	}
+}
+
+func TestFailedPairDoesNotRestoreStaleBackup(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath+".bak", []byte(`{"unpaired":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+	control.startGaia = func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error) {
+		return googleGaiaAttempt{}, errors.New("gaia failed")
+	}
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "sid-value"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := control.PairingSnapshot()
+		if snap != nil && snap.Phase == googlePairPhaseFailed {
+			if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+				t.Fatal("stale backup must not be restored as session.json")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pairing = %#v, want failed", control.PairingSnapshot())
+}
+
+func TestStopAndUnpairRemovesSessionBackup(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath, []byte(`{"new":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionPath+".bak", []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+	if err := control.StopAndUnpair(func() error { return os.Remove(sessionPath) }); err != nil {
+		t.Fatalf("StopAndUnpair(): %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatal("unpair should remove the session")
+	}
+	if _, err := os.Stat(sessionPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatal("unpair should remove the session backup")
 	}
 }

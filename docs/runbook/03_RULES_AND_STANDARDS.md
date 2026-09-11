@@ -120,7 +120,7 @@ Do not weaken these when "simplifying" serve.
 2. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
 3. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
 4. **Google QR is dead** for many accounts — cookie / Google Account pairing.
-5. **Clear `session.json`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
+5. **Clear `session.json` and `session.json.bak`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
 6. **Don't thrash Google reconnect/pair** — account throttling.
 7. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
 8. **`go.work` overrides** can make dependency bumps look ignored.

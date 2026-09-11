@@ -127,13 +127,14 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(fmt.Errorf("park Google Messages: %w", err))
 		return
 	}
-	if err := backupAndRemoveSession(c.sessionPath); err != nil {
+	createdBackup, err := backupAndRemoveSession(c.sessionPath)
+	if err != nil {
 		fail(err)
 		return
 	}
 	sessionSaved := false
 	defer func() {
-		if !sessionSaved {
+		if !sessionSaved && createdBackup {
 			restoreSessionBackup(c.sessionPath)
 		}
 	}()
@@ -164,6 +165,7 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		return
 	}
 	sessionSaved = true
+	removeSessionBackup(c.sessionPath)
 	if attempt.Disconnect != nil {
 		attempt.Disconnect()
 		attempt.Disconnect = nil
@@ -172,7 +174,6 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(fmt.Errorf("connect after pairing: %w", err))
 		return
 	}
-	removeSessionBackup(c.sessionPath)
 
 	c.mu.Lock()
 	c.pairing = nil
@@ -255,23 +256,23 @@ func (c *googleSupervisorControl) notifyPairingChange() {
 	}
 }
 
-func backupAndRemoveSession(sessionPath string) error {
+func backupAndRemoveSession(sessionPath string) (created bool, err error) {
 	if _, err := os.Stat(sessionPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("stat Google session: %w", err)
+		return false, fmt.Errorf("stat Google session: %w", err)
 	}
 	backupPath := sessionPath + ".bak"
 	if _, err := os.Stat(backupPath); err == nil {
 		if err := os.Remove(backupPath); err != nil {
-			return fmt.Errorf("rotate Google session backup: %w", err)
+			return false, fmt.Errorf("rotate Google session backup: %w", err)
 		}
 	}
 	if err := os.Rename(sessionPath, backupPath); err != nil {
-		return fmt.Errorf("backup Google session: %w", err)
+		return false, fmt.Errorf("backup Google session: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func restoreSessionBackup(sessionPath string) {

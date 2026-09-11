@@ -671,6 +671,9 @@ func (a *App) Unpair() error {
 	if err := os.Remove(a.SessionPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove session: %w", err)
 	}
+	if err := os.Remove(a.SessionPath + ".bak"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove session backup: %w", err)
+	}
 	a.Logger.Info().Msg("Unpaired — session deleted")
 	return nil
 }

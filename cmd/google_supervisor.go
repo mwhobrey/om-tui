@@ -368,7 +368,9 @@ func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
 	if err := c.parkSupervisor(); err != nil {
 		return err
 	}
-	return unpair()
+	err := unpair()
+	removeSessionBackup(c.sessionPath)
+	return err
 }
 
 func (c *googleSupervisorControl) awaitStoppedSupervisor(supervisor *bridge.Supervisor) {
