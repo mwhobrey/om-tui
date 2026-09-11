@@ -263,7 +263,10 @@ func stopChrome(cmd *exec.Cmd, port int, userDataDir, profileDir string) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		killProcessTree(cmd.Process.Pid)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 

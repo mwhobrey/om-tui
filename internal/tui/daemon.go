@@ -144,32 +144,51 @@ func spawnAPIDaemon(dataDir string) (*exec.Cmd, int, io.Closer, error) {
 
 func writeOwnedPID(dataDir string, pid int) error {
 	path := filepath.Join(dataDir, ownedDaemonPIDFile)
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	body := strconv.Itoa(pid) + "\n" + strconv.Itoa(os.Getpid()) + "\n"
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+func readOwnedRecord(dataDir string) (daemonPID, ownerPID int, err error) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, ownedDaemonPIDFile))
+	if err != nil {
+		return 0, 0, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 {
+		return 0, 0, fmt.Errorf("invalid owned daemon pid")
+	}
+	daemonPID, err = strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || daemonPID <= 0 {
+		return 0, 0, fmt.Errorf("invalid owned daemon pid")
+	}
+	if len(lines) > 1 {
+		ownerPID, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
+	}
+	return daemonPID, ownerPID, nil
 }
 
 func readOwnedPID(dataDir string) (int, error) {
-	raw, err := os.ReadFile(filepath.Join(dataDir, ownedDaemonPIDFile))
-	if err != nil {
-		return 0, err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid owned daemon pid")
-	}
-	return pid, nil
+	pid, _, err := readOwnedRecord(dataDir)
+	return pid, err
 }
 
 func adoptOwnedDaemon(session *Session) {
 	if session == nil {
 		return
 	}
-	pid, err := readOwnedPID(session.DataDir)
-	if err != nil || !processLooksLikeDaemon(pid) {
+	daemonPID, ownerPID, err := readOwnedRecord(session.DataDir)
+	if err != nil {
+		return
+	}
+	if ownerPID > 0 && ownerPID != os.Getpid() && processAlive(ownerPID) {
+		return
+	}
+	if !processLooksLikeDaemon(daemonPID) {
 		return
 	}
 	session.Owned = true
-	session.ownedPID = pid
-	session.ownedReaper = attachKillOnCloseJob(pid)
+	session.ownedPID = daemonPID
+	session.ownedReaper = attachKillOnCloseJob(daemonPID)
 }
 
 func clearOwnedPID(dataDir string) {

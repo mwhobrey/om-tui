@@ -231,7 +231,7 @@ Slack remains text-first.
 4. `./om-tui tui` attaches ("Attached to local API daemon…")
 5. Quit TUI — standalone daemon still running
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
-7. Press `p` when unpaired to pair Google Messages: paste a `messages.google.com` curl with `Ctrl+V`, then confirm the emoji on your phone; `Esc`/`q` cancels if it stalls; `r` reconnects an existing session
+7. Press `p` when unpaired to pair Google Messages: paste a `messages.google.com` curl with `Ctrl+V`, then confirm the emoji on your phone; `Esc` cancels, `q` closes the overlay; `r` reconnects an existing session
 8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
 9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes

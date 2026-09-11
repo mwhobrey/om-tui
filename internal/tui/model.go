@@ -248,6 +248,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.syncPairOverlayFromStatus()
 
 	case pairTickMsg:
+		m.pair.ticking = false
 		m.pair.ticks++
 		if !m.pair.successUntil.IsZero() && time.Now().After(m.pair.successUntil) {
 			return m.closePairOverlay()
@@ -256,7 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pair.ticks%pairStatusEveryTicks == 0 {
 			cmds = append(cmds, m.refreshStatusCmd())
 		}
-		if tick := m.pairTickCmd(); tick != nil {
+		var tick tea.Cmd
+		m, tick = m.armPairTick()
+		if tick != nil {
 			cmds = append(cmds, tick)
 		}
 		return m, tea.Batch(cmds...)
@@ -271,7 +274,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.status
 			return m.syncPairOverlayFromStatus()
 		}
-		return m, tea.Batch(m.refreshStatusCmd(), m.pairTickCmd())
+		m, tick := m.armPairTick()
+		return m, tea.Batch(m.refreshStatusCmd(), tick)
 
 	case riversMsg:
 		m.rivers = msg

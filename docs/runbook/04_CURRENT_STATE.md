@@ -26,7 +26,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Slack threads | Dedicated TUI thread view, `conversations.replies`, reply-in-thread send |
 | Slack realtime | Optional Socket Mode; polling remains startup/reconnect fallback |
 | Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
-| TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). Daemon parks Google then runs Gaia; `Esc`/`q` dismisses a stuck overlay |
+| TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). Daemon parks Google then runs Gaia; `Esc` cancels, `q` closes the overlay |
 | TUI-owned daemon dies with the TUI (Windows job object) | Shipped this branch; closing the terminal no longer leaves `om-tui.exe` serving |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |
 | Google device ID-space reset repair (`repair google-idspace`) | Ported from upstream |

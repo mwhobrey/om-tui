@@ -28,6 +28,7 @@ type googleGaiaAttempt struct {
 
 type googlePairRuntime struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 	phase  string
 	emoji  string
 	err    string
@@ -61,14 +62,17 @@ func (c *googleSupervisorControl) StartGoogleAccountPair(cookies map[string]stri
 		return app.ErrGooglePairingInProgress
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), googlePairPhoneTimeout)
-	phase := googlePairPhaseStarting
-	c.pairing = &googlePairRuntime{cancel: cancel, phase: phase}
+	done := make(chan struct{})
+	c.pairing = &googlePairRuntime{cancel: cancel, done: done, phase: googlePairPhaseStarting}
 	startGaia := c.startGaia
 	loadCookies := c.loadCookies
 	c.mu.Unlock()
 	c.notifyPairingChange()
 
-	go c.runGoogleAccountPair(ctx, cancel, cookies, startGaia, loadCookies)
+	go func() {
+		defer close(done)
+		c.runGoogleAccountPair(ctx, cancel, cookies, startGaia, loadCookies)
+	}()
 	return nil
 }
 
@@ -78,6 +82,15 @@ func (c *googleSupervisorControl) CancelGoogleAccountPair() {
 	c.mu.Unlock()
 	if runtime != nil && runtime.cancel != nil {
 		runtime.cancel()
+	}
+}
+
+func (c *googleSupervisorControl) waitPairingDone() {
+	c.mu.Lock()
+	runtime := c.pairing
+	c.mu.Unlock()
+	if runtime != nil && runtime.done != nil {
+		<-runtime.done
 	}
 }
 
@@ -118,6 +131,12 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(err)
 		return
 	}
+	sessionSaved := false
+	defer func() {
+		if !sessionSaved {
+			restoreSessionBackup(c.sessionPath)
+		}
+	}()
 
 	if startGaia == nil {
 		fail(errors.New("Google account pairing is not configured"))
@@ -144,6 +163,7 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(fmt.Errorf("save Google session: %w", err))
 		return
 	}
+	sessionSaved = true
 	if attempt.Disconnect != nil {
 		attempt.Disconnect()
 		attempt.Disconnect = nil
@@ -152,6 +172,7 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(fmt.Errorf("connect after pairing: %w", err))
 		return
 	}
+	removeSessionBackup(c.sessionPath)
 
 	c.mu.Lock()
 	c.pairing = nil
@@ -242,8 +263,28 @@ func backupAndRemoveSession(sessionPath string) error {
 		return fmt.Errorf("stat Google session: %w", err)
 	}
 	backupPath := sessionPath + ".bak"
+	if _, err := os.Stat(backupPath); err == nil {
+		if err := os.Remove(backupPath); err != nil {
+			return fmt.Errorf("rotate Google session backup: %w", err)
+		}
+	}
 	if err := os.Rename(sessionPath, backupPath); err != nil {
 		return fmt.Errorf("backup Google session: %w", err)
 	}
 	return nil
+}
+
+func restoreSessionBackup(sessionPath string) {
+	backupPath := sessionPath + ".bak"
+	if _, err := os.Stat(backupPath); err != nil {
+		return
+	}
+	if _, err := os.Stat(sessionPath); err == nil {
+		return
+	}
+	_ = os.Rename(backupPath, sessionPath)
+}
+
+func removeSessionBackup(sessionPath string) {
+	_ = os.Remove(sessionPath + ".bak")
 }

@@ -147,7 +147,7 @@ Key facts:
 
 ### Re-pair recipe (the one that works)
 
-**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone. `Esc`/`q` cancels pairing and returns keys to the TUI; `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
+**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone. `Esc` cancels pairing; `q` closes the overlay without cancelling. `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
 
 **CLI (daemon down):**
 

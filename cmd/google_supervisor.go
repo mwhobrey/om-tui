@@ -363,6 +363,8 @@ func (c *googleSupervisorControl) parkSupervisor() error {
 }
 
 func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
+	c.CancelGoogleAccountPair()
+	c.waitPairingDone()
 	if err := c.parkSupervisor(); err != nil {
 		return err
 	}

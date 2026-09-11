@@ -32,6 +32,7 @@ type pairOverlay struct {
 	started           time.Time
 	ignoreFailedUntil time.Time
 	ticks             int
+	ticking           bool
 }
 
 func (p pairOverlay) ignoringStaleFailed() bool {
@@ -82,7 +83,7 @@ func (m Model) openPairOverlay() (tea.Model, tea.Cmd) {
 	m.info = ""
 	m.err = ""
 	if pairing := m.pairingFromDaemon(); pairing != nil && pairing.Phase != "" && pairing.Phase != "failed" {
-		return m, m.pairTickCmd()
+		return m.armPairTick()
 	}
 	return m, nil
 }
@@ -96,6 +97,7 @@ func (m Model) closePairOverlay() (tea.Model, tea.Cmd) {
 	m.pair.started = time.Time{}
 	m.pair.ignoreFailedUntil = time.Time{}
 	m.pair.ticks = 0
+	m.pair.ticking = false
 	return m, nil
 }
 
@@ -130,11 +132,11 @@ func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 			m.pair.submitting = false
 			m.pair.pasteErr = ""
 		}
-		return m, m.pairTickCmd()
+		return m.armPairTick()
 	}
 	if pairing != nil && pairing.Phase == "failed" {
 		if m.pair.ignoringStaleFailed() {
-			return m, m.pairTickCmd()
+			return m.armPairTick()
 		}
 		m.pair.open = true
 		m.pair.submitting = false
@@ -144,20 +146,25 @@ func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 	if m.pair.open && m.pair.submitting && m.status.Google.Paired && m.status.Google.Connected {
 		m.pair.submitting = false
 		m.pair.successUntil = time.Now().Add(1500 * time.Millisecond)
-		return m, m.pairTickCmd()
+		return m.armPairTick()
 	}
 	if m.pair.open && !m.pair.submitting && m.status.Google.Paired && m.status.Google.Connected && m.pair.successUntil.IsZero() {
 		m.pair.successUntil = time.Now().Add(1500 * time.Millisecond)
-		return m, m.pairTickCmd()
+		return m.armPairTick()
 	}
 	return m, nil
 }
 
-func (m Model) pairTickCmd() tea.Cmd {
+func (m Model) armPairTick() (Model, tea.Cmd) {
 	if !m.pair.open || !m.pairBusy() {
-		return nil
+		m.pair.ticking = false
+		return m, nil
 	}
-	return tea.Tick(pairTickInterval, func(time.Time) tea.Msg { return pairTickMsg{} })
+	if m.pair.ticking {
+		return m, nil
+	}
+	m.pair.ticking = true
+	return m, tea.Tick(pairTickInterval, func(time.Time) tea.Msg { return pairTickMsg{} })
 }
 
 func (m Model) submitPairCookies(raw string) (tea.Model, tea.Cmd) {
@@ -171,7 +178,9 @@ func (m Model) submitPairCookies(raw string) (tea.Model, tea.Cmd) {
 	m.pair.started = time.Now()
 	m.pair.ignoreFailedUntil = time.Now().Add(pairFailedGrace)
 	m.pair.ticks = 0
-	return m, tea.Batch(m.pairGoogleCmd(raw), m.pairTickCmd())
+	m.pair.ticking = false
+	m, tick := m.armPairTick()
+	return m, tea.Batch(m.pairGoogleCmd(raw), tick)
 }
 
 func (m Model) pairGoogleCmd(raw string) tea.Cmd {
@@ -214,13 +223,15 @@ func (m Model) updatePairKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 		return next, tea.Batch(append(cmds, tea.Quit)...)
-	case "esc", "q":
+	case "esc":
 		cmds := []tea.Cmd{m.cancelPairCmd()}
 		next, cmd := m.closePairOverlay()
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return next, tea.Batch(cmds...)
+	case "q":
+		return m.closePairOverlay()
 	case "enter":
 		if busy {
 			return m, nil

@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -43,5 +47,27 @@ func TestAdoptOwnedDaemonRequiresLivePid(t *testing.T) {
 	adoptOwnedDaemon(session)
 	if session.Owned {
 		t.Fatal("should not adopt a pid that is not this executable")
+	}
+}
+
+func TestAdoptOwnedDaemonLeavesLiveOwner(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ping", "-n", "30", "127.0.0.1")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+
+	dir := t.TempDir()
+	body := "1\n" + strconv.Itoa(cmd.Process.Pid) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ownedDaemonPIDFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{DataDir: dir}
+	adoptOwnedDaemon(session)
+	if session.Owned {
+		t.Fatal("must not steal a daemon from a live TUI owner")
 	}
 }

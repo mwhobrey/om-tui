@@ -320,6 +320,38 @@ func TestPairBusyPhases(t *testing.T) {
 	}
 }
 
+func TestQClosesPairOverlayWithoutCancel(t *testing.T) {
+	m := Model{width: 80, height: 24, pair: pairOverlay{open: true}}
+	m.status.Google.Pairing = &localapi.GooglePairingStatus{Phase: "waiting_confirm", Emoji: "🦊"}
+	next, cmd := m.updatePairKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("next type %T", next)
+	}
+	if got.pair.open {
+		t.Fatal("q should close the overlay")
+	}
+	if cmd != nil {
+		t.Fatal("q must not cancel pairing")
+	}
+}
+
+func TestSyncPairOverlayDoesNotStartSecondTick(t *testing.T) {
+	m := Model{
+		width:  80,
+		height: 24,
+		pair: pairOverlay{
+			open:    true,
+			ticking: true,
+		},
+	}
+	m.status.Google.Pairing = &localapi.GooglePairingStatus{Phase: "waiting_confirm"}
+	_, cmd := m.syncPairOverlayFromStatus()
+	if cmd != nil {
+		t.Fatal("status sync must not start a second tick chain")
+	}
+}
+
 func TestPairTickAdvancesFrame(t *testing.T) {
 	m := Model{pair: pairOverlay{open: true, submitting: true, started: time.Now()}}
 	next, cmd := m.Update(pairTickMsg{})

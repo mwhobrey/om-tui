@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -117,5 +118,101 @@ func TestGoogleSupervisorControlAccountPairRequiresCookies(t *testing.T) {
 	}
 	if err := control.StartGoogleAccountPair(nil); err == nil || !strings.Contains(err.Error(), "paste Google cookies") {
 		t.Fatalf("StartGoogleAccountPair() error = %v, want paste required", err)
+	}
+}
+
+func TestBackupAndRemoveSessionRestoresWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/session.json"
+	if err := os.WriteFile(path, []byte("old-session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backupAndRemoveSession(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("session should be moved aside")
+	}
+	restoreSessionBackup(path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "old-session" {
+		t.Fatalf("restored %q", raw)
+	}
+}
+
+func TestRestoreSessionBackupDoesNotClobberNewSession(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/session.json"
+	if err := os.WriteFile(path+".bak", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restoreSessionBackup(path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "new" {
+		t.Fatalf("clobbered new session: %q", raw)
+	}
+}
+
+func TestStopAndUnpairCancelsInFlightPairing(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath, []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+
+	blocked := make(chan struct{})
+	control.startGaia = func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error) {
+		return googleGaiaAttempt{
+			Emoji: "🦊",
+			Finish: func(ctx context.Context) (*client.SessionData, error) {
+				close(blocked)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			Disconnect: func() {},
+		}, nil
+	}
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "sid-value"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pairing did not reach phone confirm")
+	}
+	if err := control.StopAndUnpair(func() error { return os.Remove(sessionPath) }); err != nil {
+		t.Fatalf("StopAndUnpair(): %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatal("unpair should remove the session")
 	}
 }
