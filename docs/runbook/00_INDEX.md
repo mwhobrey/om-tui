@@ -58,8 +58,8 @@ go build -o om-tui .              # macOS/Linux
 ./om-tui read "query" --limit 20
 
 # Daily driver
-./om-tui pair
 ./om-tui tui                      # spawns serve --api --no-web if needed
+                                  # unpaired: p, paste a messages.google.com curl
 
 # Standalone daemon
 ./om-tui serve --api --no-web     # API+SSE for TUI/MCP

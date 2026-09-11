@@ -93,9 +93,9 @@ type (
 		body           string // the draft that was optimistically cleared, to restore
 		err            error
 	}
-	markedReadMsg  string
-	reconnectMsg   localapi.DaemonStatus
-	mediaDoneMsg   struct {
+	markedReadMsg string
+	reconnectMsg  localapi.DaemonStatus
+	mediaDoneMsg  struct {
 		action string // "open" or "save"
 		path   string
 	}
@@ -150,6 +150,7 @@ type Model struct {
 	frecency            *frecencyStore
 	customCmds          []customCommand
 	customCmdsModTime   time.Time
+	pair                pairOverlay
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -244,7 +245,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusMsg:
 		m.status = localapi.DaemonStatus(msg)
-		return m, nil
+		return m.syncPairOverlayFromStatus()
+
+	case pairTickMsg:
+		m.pair.ticks++
+		if !m.pair.successUntil.IsZero() && time.Now().After(m.pair.successUntil) {
+			return m.closePairOverlay()
+		}
+		var cmds []tea.Cmd
+		if m.pair.ticks%pairStatusEveryTicks == 0 {
+			cmds = append(cmds, m.refreshStatusCmd())
+		}
+		if tick := m.pairTickCmd(); tick != nil {
+			cmds = append(cmds, tick)
+		}
+		return m, tea.Batch(cmds...)
+
+	case pairStartedMsg:
+		if msg.err != nil {
+			m.pair.submitting = false
+			m.pair.pasteErr = msg.err.Error()
+			return m, nil
+		}
+		if msg.status.Google.Pairing != nil {
+			m.status = msg.status
+			return m.syncPairOverlayFromStatus()
+		}
+		return m, tea.Batch(m.refreshStatusCmd(), m.pairTickCmd())
 
 	case riversMsg:
 		m.rivers = msg
@@ -408,7 +435,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 			return m, nil
 		}
 		m.err = ""
@@ -422,8 +449,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clipboardTextFallbackMsg:
 		text, err := clipboardText()
 		if err != nil {
+			if m.pair.open {
+				m.pair.pasteErr = err.Error()
+				return m, nil
+			}
 			m.err = err.Error()
 			return m, nil
+		}
+		if m.pair.open {
+			return m.submitPairCookies(text)
 		}
 		if text == "" {
 			m.info = "Clipboard has no media"
@@ -499,6 +533,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.pair.open {
+			return m.updatePairKeys(msg)
+		}
 		if m.palette.open {
 			return m.updatePaletteKeys(msg)
 		}
@@ -532,6 +569,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r", "ctrl+r":
 			m.info = "Reconnecting…"
 			return m, m.reconnectCmd()
+		case "p":
+			if m.googleNeedsPair() {
+				return m.openPairOverlay()
+			}
 		case "o", "ctrl+o":
 			if m.activeID != "" {
 				m.info = "Opening media…"
@@ -545,7 +586,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a", "ctrl+a":
 			if m.activeID != "" {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 					return m, nil
 				}
 				m.info = "Attach file…"
@@ -558,7 +599,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+v":
 			if m.activeID != "" {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 					return m, nil
 				}
 				m.info = "Checking clipboard…"
@@ -688,7 +729,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 				return m, nil
 			}
 			emoji := reactPaletteEmojis[idx]
@@ -761,7 +802,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a", "ctrl+a":
 		if m.activeID != "" {
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 				return m, nil
 			}
 			m.info = "Attach file…"
@@ -770,7 +811,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+v":
 		if m.activeID != "" {
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 				return m, nil
 			}
 			m.info = "Checking clipboard…"
@@ -779,6 +820,10 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r", "ctrl+r":
 		m.info = "Reconnecting…"
 		return m, m.reconnectCmd()
+	case "p":
+		if m.googleNeedsPair() {
+			return m.openPairOverlay()
+		}
 	case "/":
 		return m.startJumpFilter()
 	case "ctrl+f":
@@ -802,6 +847,12 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.info = ""
 		return m, nil
+	case "p":
+		// Status bar advertises "press p to pair". Honor it from an empty
+		// composer; a non-empty draft still types the letter.
+		if m.googleNeedsPair() && strings.TrimSpace(m.compose.Value()) == "" {
+			return m.openPairOverlay()
+		}
 	case "ctrl+o":
 		// Bare letters always type in the composer — the old empty-draft special
 		// case ate the first "o"/"s" of a new message as a media action.
@@ -822,7 +873,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 			return m, nil
 		}
 		m.info = "Attach file…"
@@ -850,7 +901,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 			return m, nil
 		}
 		m.info = "Checking clipboard…"
@@ -864,7 +915,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 			return m, nil
 		}
 		if ids := m.broadcastIDList(); len(ids) > 0 {
@@ -1214,6 +1265,9 @@ func (m Model) View() string {
 	)
 	if m.palette.open {
 		placed = overlayCenter(placed, m.renderPaletteOverlay(), m.width, m.height)
+	}
+	if m.pair.open {
+		placed = overlayCenter(placed, m.renderPairOverlay(), m.width, m.height)
 	}
 	// Disable autowrap (DECAWM) for the whole frame. A single contact name or SMS
 	// preview containing a grapheme Windows Terminal renders wider than we measure
@@ -2056,10 +2110,10 @@ func renderStatus(status localapi.DaemonStatus, riverName, errText, info, slackB
 	dot := "○"
 	switch {
 	case g.NeedsPairing || (!g.Paired && !status.Connected):
-		state = "unpaired — run openmessage pair"
+		state = "unpaired — press p to pair"
 		style = warnStyle
 	case g.NeedsRepair:
-		state = "needs repair — re-pair Google Messages"
+		state = "needs repair — press p to re-pair"
 		style = warnStyle
 	case g.AuthExpired:
 		state = "auth expired"

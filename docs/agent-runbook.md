@@ -23,6 +23,12 @@ Consequences:
 - On Windows, point everything at `%LOCALAPPDATA%\OpenMessage` (or a shared
   `OPENMESSAGES_DATA_DIR`). Product path: [tui.md](tui.md). Architecture /
   current state: [runbook/](runbook/).
+- **TUI-owned daemon:** `tui` with no listener on 7007 spawns `serve --api --no-web`.
+  That child must die with the TUI — including when the terminal tab is closed.
+  Older builds detached it (`CREATE_NO_WINDOW` + new process group) so closing
+  the window left `om-tui.exe` running. Kill leftovers with
+  `Get-Process om-tui | Stop-Process`. A daemon you started yourself is still
+  left running on purpose.
 
 ## Reading the user's live messages
 
@@ -141,35 +147,30 @@ Key facts:
 
 ### Re-pair recipe (the one that works)
 
+**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone. `Esc`/`q` cancels pairing and returns keys to the TUI; `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
+
+**CLI (daemon down):**
+
 1. Stop the daemon (`om-tui serve` / any process holding the data dir).
 2. Force a clean pairing state by removing `session.json` from the data dir
    (back it up first). Other platforms' sessions (`whatsapp-session.db`,
    `signal-cli/`) are independent — leave them.
 3. **Clear the stale session FIRST (don't skip).** Running `pair --google` while a dead `session.json` is still in the data dir floods the pairing with `failed to decrypt data event: HMAC mismatch` and yields a new session that 401s on token refresh **immediately** (dead on arrival). Removing `session.json` (step 2) before pairing is what produces a healthy session that connects *and* syncs (`/api/status` freshness `behind_days` drops to 0). Some HMAC-mismatch lines are normal noise (events from the phone's own session the pairing client can't read) — the tell for a bad pair is an immediate post-pair 401, not the noise itself.
 4. Google's embedded sign-in flow is **blocked by Google**
-   ("sign-in not allowed in this app") and dead-ends in Google's troubleshooter
-   for any third-party client. Use the **cookie method** instead — extract
-   Google cookies from the user's signed-in Chrome. `pair --google-file
-   <path>` (read from a file), `pair --google-stdin` (piped), and `pair
-   --google` (interactive paste) are the same Google Account pairing flow,
-   differing only in how the cookie data is supplied:
+   ("This browser or app may not be secure") for WebViews **and** for Chrome
+   launched with remote debugging / a throwaway profile. Do not open a login
+   window for pairing. The TUI pairing overlay is paste-only: copy a
+   `messages.google.com` request as cURL from Chrome DevTools and `Ctrl+V`.
+   Pairing never launches Chrome against the live User Data directory. CLI
+   paste still works when the daemon is down:
+   `pair --google-file <path>`, `pair --google-stdin`, and `pair --google`.
    ```bash
    OPENMESSAGES_DATA_DIR="$HOME/.local/share/openmessage" \
      om-tui pair --google-file <cookiefile>
    ```
-   Decrypting Chrome cookies on macOS:
-   - key: `security find-generic-password -w -s "Chrome Safe Storage"`
-   - derive: PBKDF2-HMAC-SHA1(key, salt=`saltysalt`, iterations=1003, len=16)
-   - decrypt each `encrypted_value`: strip `v10` prefix, AES-128-CBC, IV = 16
-     spaces, strip PKCS7 padding; recent Chrome prepends a 32-byte domain hash —
-     try stripping the first 32 bytes if the result isn't clean UTF-8.
-   - source: `~/Library/Application Support/Google/Chrome/Default/Cookies`
-     (the signed-in profile; `Local State` maps profiles → accounts). Build a
-     `name=value; name=value; …` header from `.google.com` / `messages.google.com`
-     cookies and write it to a `0600` file.
-   - **Extract cookies immediately before pairing** — pairing with an older
-     extract has returned HTTP 401 (the staleness threshold is not
-     established; don't rely on any grace window).
+   Prefer the TUI paste path. `internal/googlecookies` still exists for
+   silent self-heal of an already-paired session; it cannot unwrap current
+   Chrome v20 cookies on Windows.
 5. Whichever variant you ran prints `EMOJI: <emoji>`. The user taps that emoji
    in Google Messages **on the phone** (notification shade, or profile →
    Device pairing) to confirm. The Gaia client init can time out once — just
@@ -180,13 +181,17 @@ Key facts:
 
 ### Self-healing (as of #74; requirements fixed 2026-07-20) — try this before any manual cookie surgery
 
-The daemon **refreshes expired Google cookies in-process** and reconnects
+The daemon **tries** to refresh expired Google cookies in-process and reconnect
 on its own. When the reconnect watchdog sees an expired session
 (`auth token: HTTP 401` / `SESSION_COOKIE_INVALID`) it reads the user's
 signed-in Chrome cookies, rewrites `auth_data.cookies` in `session.json`, and
 reconnects — no re-pair, no script. Implemented in `internal/googlecookies`
-(darwin-only; keychain → PBKDF2 → AES-128-CBC, handles the Chrome 130+
-`SHA256(host)` prefix, snapshots the cookie DB + WAL for freshness).
+(macOS keychain CBC; Windows DPAPI+AES-GCM **only when cookies are v10**,
+not current Chrome's app-bound v20). Headless Chrome DevTools is against a
+**temp copy** of the profile, never the live User Data dir, and returns no
+cookies on v20. Self-heal never opens an interactive Chrome window.
+On current Windows Chrome, self-heal usually cannot decrypt; re-pair via the
+TUI paste overlay (`p`).
 `refreshGoogleSessionCookies` prefers an explicit
 `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` if set, else this native path;
 `canRefreshGoogleCookies()` gates whether the watchdog refreshes or parks.
@@ -198,9 +203,16 @@ authenticates with the five `.google.com` account cookies
 service cookie exists **only** if the user has opened Messages-for-web in that
 Chrome profile; it is preferred when present but **never required**. (Before
 the fix, refresh hard-required it, so on profiles that never visited
-messages.google.com every repair failed with `missing required cookies:
-messages.google.com:OSID` and the app looped in `needs_repair` forever — a
-re-pair bought minutes, then died again.)
+messages.google.com every repair failed with a missing-OSID error
+and the app looped in `needs_repair` forever — a
+re-pair bought minutes, then died again.) Self-heal (not TUI pairing) still
+picks Chrome's **signed-in profile**, not blindly `profile.last_used`. Chrome's
+last-used profile is often an empty `Default` while Google account cookies
+(SID and friends) live in `Profile 1` / `Profile 2`. It prefers last-used when
+that profile has the five Gaia cookies, then `last_active_profiles`, then
+the signed-in profile whose cookie DB was written most recently.
+`OPENMESSAGE_CHROME_PROFILE` still overrides. TUI pairing does not read
+Chrome; paste a `messages.google.com` curl instead.
 
 **Expected steady-state — check WHICH BINARY first.** Before diagnosing any
 latched `needs_repair`, confirm the running daemon is the build you think it

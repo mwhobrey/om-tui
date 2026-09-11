@@ -120,7 +120,7 @@ Loopback server (default `127.0.0.1:7007`, override `OPENMESSAGES_HOST` / `OPENM
 | Dependency | Purpose | Failure mode |
 |---|---|---|
 | Android phone + Google Messages | SMS/RCS linked device | zombie session / `needs_repair` |
-| Chrome cookies (optional) | Google account pair + self-heal | auth_expired until refresh |
+| Chrome (optional) | Pasted Gaia cookies for TUI/CLI pair; native self-heal when decryptable | Current Windows Chrome stores v20 app-bound cookies om-tui cannot unwrap; paste re-pair |
 | WhatsApp account | companion device | logout if second process links |
 | `signal-cli` ≥ 0.14.5 | Signal live | poison-message crash-loop on older |
 | Slack user token (`xoxp-…`) | Slack river history/read/send + identity | DPAPI-bound vault on Windows |

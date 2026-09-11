@@ -19,3 +19,29 @@ func TestDataDirsMatch(t *testing.T) {
 		t.Fatal("empty should not match non-empty")
 	}
 }
+
+func TestReadOwnedPID(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeOwnedPID(dir, 4242); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readOwnedPID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 4242 {
+		t.Fatalf("pid = %d", got)
+	}
+}
+
+func TestAdoptOwnedDaemonRequiresLivePid(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeOwnedPID(dir, 1); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{DataDir: dir}
+	adoptOwnedDaemon(session)
+	if session.Owned {
+		t.Fatal("should not adopt a pid that is not this executable")
+	}
+}

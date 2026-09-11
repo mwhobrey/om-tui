@@ -273,7 +273,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		if err != nil {
 			return fmt.Errorf("init Google Messages supervisor: %w", err)
 		}
-		googleControl = newGoogleSupervisorControl(googleSupervisor, a.SessionPath, newGoogleSupervisor)
+		googleControl = newGoogleSupervisorControl(googleSupervisor, a.SessionPath, newGoogleSupervisor, logger, publishOverallStatus)
 		googleStartupCtx, cancelGoogleStartup := context.WithCancel(context.Background())
 		var googleStartupWG sync.WaitGroup
 		defer func() {
@@ -635,18 +635,26 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		if isDemo {
 			return app.GoogleStatusSnapshot{Connected: true, Paired: true, NeedsPairing: false, PhoneResponding: true}
 		}
-		return a.GoogleStatus()
+		status := a.GoogleStatus()
+		if googleControl != nil {
+			status.Pairing = googleControl.PairingSnapshot()
+		}
+		return status
 	}
 	recordGoogleSend := a.RecordGoogleSendOutcome
 	recordGoogleSendError := a.RecordGoogleSendError
 	markGoogleAuthExpired := a.HandleGoogleAuthExpiredError
 	reconnectGoogle := a.ReconnectGoogleMessages
 	unpairGoogle := a.Unpair
+	var pairGoogle func(map[string]string) error
+	var cancelGooglePair func()
 	if googleControl != nil {
 		reconnectGoogle = googleControl.Reconnect
 		unpairGoogle = func() error {
 			return googleControl.StopAndUnpair(a.Unpair)
 		}
+		pairGoogle = googleControl.StartGoogleAccountPair
+		cancelGooglePair = googleControl.CancelGoogleAccountPair
 	}
 	connectWhatsApp := a.StartWhatsAppConnect
 	pairWhatsAppPhone := a.PairWhatsAppPhone
@@ -701,6 +709,8 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				GooglePhoneResponding: a.GooglePhoneResponding,
 				MarkGoogleAuthExpired: markGoogleAuthExpired,
 				ReconnectGoogle:       reconnectGoogle,
+				PairGoogle:            pairGoogle,
+				CancelGooglePair:      cancelGooglePair,
 				Unpair:                unpairGoogle,
 				WhatsAppStatus:        func() any { return a.WhatsAppStatus() },
 				ConnectWhatsApp:       connectWhatsApp,
@@ -1064,7 +1074,8 @@ const googleCookieRefreshTimeout = 20 * time.Second
 
 // canRefreshGoogleCookies reports whether an expired Google session can be
 // recovered automatically — either via a configured external refresh script or
-// the built-in native refresh (macOS with a Chrome profile). When neither is
+// a local Chrome cookie DB (in-process decrypt on macOS; Windows/Linux also
+// try a dedicated pair-browser profile via Chrome DevTools). When neither is
 // available, the adapter classifies auth expiry as a blocked condition and the
 // existing needs_repair status prompts a manual re-pair instead of spinning.
 func canRefreshGoogleCookies() bool {

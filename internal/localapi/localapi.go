@@ -99,13 +99,21 @@ type SlackRiverStatus struct {
 
 // GoogleStatus is the Google Messages block inside /api/status.
 type GoogleStatus struct {
-	Connected       bool   `json:"connected"`
-	Paired          bool   `json:"paired"`
-	NeedsPairing    bool   `json:"needs_pairing"`
-	NeedsRepair     bool   `json:"needs_repair,omitempty"`
-	LastError       string `json:"last_error,omitempty"`
-	AuthExpired     bool   `json:"auth_expired,omitempty"`
-	PhoneResponding bool   `json:"phone_responding"`
+	Connected       bool                 `json:"connected"`
+	Paired          bool                 `json:"paired"`
+	NeedsPairing    bool                 `json:"needs_pairing"`
+	NeedsRepair     bool                 `json:"needs_repair,omitempty"`
+	LastError       string               `json:"last_error,omitempty"`
+	AuthExpired     bool                 `json:"auth_expired,omitempty"`
+	PhoneResponding bool                 `json:"phone_responding"`
+	Pairing         *GooglePairingStatus `json:"pairing,omitempty"`
+}
+
+// GooglePairingStatus is in-app Google Account pairing progress from /api/status.
+type GooglePairingStatus struct {
+	Phase string `json:"phase"`
+	Emoji string `json:"emoji,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // Conversation is a thread summary from GET /api/conversations.
@@ -700,6 +708,29 @@ func (c *Client) MarkRead(ctx context.Context, conversationID string) error {
 func (c *Client) ReconnectGoogle(ctx context.Context) (DaemonStatus, error) {
 	var status DaemonStatus
 	if err := c.postJSON(ctx, "/api/google/reconnect", map[string]any{}, &status); err != nil {
+		return DaemonStatus{}, err
+	}
+	return status, nil
+}
+
+// PairGoogle posts POST /api/google/pair with a pasted cookie blob (JSON,
+// Cookie header, or curl). Chrome auto-read is disabled; empty input is an error.
+func (c *Client) PairGoogle(ctx context.Context, cookies string) (DaemonStatus, error) {
+	cookies = strings.TrimSpace(cookies)
+	if cookies == "" {
+		return DaemonStatus{}, fmt.Errorf("paste Google cookies (curl or Cookie header from messages.google.com)")
+	}
+	var status DaemonStatus
+	if err := c.postJSON(ctx, "/api/google/pair", map[string]any{"cookies": cookies}, &status); err != nil {
+		return DaemonStatus{}, err
+	}
+	return status, nil
+}
+
+// CancelGooglePair posts POST /api/google/pair/cancel.
+func (c *Client) CancelGooglePair(ctx context.Context) (DaemonStatus, error) {
+	var status DaemonStatus
+	if err := c.postJSON(ctx, "/api/google/pair/cancel", map[string]any{}, &status); err != nil {
 		return DaemonStatus{}, err
 	}
 	return status, nil

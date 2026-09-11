@@ -36,9 +36,10 @@ they have not yet been runtime-smoked on real hardware.
 
 ```bash
 go build -o om-tui .        # om-tui.exe on Windows
-./om-tui pair
-./om-tui tui
+./om-tui tui                # unpaired: press p, paste a messages.google.com curl with ctrl+v, tap the emoji
 ```
+
+CLI pairing still works: `Get-Clipboard | ./om-tui pair --google` (Windows) or `pbpaste | ./om-tui pair --google`.
 
 ### Slack river
 
@@ -73,7 +74,8 @@ in the list for the active river.
 om-tui serve --api --no-web
 ```
 
-and stops that child when you quit the TUI. A daemon you started yourself is left running.
+and stops that child when you quit the TUI, including when you close the
+terminal window. A daemon you started yourself with `serve` is left running.
 
 ## Standalone API daemon
 
@@ -120,7 +122,8 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `PgUp` / `Ctrl+U` | Fetch an older page for the active Slack channel (composer or thread focus) |
 | `Ctrl+E` | React: open emoji palette on the selected message, then `1`–`9` to add/remove (composer or thread; bare `e` only in thread focus) |
 | `Ctrl+A` | Attach file (OS file picker on Windows; drop a path elsewhere). Composer text becomes the caption. Bare `a` works from list/thread only. |
-| `Ctrl+V` | Paste media from the OS clipboard and send; falls back to pasting text into the composer |
+| `p` | Pair Google Messages when unpaired (overlay: paste a `messages.google.com` curl with `Ctrl+V`, then tap the emoji on your phone) |
+| `Ctrl+V` | Pair overlay: paste cookies. Otherwise paste media from the OS clipboard and send; falls back to pasting text into the composer |
 | `Ctrl+O` | Open latest media (or the selected message in thread focus) with the OS default app (`open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows). Bare `o` works from list/thread only — in the composer letters always type. |
 | `Ctrl+S` | Save media (same focus rules as open) |
 | `Ctrl+R` / `r` | Reconnect Google Messages (`r` from list/thread; `Ctrl+R` also from composer) |
@@ -228,7 +231,7 @@ Slack remains text-first.
 4. `./om-tui tui` attaches ("Attached to local API daemon…")
 5. Quit TUI — standalone daemon still running
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
-7. Press `r` when disconnected; unpaired state tells you to run `om-tui pair`
+7. Press `p` when unpaired to pair Google Messages: paste a `messages.google.com` curl with `Ctrl+V`, then confirm the emoji on your phone; `Esc`/`q` cancels if it stalls; `r` reconnects an existing session
 8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
 9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes
@@ -248,6 +251,7 @@ Unread badges in the conversation list come from `unread_count`. Fresh inbound G
 ## Known cross-platform gaps
 
 - **Vault**: Keychain (macOS) and Secret Service (Linux) backends are shipped but not yet runtime-verified on real hardware (see "Data directory" above). Windows DPAPI is the daily-driver path today.
+- **Google pairing**: current Chrome on Windows encrypts Gaia cookies (v20 / app-bound). The TUI does not auto-read Chrome; paste a `messages.google.com` curl.
 - **Notifications**: Windows toast notifications only; no native macOS/Linux equivalent yet.
 - **File picker**: `Ctrl+A` opens a native picker on Windows; macOS/Linux currently require typing/pasting a path.
 

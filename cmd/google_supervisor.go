@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,11 +16,13 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/bridge"
+	"github.com/maxghenis/openmessage/internal/googlecookies"
 )
 
 const (
 	googleAccountID             = "google-primary"
 	googleSupervisorStopTimeout = 30 * time.Second
+	googlePairPhoneTimeout      = 5 * time.Minute
 	// Ninety seconds rate-limits minutes-scale cookie-revocation churn while
 	// remaining transparent to legitimate expiry, measured at >= about 14 minutes.
 	googleCredentialRepairDefaultMinInterval = 90 * time.Second
@@ -216,26 +219,46 @@ type googleSupervisorControl struct {
 	supervisor    *bridge.Supervisor
 	newSupervisor func() (*bridge.Supervisor, error)
 	sessionPath   string
+	logger        zerolog.Logger
+	onChange      func()
+	startGaia     func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error)
+	loadCookies   func(ctx context.Context, onNeedBrowser func()) (map[string]string, error)
 
 	mu                sync.Mutex
 	inputFingerprint  string
 	supervisorStopped bool
 	stopping          bool
 	closed            bool
+	pairing           *googlePairRuntime
 }
 
 func newGoogleSupervisorControl(
 	supervisor *bridge.Supervisor,
 	sessionPath string,
 	newSupervisor func() (*bridge.Supervisor, error),
+	logger zerolog.Logger,
+	onChange func(),
 ) *googleSupervisorControl {
 	fingerprint, _ := googleSessionFingerprint(sessionPath)
-	return &googleSupervisorControl{
+	control := &googleSupervisorControl{
 		supervisor:       supervisor,
 		newSupervisor:    newSupervisor,
 		sessionPath:      sessionPath,
+		logger:           logger,
+		onChange:         onChange,
 		inputFingerprint: fingerprint,
 	}
+	control.startGaia = control.startLiveGaia
+	control.loadCookies = control.loadChromeAccountCookies
+	return control
+}
+
+func (c *googleSupervisorControl) loadChromeAccountCookies(ctx context.Context, onNeedBrowser func()) (map[string]string, error) {
+	return googlecookies.ReadGoogleAccountCookies(ctx, googlecookies.ReadConfig{
+		PairBrowserDir:   filepath.Join(filepath.Dir(c.sessionPath), "google-pair-browser"),
+		AllowInteractive: true,
+		OnNeedBrowser:    onNeedBrowser,
+	})
 }
 
 func (c *googleSupervisorControl) Reconnect() error {
@@ -310,11 +333,15 @@ func (c *googleSupervisorControl) Reconnect() error {
 	}
 }
 
-func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
+func (c *googleSupervisorControl) parkSupervisor() error {
 	c.mu.Lock()
 	if c.closed || c.stopping {
 		c.mu.Unlock()
 		return bridge.ErrSupervisorStopped
+	}
+	if c.supervisorStopped {
+		c.mu.Unlock()
+		return nil
 	}
 	c.stopping = true
 	supervisor := c.supervisor
@@ -324,19 +351,22 @@ func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
 	defer cancel()
 	stopErr := supervisor.Stop(ctx)
 	if stopErr != nil {
-		// Stop is terminal once requested, but a timed-out caller does not prove
-		// that the old adapter generation has joined yet. Keep reconnects gated
-		// until it has, so a replacement supervisor can never overlap it.
 		go c.awaitStoppedSupervisor(supervisor)
 		return fmt.Errorf("stop Google Messages connection: %w", stopErr)
 	}
-	unpairErr := unpair()
 
 	c.mu.Lock()
 	c.supervisorStopped = true
 	c.stopping = false
 	c.mu.Unlock()
-	return unpairErr
+	return nil
+}
+
+func (c *googleSupervisorControl) StopAndUnpair(unpair func() error) error {
+	if err := c.parkSupervisor(); err != nil {
+		return err
+	}
+	return unpair()
 }
 
 func (c *googleSupervisorControl) awaitStoppedSupervisor(supervisor *bridge.Supervisor) {

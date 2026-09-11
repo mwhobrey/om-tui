@@ -1,0 +1,121 @@
+package cmd
+
+import (
+	"context"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/maxghenis/openmessage/internal/app"
+	"github.com/maxghenis/openmessage/internal/bridge"
+	"github.com/maxghenis/openmessage/internal/client"
+)
+
+func TestGoogleSupervisorControlAccountPairSavesSessionAndReconnects(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	lifecycle := &googleRepairTestLifecycle{}
+	var supervisorCount atomic.Int32
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		supervisorCount.Add(1)
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatalf("NewSupervisor(): %v", err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+
+	finishCh := make(chan struct{})
+	control.startGaia = func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error) {
+		if cookies["SID"] != "sid-value" {
+			t.Fatalf("cookies = %#v", cookies)
+		}
+		return googleGaiaAttempt{
+			Emoji: "🦊",
+			Finish: func(context.Context) (*client.SessionData, error) {
+				<-finishCh
+				return &client.SessionData{AuthDataJSON: []byte(`{"cookies":{"SID":"sid-value"}}`)}, nil
+			},
+			Disconnect: func() {},
+		}, nil
+	}
+
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "sid-value"}); err != nil {
+		t.Fatalf("StartGoogleAccountPair(): %v", err)
+	}
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "other"}); err != app.ErrGooglePairingInProgress {
+		t.Fatalf("second start error = %v, want in progress", err)
+	}
+
+	waitFor := func(wantPhase, wantEmoji string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			snap := control.PairingSnapshot()
+			if snap != nil && snap.Phase == wantPhase && snap.Emoji == wantEmoji {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("pairing = %#v, want phase %q emoji %q", control.PairingSnapshot(), wantPhase, wantEmoji)
+	}
+	waitFor(googlePairPhaseWaitingConfirm, "🦊")
+	close(finishCh)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if control.PairingSnapshot() == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pairing still active: %#v", control.PairingSnapshot())
+}
+
+func TestGoogleSupervisorControlAccountPairRequiresCookies(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatalf("NewSupervisor(): %v", err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+
+	control.loadCookies = func(ctx context.Context, onNeedBrowser func()) (map[string]string, error) {
+		t.Fatal("Chrome auto-read must not run")
+		return nil, nil
+	}
+	if err := control.StartGoogleAccountPair(nil); err == nil || !strings.Contains(err.Error(), "paste Google cookies") {
+		t.Fatalf("StartGoogleAccountPair() error = %v, want paste required", err)
+	}
+}

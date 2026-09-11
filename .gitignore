@@ -34,6 +34,7 @@ output/
 # Build artifacts and one-off recovery dumps that should never be tracked
 /openmessage-demo
 /openmessage.exe
+/om-tui.exe
 /openmessage.exe~
 *.exe~
 /genviz

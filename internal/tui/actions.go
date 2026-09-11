@@ -44,6 +44,18 @@ func allActions() []tuiAction {
 			},
 		},
 		{
+			ID:       "pair-google",
+			Label:    "Pair Google Messages",
+			Keys:     []string{"p"},
+			Keywords: []string{"google", "pair", "cookie", "gaia", "account"},
+			Group:    "global",
+			InHelp:   true,
+			When:     func(m Model) bool { return !m.reactPalette && m.googleNeedsPair() },
+			Run: func(m Model) (tea.Model, tea.Cmd) {
+				return m.openPairOverlay()
+			},
+		},
+		{
 			ID:       "quick-msg",
 			Label:    "Quick message",
 			Keys:     []string{">msg"},
@@ -361,7 +373,7 @@ func allActions() []tuiAction {
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 					return m, nil
 				}
 				m.info = "Attach file…"
@@ -379,7 +391,7 @@ func allActions() []tuiAction {
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press r to reconnect or run openmessage pair"
+					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
 					return m, nil
 				}
 				m.info = "Checking clipboard…"
@@ -485,7 +497,7 @@ func contextHelpParts(m Model) []helpPart {
 
 	// Stable order for footer readability (not registry order alone).
 	order := []string{
-		"quit", "back", "river", "jump", "broadcast-toggle", "open-conversation",
+		"quit", "pair-google", "back", "river", "jump", "broadcast-toggle", "open-conversation",
 		"send", "slack-thread", "react", "slack-older", "open-media", "search",
 	}
 	byID := make(map[string]tuiAction, len(helpActions))
@@ -523,6 +535,8 @@ func contextHelpParts(m Model) []helpPart {
 			label = "jump"
 		case "search":
 			label = "msgs"
+		case "pair-google":
+			label = "pair"
 		}
 		chord := ""
 		if len(a.Keys) > 0 {

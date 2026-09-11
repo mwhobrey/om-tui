@@ -17,7 +17,7 @@ main.go              Command dispatch + usage text
 |---|---|
 | `serve.go` | Compose web / API / MCP / transports; daemon vs client shape |
 | `tui.go` | Attach/spawn API daemon; launch Bubble Tea |
-| `pair.go` / `pair_slack.go` | Google pair; Slack river pair + vault |
+| `pair.go` / `pair_slack.go` | Google pair (TUI paste / CLI `--google`); Slack river pair + vault |
 | `read.go`, status, thread(s) | Repair-free store reads |
 | `send*.go` | Outgoing text/media via daemon or local |
 | `backup.go`, migrate | Offline legacy backup + V2 transform |
@@ -39,7 +39,7 @@ Authoritative usage strings live in `main.go`.
 | `slacklive/` | Slack Web API client, recent sync, text send |
 | `river/` | River identity model (`messages-default`, `slack-<team>`) |
 | `vault/` | Encrypted per-river credentials (DPAPI on Windows, Keychain on macOS, Secret Service via `secret-tool` on Linux; insecure test-only path via `OPENMESSAGES_VAULT_INSECURE=1`) |
-| `googlecookies/` | macOS Chrome cookie refresh for Google self-heal |
+| `googlecookies/` | Native Chrome cookie decrypt for Google **self-heal** (keychain/DPAPI + CDP). Pairing is paste-only: current Chrome v20 cookies cannot be unwrapped. CDP, if used, runs against a temp copy only — never the live User Data dir. |
 | `notify/` | macOS / Windows notifications |
 
 ### Storage

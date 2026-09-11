@@ -26,7 +26,8 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Slack threads | Dedicated TUI thread view, `conversations.replies`, reply-in-thread send |
 | Slack realtime | Optional Socket Mode; polling remains startup/reconnect fallback |
 | Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
-| TUI river switcher, filter/search, broadcast, media open/save/paste, reactions | Shipped; context-aware help; `Ctrl+K` universal palette (all-river jump, `>` commands, frecency, `commands.json`, `>msg contact::body`) |
+| TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). Daemon parks Google then runs Gaia; `Esc`/`q` dismisses a stuck overlay |
+| TUI-owned daemon dies with the TUI (Windows job object) | Shipped this branch; closing the terminal no longer leaves `om-tui.exe` serving |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |
 | Google device ID-space reset repair (`repair google-idspace`) | Ported from upstream |
 | Docs: `docs/tui.md` + `docs/runbook/` + `NOTICE.md` | Present |
@@ -41,7 +42,8 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
 | Daemon honors `instance.lock` | Still backup/migrate-only |
 | Native GUI / desktop notifications on macOS/Linux | Non-goal for om-tui; Windows-only toasts today |
-| QR Google pair | Dead for many accounts — cookie method only |
+| QR Google pair | Dead for many accounts — TUI paste / `pair --google` cookie method |
+| TUI Google Chrome cookie auto-read | Parked: current Chrome encrypts Gaia cookies (v20). Pair by pasting a `messages.google.com` curl |
 | CLAUDE.md / README / agent-runbook | Synced for the TUI-only, cross-platform fork; prefer this runbook if anything drifts |
 
 ## Immediate next steps (suggested)
