@@ -97,6 +97,8 @@ type APIOptions struct {
 	GooglePhoneResponding  func() bool
 	MarkGoogleAuthExpired  func(error) bool
 	ReconnectGoogle        func() error
+	PairGoogle             func(cookies map[string]string) error
+	CancelGooglePair       func()
 	Unpair                 UnpairFunc
 	WhatsAppStatus         func() any
 	ConnectWhatsApp        func() error
@@ -353,6 +355,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			"google": map[string]bool{
 				"status":    opts.GoogleStatus != nil,
 				"reconnect": opts.ReconnectGoogle != nil,
+				"pair":      opts.PairGoogle != nil,
 				"unpair":    opts.Unpair != nil,
 			},
 			"whatsapp": map[string]bool{
@@ -2756,6 +2759,60 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, googleAPIErrorMessage("reconnect google messages", err), 502)
 			return
 		}
+		publishStatus(currentConnected())
+		writeJSON(w, statusPayload(currentConnected()))
+	})
+
+	mux.HandleFunc("/api/google/pair", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.PairGoogle == nil {
+			httpError(w, "google pairing unavailable", 501)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+		var body struct {
+			Cookies string `json:"cookies"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			httpError(w, "invalid request body", 400)
+			return
+		}
+		var cookies map[string]string
+		if strings.TrimSpace(body.Cookies) == "" {
+			httpError(w, "paste Google cookies (a curl or Cookie header from messages.google.com)", 400)
+			return
+		}
+		parsed, err := client.ParseGoogleCookiesInput(body.Cookies)
+		if err != nil {
+			httpError(w, "parse cookies: "+err.Error(), 400)
+			return
+		}
+		cookies = parsed
+		if err := opts.PairGoogle(cookies); err != nil {
+			if errors.Is(err, app.ErrGooglePairingInProgress) {
+				httpError(w, err.Error(), 409)
+				return
+			}
+			httpError(w, googleAPIErrorMessage("pair google messages", err), 502)
+			return
+		}
+		publishStatus(currentConnected())
+		writeJSON(w, statusPayload(currentConnected()))
+	})
+
+	mux.HandleFunc("/api/google/pair/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.CancelGooglePair == nil {
+			httpError(w, "google pairing unavailable", 501)
+			return
+		}
+		opts.CancelGooglePair()
 		publishStatus(currentConnected())
 		writeJSON(w, statusPayload(currentConnected()))
 	})

@@ -120,13 +120,14 @@ Do not weaken these when "simplifying" serve.
 2. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
 3. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
 4. **Google QR is dead** for many accounts — cookie / Google Account pairing.
-5. **Clear `session.json`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
+5. **Clear `session.json` and `session.json.bak`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
 6. **Don't thrash Google reconnect/pair** — account throttling.
 7. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
 8. **`go.work` overrides** can make dependency bumps look ignored.
 9. **Keep PATH binary = daemon binary** — schema migrations from a newer CLI against an older running daemon are hostile.
 10. **Non-goals** (this fork): native GUI/tray, iMessage live sync (import-only), inline media previews, signed installers — see [../tui.md](../tui.md).
 11. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
+12. **TUI Google pairing is paste-only for now.** Current Chrome on Windows stores Gaia cookies as v20 (app-bound). Native DPAPI cannot unwrap that, and CDP against a temp copy returns none, so `p` no longer auto-reads Chrome. Overlay instructions: `messages.google.com` → F12 → Network → Copy as cURL → `ctrl+v`. `POST /api/google/pair` requires a cookie blob. Silent cookie refresh (`googlecookies.Refresh`) still tries native decrypt for an already-paired session. Never launch Chrome with remote debugging against the live User Data dir. Kill and restart `om-tui` only when the overlay shows `failed` or has sat more than five minutes (`googlePairPhoneTimeout`); a shorter wait is still a live phone confirmation.
 
 ## MCP tools (24)
 

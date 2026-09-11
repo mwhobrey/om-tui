@@ -2224,6 +2224,73 @@ func TestWhatsAppPairCodeRoute(t *testing.T) {
 	}
 }
 
+func TestGooglePairRouteStartsPairing(t *testing.T) {
+	var got map[string]string
+	ts := newTestServerWithOptions(t, APIOptions{
+		PairGoogle: func(cookies map[string]string) error {
+			got = cookies
+			return nil
+		},
+		GoogleStatus: func() any {
+			return app.GoogleStatusSnapshot{
+				NeedsPairing: true,
+				Pairing:      &app.GooglePairingSnapshot{Phase: "starting"},
+			}
+		},
+	})
+
+	resp, err := http.Post(ts.server.URL+"/api/google/pair", "application/json", strings.NewReader(`{"cookies":"SID=sid-value; SAPISID=sap-value"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("got status %d, want 200", resp.StatusCode)
+	}
+	if got["SID"] != "sid-value" || got["SAPISID"] != "sap-value" {
+		t.Fatalf("cookies = %#v", got)
+	}
+}
+
+func TestGooglePairRouteRequiresCookies(t *testing.T) {
+	called := false
+	ts := newTestServerWithOptions(t, APIOptions{
+		PairGoogle: func(cookies map[string]string) error {
+			called = true
+			return nil
+		},
+		GoogleStatus: func() any {
+			return app.GoogleStatusSnapshot{NeedsPairing: true}
+		},
+	})
+
+	resp, err := http.Post(ts.server.URL+"/api/google/pair", "application/json", strings.NewReader(`{"source":"chrome"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("got status %d, want 400", resp.StatusCode)
+	}
+	if called {
+		t.Fatal("PairGoogle must not run without pasted cookies")
+	}
+}
+
+func TestGooglePairRouteRejectsUnknownSource(t *testing.T) {
+	ts := newTestServerWithOptions(t, APIOptions{
+		PairGoogle: func(map[string]string) error { return nil },
+	})
+	resp, err := http.Post(ts.server.URL+"/api/google/pair", "application/json", strings.NewReader(`{"source":"devtools"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("got status %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestWhatsAppPairCodeRouteRejectsBadRequests(t *testing.T) {
 	ts := newTestServerWithOptions(t, APIOptions{
 		PairWhatsAppPhone: func(phone string) (string, error) {

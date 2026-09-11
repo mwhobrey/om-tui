@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package googlecookies
 
@@ -8,14 +8,8 @@ import (
 	"path/filepath"
 )
 
-// NativeSupported is darwin-only for now; Linux installs configure
-// OPENMESSAGE_COOKIE_REFRESH_SCRIPT (see scripts/) instead.
-func NativeSupported() bool {
-	return false
-}
-
 func defaultChromeProfileDir(home string) string {
-	return filepath.Join(home, ".config", "google-chrome", "Default")
+	return resolveChromeProfile(filepath.Join(home, ".config", "google-chrome"))
 }
 
 func chromeSafeStorageSecret(ctx context.Context) ([]byte, error) {

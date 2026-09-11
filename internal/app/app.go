@@ -202,6 +202,19 @@ type GoogleStatusSnapshot struct {
 	// heal cycle; a climbing count means cookies are being revoked within
 	// minutes, which the pacing floor is throttling rather than hiding.
 	RepairsPaced uint64 `json:"repairs_paced,omitempty"`
+	// Pairing is set while the daemon owns an in-progress Google Account pair.
+	Pairing *GooglePairingSnapshot `json:"pairing,omitempty"`
+}
+
+// ErrGooglePairingInProgress is returned when a second Google Account pair
+// is started while one is already running.
+var ErrGooglePairingInProgress = fmt.Errorf("Google Messages pairing is already in progress")
+
+// GooglePairingSnapshot is the in-app Google Account pairing progress.
+type GooglePairingSnapshot struct {
+	Phase string `json:"phase"`
+	Emoji string `json:"emoji,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // googleRepairThreshold is how many consecutive failed Google sends (with no
@@ -657,6 +670,9 @@ func (a *App) Unpair() error {
 	}
 	if err := os.Remove(a.SessionPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove session: %w", err)
+	}
+	if err := os.Remove(a.SessionPath + ".bak"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove session backup: %w", err)
 	}
 	a.Logger.Info().Msg("Unpaired — session deleted")
 	return nil

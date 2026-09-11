@@ -6,33 +6,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-// NativeSupported reports whether this build can refresh cookies without an
-// external script: macOS with a readable Chrome profile present. The first
-// keychain read may show a one-time "OpenMessage wants to access Chrome Safe
-// Storage" prompt; Always Allow persists it.
-func NativeSupported() bool {
-	profile := DefaultChromeProfile()
-	if profile == "" {
-		return false
-	}
-	for _, c := range []string{
-		filepath.Join(profile, "Network", "Cookies"),
-		filepath.Join(profile, "Cookies"),
-	} {
-		if _, err := os.Stat(c); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
 func defaultChromeProfileDir(home string) string {
-	return filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default")
+	return resolveChromeProfile(filepath.Join(home, "Library", "Application Support", "Google", "Chrome"))
 }
 
 // chromeSafeStorageSecret reads Chrome's cookie-encryption password from the

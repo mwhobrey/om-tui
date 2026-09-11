@@ -33,14 +33,14 @@ licensing for everything this is built on lives in [NOTICE.md](NOTICE.md).
 git clone https://github.com/mwhobrey/om-tui.git
 cd om-tui
 go build -o om-tui .          # om-tui.exe on Windows
-./om-tui pair
+./om-tui tui                  # unpaired: press p, paste a messages.google.com curl, tap the emoji
 ./om-tui pair slack --token xoxp-... --name "Acme"   # optional, add --app-token xapp-... for Socket Mode
-./om-tui tui
 ```
 
-Google Account pairing (cookie method) is the path that works for most
-accounts. Copy cookies from browser devtools (or a `curl` of
-`messages.google.com/web/config`) and pipe them in:
+Google Account pairing is the path that works for most accounts. In the TUI,
+press `p`, then paste a `curl` / Cookie header from `messages.google.com`
+(`Ctrl+V`). Chrome auto-read is parked: current Chrome encrypts those cookies.
+CLI paste still works when the daemon is down:
 
 ```bash
 pbpaste | ./om-tui pair --google      # macOS

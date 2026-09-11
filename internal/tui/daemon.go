@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,13 +23,14 @@ const (
 
 // Session is a live attachment to a local OpenMessage API daemon.
 type Session struct {
-	Client    *localapi.Client
-	DataDir   string
-	BaseURL   string
-	Owned     bool
-	ownedCmd  *exec.Cmd
-	ownedPID  int
-	cancelSSE context.CancelFunc
+	Client      *localapi.Client
+	DataDir     string
+	BaseURL     string
+	Owned       bool
+	ownedCmd    *exec.Cmd
+	ownedPID    int
+	ownedReaper io.Closer
+	cancelSSE   context.CancelFunc
 }
 
 // EnsureDaemon attaches to a reachable daemon for dataDir, or spawns
@@ -47,23 +49,26 @@ func EnsureDaemon(ctx context.Context, dataDir string) (*Session, error) {
 	status, reachable, err := client.Status(ctx)
 	if reachable && err == nil && dataDirsMatch(status.Auth.DataDir, dataDir) {
 		client.Token = preferToken(status, dataDir, client.Token)
-		return &Session{Client: client, DataDir: dataDir, BaseURL: baseURL, Owned: false}, nil
+		session := &Session{Client: client, DataDir: dataDir, BaseURL: baseURL, Owned: false}
+		adoptOwnedDaemon(session)
+		return session, nil
 	}
 	if reachable && err == nil && !dataDirsMatch(status.Auth.DataDir, dataDir) {
 		return nil, fmt.Errorf("daemon at %s is using data dir %q, want %q", baseURL, status.Auth.DataDir, dataDir)
 	}
 
-	cmd, pid, err := spawnAPIDaemon(dataDir)
+	cmd, pid, reaper, err := spawnAPIDaemon(dataDir)
 	if err != nil {
 		return nil, err
 	}
 	session := &Session{
-		Client:   localapi.NewClient(baseURL, ""),
-		DataDir:  dataDir,
-		BaseURL:  baseURL,
-		Owned:    true,
-		ownedCmd: cmd,
-		ownedPID: pid,
+		Client:      localapi.NewClient(baseURL, ""),
+		DataDir:     dataDir,
+		BaseURL:     baseURL,
+		Owned:       true,
+		ownedCmd:    cmd,
+		ownedPID:    pid,
+		ownedReaper: reaper,
 	}
 	if err := writeOwnedPID(dataDir, pid); err != nil {
 		_ = session.Close()
@@ -108,40 +113,90 @@ func waitForDaemon(ctx context.Context, session *Session) error {
 	}
 }
 
-func spawnAPIDaemon(dataDir string) (*exec.Cmd, int, error) {
+func spawnAPIDaemon(dataDir string) (*exec.Cmd, int, io.Closer, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, 0, fmt.Errorf("resolve executable: %w", err)
+		return nil, 0, nil, fmt.Errorf("resolve executable: %w", err)
 	}
 	logPath := filepath.Join(dataDir, daemonLogFile)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, 0, fmt.Errorf("open daemon log: %w", err)
+		return nil, 0, nil, fmt.Errorf("open daemon log: %w", err)
 	}
 
 	cmd := exec.Command(exe, "serve", "--api", "--no-web")
 	cmd.Env = append(os.Environ(), "OPENMESSAGES_DATA_DIR="+dataDir)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	configureDaemonProc(cmd)
+	if nullIn, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
+		cmd.Stdin = nullIn
+		defer nullIn.Close()
+	}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return nil, 0, fmt.Errorf("start serve --api: %w", err)
+		return nil, 0, nil, fmt.Errorf("start serve --api: %w", err)
 	}
 	// Detach log file from our process; child keeps the FD.
 	_ = logFile.Close()
-	return cmd, cmd.Process.Pid, nil
+	return cmd, cmd.Process.Pid, attachKillOnCloseJob(cmd.Process.Pid), nil
 }
 
 func writeOwnedPID(dataDir string, pid int) error {
 	path := filepath.Join(dataDir, ownedDaemonPIDFile)
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	body := strconv.Itoa(pid) + "\n" + strconv.Itoa(os.Getpid()) + "\n"
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+func readOwnedRecord(dataDir string) (daemonPID, ownerPID int, err error) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, ownedDaemonPIDFile))
+	if err != nil {
+		return 0, 0, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 {
+		return 0, 0, fmt.Errorf("invalid owned daemon pid")
+	}
+	daemonPID, err = strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || daemonPID <= 0 {
+		return 0, 0, fmt.Errorf("invalid owned daemon pid")
+	}
+	if len(lines) > 1 {
+		ownerPID, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
+	}
+	return daemonPID, ownerPID, nil
+}
+
+func readOwnedPID(dataDir string) (int, error) {
+	pid, _, err := readOwnedRecord(dataDir)
+	return pid, err
+}
+
+func adoptOwnedDaemon(session *Session) {
+	if session == nil {
+		return
+	}
+	daemonPID, ownerPID, err := readOwnedRecord(session.DataDir)
+	if err != nil {
+		return
+	}
+	if ownerPID > 0 && ownerPID != os.Getpid() && processAlive(ownerPID) {
+		return
+	}
+	if !processLooksLikeDaemon(daemonPID) {
+		return
+	}
+	session.Owned = true
+	session.ownedPID = daemonPID
+	session.ownedReaper = attachKillOnCloseJob(daemonPID)
 }
 
 func clearOwnedPID(dataDir string) {
 	_ = os.Remove(filepath.Join(dataDir, ownedDaemonPIDFile))
 }
 
-// Close stops an owned daemon child. Pre-existing daemons are left running.
+// Close stops an owned daemon child. Pre-existing daemons are left running
+// unless this TUI (or a previous TUI) spawned them.
 func (s *Session) Close() error {
 	if s == nil {
 		return nil
@@ -154,15 +209,28 @@ func (s *Session) Close() error {
 		return nil
 	}
 	var err error
+	reaped := false
+	if s.ownedReaper != nil {
+		err = s.ownedReaper.Close()
+		s.ownedReaper = nil
+		reaped = true
+	}
 	if s.ownedCmd != nil && s.ownedCmd.Process != nil {
-		err = s.ownedCmd.Process.Kill()
+		killErr := s.ownedCmd.Process.Kill()
 		_, _ = s.ownedCmd.Process.Wait()
+		if !reaped && err == nil {
+			err = killErr
+		}
 	} else if s.ownedPID > 0 {
 		proc, findErr := os.FindProcess(s.ownedPID)
 		if findErr == nil {
-			err = proc.Kill()
+			killErr := proc.Kill()
+			if !reaped && err == nil {
+				err = killErr
+			}
 		}
 	}
+	killDaemonTree(s.ownedPID)
 	clearOwnedPID(s.DataDir)
 	s.Owned = false
 	return err

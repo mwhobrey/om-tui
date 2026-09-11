@@ -58,9 +58,9 @@ and **[docs/runbook/](docs/runbook/)** before touching anything. The traps that 
 - **Read live messages via the HTTP API** (`/api/conversations/<id>/messages`,
   `/api/search`, `/api/status`) — the daemon holds the WAL'd DB, so a direct
   `sqlite3` reader hits "unable to open database file (14)".
-- **Re-pairing Google Messages:** QR is dead for many accounts; use Google Account
-  pairing via the cookie method; clear `session.json` to reach the pairing
-  screen; don't over-reconnect (it throttles the account).
+- **Re-pairing Google Messages:** QR is dead for many accounts. Press `p` and
+  paste a `messages.google.com` curl (`Ctrl+V`); clear `session.json` to reach
+  the pairing screen; don't over-reconnect (it throttles the account).
 - **One transport owner.** `serve --mcp-stdio` is transportless by default; a
   second process with WhatsApp/Signal credentials logs the other out.
 - **macOS/Linux vault is not yet at parity.** Slack river credentials use
@@ -77,14 +77,13 @@ TUI + rivers, on any OS. Full keys and smoke checklist:
 ```bash
 # Go is mise-managed on this box — see docs/runbook/03_RULES_AND_STANDARDS.md
 go build -o om-tui .                       # om-tui.exe on Windows
-./om-tui pair                              # Google Messages
+./om-tui tui                               # unpaired: press p, paste a messages.google.com curl
 ./om-tui pair slack --token xoxp-... --name "Acme"
-./om-tui tui                               # spawns serve --api --no-web if needed
 ```
 
 - Rivers: built-in `messages-default`; Slack rivers are `slack-<team-id>`.
 - Credentials: `rivers/<id>/credentials.enc`, OS-backed sealing (see vault note above).
-- TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media.
+- TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media; `p` Google Account pair when unpaired.
 - API daemon: `serve --api --no-web` exposes `/api/rivers`, `/api/conversations?river_id=…`.
 
 ## Local CLI (read-only, no transports)

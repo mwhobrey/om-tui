@@ -373,7 +373,7 @@ func TestGoogleSupervisorManualReconnectUsesOwnedCommands(t *testing.T) {
 			t.Errorf("Supervisor.Stop() error = %v", err)
 		}
 	})
-	control := newGoogleSupervisorControl(supervisor, sessionPath, nil)
+	control := newGoogleSupervisorControl(supervisor, sessionPath, nil, zerolog.Nop(), nil)
 
 	if err := control.Reconnect(); err != nil {
 		t.Fatalf("Reconnect() from stopped: %v", err)
@@ -432,7 +432,7 @@ func TestGoogleSupervisorControlReconnectAfterUnpairRebuildsSupervisor(t *testin
 	if err != nil {
 		t.Fatalf("NewSupervisor() error = %v", err)
 	}
-	control := newGoogleSupervisorControl(firstSupervisor, sessionPath, newSupervisor)
+	control := newGoogleSupervisorControl(firstSupervisor, sessionPath, newSupervisor, zerolog.Nop(), nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
