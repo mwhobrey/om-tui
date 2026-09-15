@@ -4,35 +4,12 @@ import (
 	"fmt"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
 func (a *App) ensureWhatsApp() (*whatsapplive.Bridge, error) {
-	a.whatsAppMu.Lock()
-	defer a.whatsAppMu.Unlock()
-
-	if a.WhatsApp != nil {
-		return a.WhatsApp, nil
-	}
-
-	bridge, err := whatsapplive.New(a.WhatsAppSessionPath, a.Store, a.Logger, whatsapplive.Callbacks{
-		OnConversationsChange: a.emitConversationsChange,
-		OnIncomingMessage:     a.OnIncomingMessage,
-		OnMessagesChange:      a.emitMessagesChange,
-		OnConnectionError:     a.reportWhatsAppLifecycleError,
-		OnStatusChange: func() {
-			if a.OnWhatsAppStatusChange != nil {
-				a.OnWhatsAppStatusChange()
-			}
-		},
-		OnTypingChange: a.OnTypingChange,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	a.WhatsApp = bridge
-	return bridge, nil
+	return a.ensureWhatsAppRiver(river.DefaultWhatsAppRiverID)
 }
 
 func (a *App) GetWhatsApp() *whatsapplive.Bridge {
@@ -115,7 +92,7 @@ func (a *App) UsesWhatsAppLiveBridge() bool {
 }
 
 func (a *App) SendWhatsAppText(conversationID, body, replyToID string) (*db.Message, error) {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return nil, fmt.Errorf("init WhatsApp bridge: %w", err)
 	}
@@ -123,7 +100,7 @@ func (a *App) SendWhatsAppText(conversationID, body, replyToID string) (*db.Mess
 }
 
 func (a *App) SendWhatsAppMedia(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error) {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return nil, fmt.Errorf("init WhatsApp bridge: %w", err)
 	}
@@ -131,7 +108,7 @@ func (a *App) SendWhatsAppMedia(conversationID string, data []byte, filename, mi
 }
 
 func (a *App) SendWhatsAppReaction(conversationID, messageID, emoji, action string) error {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return fmt.Errorf("init WhatsApp bridge: %w", err)
 	}
@@ -139,7 +116,7 @@ func (a *App) SendWhatsAppReaction(conversationID, messageID, emoji, action stri
 }
 
 func (a *App) LeaveWhatsAppGroup(conversationID string) error {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return fmt.Errorf("init WhatsApp bridge: %w", err)
 	}

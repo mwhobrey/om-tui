@@ -455,6 +455,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 
 	if transports && !isDemo {
 		a.StartAllSlackRivers(context.Background())
+		a.StartExtraLiveRivers(context.Background())
 		defer a.StopAllSlackRivers()
 	} else if isDemo {
 		logger.Info().Msg("Demo mode — skipping Slack rivers")
@@ -740,6 +741,19 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				ListRivers: func() (any, error) {
 					return a.ListRiversWithUnread()
 				},
+				CreateRiver: func(provider, displayName string) (any, error) {
+					return a.CreateLiveRiver(provider, displayName)
+				},
+				ConnectWhatsAppRiver: a.StartWhatsAppConnectRiver,
+				ConnectSignalRiver:   a.StartSignalConnectRiver,
+				WhatsAppQRCodeRiver: func(riverID string) (any, error) {
+					return a.WhatsAppQRCodeRiver(riverID)
+				},
+				SignalQRCodeRiver: func(riverID string) (any, error) {
+					return a.SignalQRCodeRiver(riverID)
+				},
+				WhatsAppRiverStatuses: func() any { return a.ExtraWhatsAppStatuses() },
+				SignalRiverStatuses:   func() any { return a.ExtraSignalStatuses() },
 				WhatsAppAvatar:        a.WhatsAppAvatar,
 				DownloadWhatsAppMedia: a.DownloadWhatsAppMedia,
 				DownloadSignalMedia:   a.DownloadSignalMedia,

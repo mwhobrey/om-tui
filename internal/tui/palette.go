@@ -309,6 +309,12 @@ func (m Model) riverBadge(riverID string) string {
 	if riverID == "messages-default" {
 		return "Messages"
 	}
+	if riverID == "whatsapp-default" {
+		return "WhatsApp"
+	}
+	if riverID == "signal-default" {
+		return "Signal"
+	}
 	return riverID
 }
 
@@ -321,6 +327,12 @@ func (m Model) riverBadgeMap() map[string]string {
 	}
 	if _, ok := badges["messages-default"]; !ok {
 		badges["messages-default"] = "Messages"
+	}
+	if _, ok := badges["whatsapp-default"]; !ok {
+		badges["whatsapp-default"] = "WhatsApp"
+	}
+	if _, ok := badges["signal-default"]; !ok {
+		badges["signal-default"] = "Signal"
 	}
 	return badges
 }
@@ -808,9 +820,13 @@ func overlayCenter(base, overlay string, width, height int) string {
 	}
 
 	ovLines := strings.Split(overlay, "\n")
-	ovH := len(ovLines)
+	ovH := 0
 	ovW := 0
 	for _, line := range ovLines {
+		ovH++
+		if line == qrSkipLine || isTerminalGraphicsLine(line) {
+			continue
+		}
 		if w := ansi.StringWidth(line); w > ovW {
 			ovW = w
 		}
@@ -827,6 +843,14 @@ func overlayCenter(base, overlay string, width, height int) string {
 	for i, ov := range ovLines {
 		row := startY + i
 		if row < 0 || row >= len(baseLines) {
+			continue
+		}
+		if ov == qrSkipLine {
+			continue
+		}
+		if isTerminalGraphicsLine(ov) {
+			left := ansi.Cut(baseLines[row], 0, startX)
+			baseLines[row] = left + ov
 			continue
 		}
 		lineW := ansi.StringWidth(ov)

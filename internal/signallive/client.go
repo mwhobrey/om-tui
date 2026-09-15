@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"rsc.io/qr"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
 )
 
 const (
@@ -41,6 +43,7 @@ const (
 	postLinkProbeTimeout  = 5 * time.Second
 	versionProbeTimeout   = 5 * time.Second
 	historySyncQuietAfter = 45 * time.Second
+	signalLinkDeviceName  = "om-tui"
 
 	// receiveAccountInvalidLimit is how many consecutive receive attempts must
 	// report an account-invalid error ("not registered" / "authorization
@@ -153,7 +156,7 @@ var (
 	}
 
 	startSignalLink = func(ctx context.Context, configDir string) (io.ReadCloser, func() error, error) {
-		cmd := exec.CommandContext(ctx, "script", "-q", "/dev/null", signalCLIExecutable(), "--config", configDir, "link", "-n", "OpenMessage")
+		cmd := signalLinkCommand(ctx, configDir)
 		tmpDir, cleanupTmp, tmpErr := newSignalRunTmpDir()
 		if tmpErr == nil {
 			cmd.Env = signalCLIEnv(os.Environ(), tmpDir)
@@ -166,6 +169,7 @@ var (
 			}
 			return nil, nil, err
 		}
+		cmd.Stderr = cmd.Stdout
 		if err := cmd.Start(); err != nil {
 			if tmpErr == nil {
 				cleanupTmp()
@@ -181,7 +185,26 @@ var (
 		}
 		return stdout, wait, nil
 	}
+
+	// Unix `script` allocates a PTY so signal-cli prints the link URI.
+	// Windows has no `script` (the 2026-09-15 dogfood: overlay spun with
+	// `exec: "script": executable file not found in %PATH%` and never a QR).
+	signalLinkUsePTY = runtime.GOOS != "windows"
 )
+
+func signalLinkArgs(configDir string) []string {
+	return []string{"--config", configDir, "link", "-n", signalLinkDeviceName}
+}
+
+func signalLinkCommand(ctx context.Context, configDir string) *exec.Cmd {
+	exe := signalCLIExecutable()
+	args := signalLinkArgs(configDir)
+	if !signalLinkUsePTY {
+		return exec.CommandContext(ctx, exe, args...)
+	}
+	scriptArgs := append([]string{"-q", "/dev/null", exe}, args...)
+	return exec.CommandContext(ctx, "script", scriptArgs...)
+}
 
 // configureSignalCancel asks for a graceful stop before the hard kill so
 // the JVM gets a chance to run its shutdown hooks (which include libsignal
@@ -342,6 +365,7 @@ func (r *pollerRun) markStopped() {
 }
 
 type StatusSnapshot struct {
+	RiverID         string `json:"river_id,omitempty"`
 	Connected       bool   `json:"connected"`
 	Connecting      bool   `json:"connecting"`
 	Paired          bool   `json:"paired"`
@@ -384,7 +408,7 @@ type QRSnapshot struct {
 	UpdatedAt  int64  `json:"updated_at,omitempty"`
 	PNGDataURL string `json:"png_data_url,omitempty"`
 
-	URI string `json:"-"`
+	URI string `json:"uri,omitempty"`
 }
 
 type participantJSON struct {
@@ -407,6 +431,7 @@ type Bridge struct {
 	store     *db.Store
 	logger    zerolog.Logger
 	configDir string
+	riverID   string
 	callbacks Callbacks
 
 	ingressObserver   func(account string, line []byte, resolvedSource string, resolvedDestination string)
@@ -683,6 +708,13 @@ func (b *Bridge) ReportIngressError(err error) {
 }
 
 func New(configDir string, store *db.Store, logger zerolog.Logger, callbacks Callbacks) (*Bridge, error) {
+	return NewForRiver(river.DefaultSignalRiverID, configDir, store, logger, callbacks)
+}
+
+func NewForRiver(riverID, configDir string, store *db.Store, logger zerolog.Logger, callbacks Callbacks) (*Bridge, error) {
+	if strings.TrimSpace(riverID) == "" {
+		riverID = river.DefaultSignalRiverID
+	}
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return nil, fmt.Errorf("create Signal config dir: %w", err)
 	}
@@ -690,6 +722,7 @@ func New(configDir string, store *db.Store, logger zerolog.Logger, callbacks Cal
 		store:        store,
 		logger:       logger,
 		configDir:    configDir,
+		riverID:      riverID,
 		callbacks:    callbacks,
 		groupNames:   map[string]string{},
 		contactByACI: map[string]string{},
@@ -710,14 +743,33 @@ func signalCLIExecutable() string {
 	if override := strings.TrimSpace(os.Getenv("OPENMESSAGES_SIGNAL_CLI")); override != "" {
 		return override
 	}
-	if resolved, err := signalCLILookPath("signal-cli"); err == nil && strings.TrimSpace(resolved) != "" {
-		return resolved
+	for _, name := range []string{"signal-cli", "signal-cli.bat", "signal-cli.cmd"} {
+		if resolved, err := signalCLILookPath(name); err == nil && strings.TrimSpace(resolved) != "" {
+			return resolved
+		}
 	}
-	for _, candidate := range []string{
+	home, _ := os.UserHomeDir()
+	localApp := os.Getenv("LOCALAPPDATA")
+	candidates := []string{
 		"/opt/homebrew/bin/signal-cli",
 		"/usr/local/bin/signal-cli",
 		"/opt/local/bin/signal-cli",
-	} {
+	}
+	if localApp != "" {
+		candidates = append(candidates,
+			filepath.Join(localApp, "Programs", "signal-cli", "bin", "signal-cli.bat"),
+			filepath.Join(localApp, "Programs", "signal-cli", "bin", "signal-cli.cmd"),
+		)
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, "scoop", "apps", "signal-cli", "current", "bin", "signal-cli.cmd"),
+			filepath.Join(home, "scoop", "apps", "signal-cli", "current", "bin", "signal-cli.bat"),
+			filepath.Join(home, "scoop", "shims", "signal-cli.exe"),
+			filepath.Join(home, "scoop", "shims", "signal-cli.cmd"),
+		)
+	}
+	for _, candidate := range candidates {
 		if _, err := signalCLIStat(candidate); err == nil {
 			return candidate
 		}
@@ -896,6 +948,7 @@ func (b *Bridge) Status() StatusSnapshot {
 		account = b.firstStoredAccount()
 	}
 	snapshot := StatusSnapshot{
+		RiverID:         b.riverID,
 		Connected:       b.connected,
 		Connecting:      b.connecting,
 		Paired:          account != "",
@@ -2533,7 +2586,7 @@ func (b *Bridge) handleTypingMessage(account string, env *signalEnvelope) {
 	if env.TypingMessage.GroupInfo != nil {
 		groupID = strings.TrimSpace(env.TypingMessage.GroupInfo.GroupID)
 	}
-	conversationID := signalConversationID(source, groupID)
+		conversationID := b.conversationID(source, groupID)
 	typing := strings.EqualFold(strings.TrimSpace(env.TypingMessage.Action), "started")
 	b.callbacks.OnTypingChange(conversationID, firstNonEmpty(strings.TrimSpace(env.SourceName), source), source, typing)
 }
@@ -2557,7 +2610,7 @@ func (b *Bridge) handleDataMessage(account string, env *signalEnvelope) error {
 		return nil
 	}
 
-	conversationID := signalConversationID(source, groupID)
+		conversationID := b.conversationID(source, groupID)
 	if env.DataMessage.Reaction != nil {
 		return b.applyReactionToConversation(conversationID, env.DataMessage.Reaction, b.resolveContactAddress(signalReactionActorID(env)), account)
 	}
@@ -2589,6 +2642,7 @@ func (b *Bridge) handleDataMessage(account string, env *signalEnvelope) error {
 		UnreadCount:    1,
 		SourcePlatform: "signal",
 		Participants:   "[]",
+		RiverID:        b.riverID,
 	}
 	if existing != nil {
 		*convo = *existing
@@ -2617,6 +2671,7 @@ func (b *Bridge) handleDataMessage(account string, env *signalEnvelope) error {
 			convo.Participants = participants
 		}
 	}
+	b.stampRiver(convo)
 	if err := b.store.UpsertConversation(convo); err != nil {
 		return err
 	}
@@ -2684,7 +2739,7 @@ func (b *Bridge) handleEditMessage(account string, env *signalEnvelope, synthesi
 	if source != "" && addressesMatch(source, account) {
 		return nil
 	}
-	conversationID := signalConversationID(source, groupID)
+		conversationID := b.conversationID(source, groupID)
 	if err := b.ensureSignalConversation(conversationID, source, groupID, groupTitle, firstNonEmpty(strings.TrimSpace(env.SourceName), source), env.Timestamp, "signal", 0); err != nil {
 		return err
 	}
@@ -2729,7 +2784,7 @@ func (b *Bridge) handleSentMessage(account string, env *signalEnvelope, synthesi
 		return nil
 	}
 
-	conversationID := signalConversationID(target, groupID)
+	conversationID := b.conversationID(target, groupID)
 	if sent.Reaction != nil {
 		return b.applyReactionToConversation(conversationID, sent.Reaction, b.resolveContactAddress(account), account)
 	}
@@ -2766,6 +2821,7 @@ func (b *Bridge) handleSentMessage(account string, env *signalEnvelope, synthesi
 		UnreadCount:    0,
 		SourcePlatform: "signal",
 		Participants:   "[]",
+		RiverID:        b.riverID,
 	}
 	if existing != nil {
 		*convo = *existing
@@ -2790,6 +2846,7 @@ func (b *Bridge) handleSentMessage(account string, env *signalEnvelope, synthesi
 			convo.Participants = participants
 		}
 	}
+	b.stampRiver(convo)
 	if err := b.store.UpsertConversation(convo); err != nil {
 		return err
 	}
@@ -2855,7 +2912,7 @@ func (b *Bridge) handleSentEditMessage(account string, env *signalEnvelope, synt
 	if target == "" && groupID == "" {
 		return nil
 	}
-	conversationID := signalConversationID(target, groupID)
+	conversationID := b.conversationID(target, groupID)
 	if err := b.ensureSignalConversation(conversationID, target, groupID, groupTitle, target, env.Timestamp, "signal", 0); err != nil {
 		return err
 	}
@@ -2915,6 +2972,7 @@ func (b *Bridge) ensureSignalConversation(conversationID, target, groupID, group
 			convo.Participants = participants
 		}
 	}
+	b.stampRiver(convo)
 	return b.store.UpsertConversation(convo)
 }
 
@@ -3310,10 +3368,16 @@ func (b *Bridge) refreshGroupNames() {
 	}
 	changed := false
 	for _, convo := range conversations {
-		if convo == nil || !strings.HasPrefix(convo.ConversationID, "signal-group:") {
+		if convo == nil {
 			continue
 		}
-		groupID := strings.TrimPrefix(convo.ConversationID, "signal-group:")
+		if b.riverID != "" && convo.RiverID != "" && convo.RiverID != b.riverID {
+			continue
+		}
+		if !strings.HasPrefix(convo.ConversationID, "signal-group:") && !strings.HasPrefix(convo.ConversationID, "signal-group/") {
+			continue
+		}
+		groupID := river.UnscopeID(convo.ConversationID)
 		name := strings.TrimSpace(groups[groupID])
 		if name == "" || name == strings.TrimSpace(convo.Name) {
 			continue
@@ -3446,23 +3510,48 @@ func decodedSignalAccounts(raw []byte) []string {
 		seen[account] = struct{}{}
 		accounts = append(accounts, account)
 	}
-
-	var list []signalAccount
-	if err := json.Unmarshal(raw, &list); err == nil {
-		for _, item := range list {
-			appendAccount(item.Number)
+	tryDecode := func(payload []byte) {
+		payload = bytes.TrimSpace(payload)
+		if len(payload) == 0 {
+			return
+		}
+		var list []signalAccount
+		if err := json.Unmarshal(payload, &list); err == nil {
+			for _, item := range list {
+				appendAccount(item.Number)
+			}
+		}
+		var wrapped struct {
+			Accounts []signalAccount `json:"accounts"`
+		}
+		if err := json.Unmarshal(payload, &wrapped); err == nil {
+			for _, item := range wrapped.Accounts {
+				appendAccount(item.Number)
+			}
 		}
 	}
 
-	var wrapped struct {
-		Accounts []signalAccount `json:"accounts"`
+	tryDecode(raw)
+	if len(accounts) > 0 {
+		return accounts
 	}
-	if err := json.Unmarshal(raw, &wrapped); err == nil {
-		for _, item := range wrapped.Accounts {
-			appendAccount(item.Number)
+	// signal-cli 0.14.8 listAccounts often exits 1 with an INFO log glued
+	// onto the JSON array: `INFO AccountHelper - …: [{"number":"+1…"}]`.
+	s := string(raw)
+	for _, cut := range []byte{'[', '{'} {
+		if i := strings.IndexByte(s, cut); i > 0 {
+			tryDecode([]byte(s[i:]))
+			if len(accounts) > 0 {
+				return accounts
+			}
 		}
 	}
-
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, "{") {
+			tryDecode([]byte(line))
+		}
+	}
 	return accounts
 }
 
@@ -3624,11 +3713,11 @@ func parseSignalContacts(raw []byte) map[string]string {
 func parseConversationTarget(conversationID string) (target string, isGroup bool, err error) {
 	conversationID = strings.TrimSpace(conversationID)
 	switch {
-	case strings.HasPrefix(conversationID, "signal-group:"):
-		target = strings.TrimSpace(strings.TrimPrefix(conversationID, "signal-group:"))
+	case strings.HasPrefix(conversationID, "signal-group/") || strings.HasPrefix(conversationID, "signal-group:"):
+		target = strings.TrimSpace(river.UnscopeID(conversationID))
 		isGroup = true
-	case strings.HasPrefix(conversationID, "signal:"):
-		target = normalizeSignalAddress(strings.TrimPrefix(conversationID, "signal:"))
+	case strings.HasPrefix(conversationID, "signal/") || strings.HasPrefix(conversationID, "signal:"):
+		target = normalizeSignalAddress(river.UnscopeID(conversationID))
 	default:
 		err = fmt.Errorf("invalid Signal conversation id %q", conversationID)
 	}
@@ -3647,10 +3736,31 @@ func ParseConversationTarget(conversationID string) (target string, isGroup bool
 }
 
 func signalConversationID(address, groupID string) string {
+	return signalConversationIDForRiver(river.DefaultSignalRiverID, address, groupID)
+}
+
+func signalConversationIDForRiver(riverID, address, groupID string) string {
 	if groupID = strings.TrimSpace(groupID); groupID != "" {
-		return "signal-group:" + groupID
+		return river.ScopedGroupID(riverID, groupID)
 	}
-	return "signal:" + normalizeSignalAddress(address)
+	return river.ScopedID(river.ProviderSignal, riverID, normalizeSignalAddress(address))
+}
+
+func (b *Bridge) conversationID(address, groupID string) string {
+	rid := river.DefaultSignalRiverID
+	if b != nil && strings.TrimSpace(b.riverID) != "" {
+		rid = b.riverID
+	}
+	return signalConversationIDForRiver(rid, address, groupID)
+}
+
+func (b *Bridge) stampRiver(c *db.Conversation) {
+	if b == nil || c == nil {
+		return
+	}
+	if id := strings.TrimSpace(b.riverID); id != "" {
+		c.RiverID = id
+	}
 }
 
 // SignalConversationID exposes the retained conversation-id mapping as a pure

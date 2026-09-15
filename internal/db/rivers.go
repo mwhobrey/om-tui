@@ -85,7 +85,12 @@ func (s *Store) ListRivers() ([]*River, error) {
 	rows, err := s.db.Query(`
 		SELECT id, provider, display_name, account_key, status, created_at_ms, last_active_ms
 		FROM rivers
-		ORDER BY CASE provider WHEN 'messages' THEN 0 ELSE 1 END, display_name COLLATE NOCASE
+		ORDER BY CASE provider
+			WHEN 'messages' THEN 0
+			WHEN 'whatsapp' THEN 1
+			WHEN 'signal' THEN 2
+			ELSE 3
+		END, display_name COLLATE NOCASE
 	`)
 	if err != nil {
 		return nil, err
@@ -109,25 +114,8 @@ func (s *Store) DeleteRiver(id string) error {
 
 // EnsureMessagesRiver creates the built-in Messages river and backfills river_id.
 func (s *Store) EnsureMessagesRiver() (*River, error) {
-	existing, err := s.GetRiver(river.DefaultMessagesRiverID)
+	row, err := s.upsertBuiltinRiver(river.NewMessagesRiver())
 	if err != nil {
-		return nil, err
-	}
-	r := river.NewMessagesRiver()
-	row := &River{
-		ID:          r.ID,
-		Provider:    r.Provider,
-		DisplayName: r.DisplayName,
-		AccountKey:  r.AccountKey,
-		Status:      r.Status,
-		CreatedAtMS: r.CreatedAtMS,
-		LastActive:  r.LastActive,
-	}
-	if existing != nil {
-		row.CreatedAtMS = existing.CreatedAtMS
-		row.DisplayName = existing.DisplayName
-	}
-	if err := s.UpsertRiver(row); err != nil {
 		return nil, err
 	}
 	if _, err := s.db.Exec(`
@@ -139,6 +127,77 @@ func (s *Store) EnsureMessagesRiver() (*River, error) {
 		return nil, fmt.Errorf("backfill messages river_id: %w", err)
 	}
 	return row, nil
+}
+
+func (s *Store) upsertBuiltinRiver(built river.River) (*River, error) {
+	existing, err := s.GetRiver(built.ID)
+	if err != nil {
+		return nil, err
+	}
+	row := &River{
+		ID:          built.ID,
+		Provider:    built.Provider,
+		DisplayName: built.DisplayName,
+		AccountKey:  built.AccountKey,
+		Status:      built.Status,
+		CreatedAtMS: built.CreatedAtMS,
+		LastActive:  built.LastActive,
+	}
+	if existing != nil {
+		row.CreatedAtMS = existing.CreatedAtMS
+		row.DisplayName = existing.DisplayName
+	}
+	if err := s.UpsertRiver(row); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+func (s *Store) EnsureWhatsAppRiver() (*River, error) {
+	row, err := s.upsertBuiltinRiver(river.NewWhatsAppRiver())
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.db.Exec(`
+		UPDATE conversations
+		SET river_id = ?
+		WHERE IFNULL(river_id, '') = ''
+		  AND LOWER(IFNULL(source_platform, '')) = 'whatsapp'
+	`, river.DefaultWhatsAppRiverID); err != nil {
+		return nil, fmt.Errorf("backfill whatsapp river_id: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Store) EnsureSignalRiver() (*River, error) {
+	row, err := s.upsertBuiltinRiver(river.NewSignalRiver())
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.db.Exec(`
+		UPDATE conversations
+		SET river_id = ?
+		WHERE IFNULL(river_id, '') = ''
+		  AND LOWER(IFNULL(source_platform, '')) = 'signal'
+	`, river.DefaultSignalRiverID); err != nil {
+		return nil, fmt.Errorf("backfill signal river_id: %w", err)
+	}
+	return row, nil
+}
+
+// EnsureBuiltinRivers creates Messages, WhatsApp, and Signal rivers and
+// backfills conversation river_id for those platforms.
+func (s *Store) EnsureBuiltinRivers() error {
+	if _, err := s.EnsureMessagesRiver(); err != nil {
+		return err
+	}
+	if _, err := s.EnsureWhatsAppRiver(); err != nil {
+		return err
+	}
+	if _, err := s.EnsureSignalRiver(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UnreadCountsByRiver returns sum of conversation unread_count per river_id.

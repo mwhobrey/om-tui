@@ -12,11 +12,11 @@ licensing for everything this is built on lives in [NOTICE.md](NOTICE.md).
 ## What it does
 
 - **Google Messages** — pair your Android phone and read/send SMS + RCS locally
-- **Live WhatsApp** — link WhatsApp as a live companion device on your machine
-- **Live Signal** — link Signal locally and keep its threads in the same inbox
+- **WhatsApp river** — link as a live companion device; scan the TUI QR (`p`)
+- **Signal river** — link locally the same way (`[` / `]` to the Signal river, then `p`)
 - **Slack rivers** — readable users/DMs, unread filters, dedicated reply threads, lazy history, text send, and optional Socket Mode realtime
 - **One local inbox** — search, route-aware threads, favorites, media, reactions, drafts, scheduled sends, and grouped contacts
-- **Rivers** — every account/workspace (Google Messages, each Slack team) is an isolated, independently-paired identity in the same inbox
+- **Rivers** — Google Messages, WhatsApp, Signal, and each Slack workspace are isolated, independently-paired identities in the same inbox
 - **MCP-ready** — expose the same local inbox to Claude Code and other MCP clients over stdio, Streamable HTTP, or SSE
 - **Local storage** — SQLite, your data stays on your machine
 
@@ -37,8 +37,11 @@ go build -o om-tui .          # om-tui.exe on Windows
 ./om-tui pair slack --token xoxp-... --name "Acme"   # optional, add --app-token xapp-... for Socket Mode
 ```
 
+In the TUI, `[` / `]` switches rivers. On WhatsApp or Signal, press `p` and scan
+the QR from Linked devices on your phone.
+
 Google Account pairing is the path that works for most accounts. In the TUI,
-press `p`, then paste a `curl` / Cookie header from `messages.google.com`
+press `p` on the Messages river, then paste a `curl` / Cookie header from `messages.google.com`
 (`Ctrl+V`). Chrome auto-read is parked: current Chrome encrypts those cookies.
 CLI paste still works when the daemon is down:
 
@@ -64,9 +67,10 @@ Default data dir: `~/.local/share/openmessage` (macOS/Linux) or
 
 ### Optional: link WhatsApp or Signal
 
-From the TUI, switch rivers with `[` / `]` and follow the connection prompts
-for WhatsApp or Signal — both run as local companion-device bridges and land
-in the same inbox as everything else.
+In the TUI, switch to the WhatsApp or Signal river with `[` / `]`, press `p`,
+and scan the QR code from your phone (WhatsApp / Signal → Linked devices).
+Both run as local companion-device bridges. `r` reconnects an already-paired
+session.
 
 ### Connect to Claude Code
 
@@ -89,7 +93,7 @@ HTTP instead, start with `--mcp-sse` and point a client at
 
 ## TUI
 
-- `[` / `]` — switch rivers (Google Messages, each paired Slack workspace)
+- `[` / `]` — switch rivers (Google Messages, WhatsApp, Signal, each paired Slack workspace)
 - `/` — jump filter across conversations
 - `Ctrl+F` — message search
 - `o` / `s` — open / save media
@@ -155,9 +159,11 @@ Full keys and a smoke checklist: [docs/tui.md](docs/tui.md).
 | `OPENMESSAGES_WINDOWS_TOAST_APP_ID` | PowerShell's registered AUMID | Windows toast AppUserModelID. Unregistered IDs often show nothing; default uses PowerShell's AUMID so toasts actually appear (branded as PowerShell). |
 | `OPENMESSAGES_SIGNAL_TMP_SWEEP` | enabled | Set to `0` to disable the cleanup of stale signal-cli temp directories (run dirs plus `libsignal*` dirs older than 24h that pre-v0.2.10 builds leaked into the system temp dir). |
 | `OPENMESSAGES_SIGNAL_CLI` | auto-detected `signal-cli` | Optional path to a specific `signal-cli` binary. |
+| `OPENMESSAGES_JAVA_HOME` | auto-detected JDK 25+ | Optional JDK home for signal-cli. 0.14.8 needs JRE 25; user `JAVA_HOME` is often still 8/21. |
 | `OPENMESSAGES_GOOGLE_AVATAR_SYNC` | enabled | Set to `0` to disable Google contact avatar sync. The older singular `OPENMESSAGE_GOOGLE_AVATAR_SYNC` name is also accepted. |
 | `OPENMESSAGES_EXPORT_DIR` | `~/Documents/OpenMessage` | Directory for `generate_viz` / `render_story` HTML outputs and photo inputs when using the default confined export mode. |
 | `OPENMESSAGES_ALLOW_ANY_EXPORT_PATH` | unset (off) | Set to `1`/`true`/`yes`/`on` to allow viz/story tools to read photos from, or write HTML to, arbitrary local paths. |
+| `OPENMESSAGES_TUI_GRAPHICS` | auto | TUI pair-overlay QR renderer: `sixel`, `kitty`, or `cells`. Auto is Windows Terminal → sixel, Kitty/Ghostty/WezTerm → kitty, Cursor/VS Code/tmux → cells. |
 | `OPENMESSAGE_TELEMETRY` | unset (off) | Set to `1` to send one anonymous heartbeat per launch (max one per 24h). Reports only: random install ID, version, OS/arch, and which platforms are paired. No message content, no contact info, no IP-based identity. See `internal/telemetry/`. |
 
 `OPENMESSAGES_HOST` defaults to localhost for safety. If you bind the
@@ -170,7 +176,7 @@ the local API and MCP endpoints are meant for same-origin/local clients.
 - **whatsmeow** handles live WhatsApp pairing, sync, text/media send, receipts, typing, and avatars through a separate local session store
 - **signal-cli** powers the local Signal linked-device bridge, message sync, media, and reactions
 - **slack-go** + sealed river vault power Slack workspace rivers (text send + recent history sync)
-- **Rivers** are account/workspace instances (`messages-default`, `slack-<team-id>`); credentials live under `rivers/<id>/credentials.enc`
+- **Rivers** are account/workspace instances (`messages-default`, `whatsapp-default`, `signal-default`, extra `whatsapp-N`/`signal-N`, `slack-<team-id>`); Slack credentials live under `rivers/<id>/credentials.enc`
 - **SQLite** (WAL mode, pure Go) stores messages, conversations, contacts, and rivers locally; real-time events from each platform are written as they arrive
 - The Bubble Tea **TUI** talks to a local daemon (`serve --api --no-web`) over the same HTTP+SSE API used by MCP tools
 - WhatsApp Desktop and Signal Desktop imports remain available as backfill/repair paths when a live bridge isn't active

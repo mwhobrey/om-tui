@@ -4,34 +4,12 @@ import (
 	"fmt"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/signallive"
 )
 
 func (a *App) ensureSignal() (*signallive.Bridge, error) {
-	a.signalMu.Lock()
-	defer a.signalMu.Unlock()
-
-	if a.Signal != nil {
-		return a.Signal, nil
-	}
-
-	bridge, err := signallive.New(a.SignalConfigPath, a.Store, a.Logger, signallive.Callbacks{
-		OnConversationsChange: a.emitConversationsChange,
-		OnIncomingMessage:     a.OnIncomingMessage,
-		OnMessagesChange:      a.emitMessagesChange,
-		OnStatusChange: func() {
-			if a.OnSignalStatusChange != nil {
-				a.OnSignalStatusChange()
-			}
-		},
-		OnTypingChange: a.OnTypingChange,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	a.Signal = bridge
-	return bridge, nil
+	return a.ensureSignalRiver(river.DefaultSignalRiverID)
 }
 
 // EnsureSignal initializes the retained Signal bridge without starting its
@@ -76,7 +54,7 @@ func (a *App) ReplaySignalRecoveryQueue() error {
 }
 
 func (a *App) SendSignalText(conversationID, body, replyToID string) (*db.Message, error) {
-	bridge, err := a.ensureSignal()
+	bridge, err := a.ensureSignalRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return nil, fmt.Errorf("init Signal bridge: %w", err)
 	}
@@ -88,7 +66,7 @@ func (a *App) SendSignalText(conversationID, body, replyToID string) (*db.Messag
 }
 
 func (a *App) SendSignalMedia(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error) {
-	bridge, err := a.ensureSignal()
+	bridge, err := a.ensureSignalRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return nil, fmt.Errorf("init Signal bridge: %w", err)
 	}
@@ -100,7 +78,7 @@ func (a *App) SendSignalMedia(conversationID string, data []byte, filename, mime
 }
 
 func (a *App) SendSignalReaction(conversationID, messageID, emoji, action string) error {
-	bridge, err := a.ensureSignal()
+	bridge, err := a.ensureSignalRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return fmt.Errorf("init Signal bridge: %w", err)
 	}

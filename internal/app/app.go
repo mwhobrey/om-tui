@@ -154,10 +154,12 @@ type App struct {
 	avatarSyncStop            chan struct{}
 	whatsAppMu                sync.Mutex
 	WhatsApp                  *whatsapplive.Bridge
+	WhatsAppRivers            map[string]*whatsapplive.Bridge
 	whatsAppLifecycleMu       sync.RWMutex
 	whatsAppLifecycleNotifier WhatsAppLifecycleNotifier
 	signalMu                  sync.Mutex
 	Signal                    *signallive.Bridge
+	SignalRivers              map[string]*signallive.Bridge
 	slackMu                   sync.Mutex
 	SlackRivers               map[string]*slacklive.Client // riverID -> client
 	statusMu                  sync.Mutex

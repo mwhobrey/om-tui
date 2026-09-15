@@ -36,6 +36,7 @@
 | `OPENMESSAGES_DEMO` | Isolated fake-data store; no live transports |
 | `OPENMESSAGES_V2_SEND` / `_INGEST` / `_PRIMARY` | Staged V2 enablement |
 | `OPENMESSAGES_SIGNAL_CLI` | signal-cli binary path |
+| `OPENMESSAGES_JAVA_HOME` | JDK 25+ for signal-cli (else auto-discovered) |
 | `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` / `OPENMESSAGE_CHROME_PROFILE` | Google self-heal |
 | `OPENMESSAGE_REPAIR_MIN_INTERVAL` | Pace Google repair |
 | `OPENMESSAGES_EXPORT_DIR` / `OPENMESSAGES_ALLOW_ANY_EXPORT_PATH` | Viz/export path policy |
@@ -43,6 +44,7 @@
 | `OPENMESSAGES_WINDOWS_NOTIFICATIONS` / `_TOAST_APP_ID` | Windows toasts |
 | `OPENMESSAGE_TELEMETRY` | Opt-in heartbeat |
 | `OPENMESSAGES_KLIPY_API_KEY` / `KLIPY_API_KEY` | GIF search |
+| `OPENMESSAGES_TUI_GRAPHICS` | Pair-overlay QR: `sixel`, `kitty`, or `cells` (auto: WT sixel, Kitty/Ghostty/WezTerm kitty, else cells) |
 
 Full operational recipes: [../agent-runbook.md](../agent-runbook.md).
 

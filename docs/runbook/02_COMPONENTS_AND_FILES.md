@@ -37,7 +37,7 @@ Authoritative usage strings live in `main.go`.
 | `whatsapplive/` | Live WhatsApp bridge |
 | `signallive/` | signal-cli bridge + recovery |
 | `slacklive/` | Slack Web API client, recent sync, text send |
-| `river/` | River identity model (`messages-default`, `slack-<team>`) |
+| `river/` | River identity model (`messages-default`, `whatsapp-default`, `signal-default`, extra WhatsApp/Signal `*-N`, `slack-<team>`); scoped conversation IDs |
 | `vault/` | Encrypted per-river credentials (DPAPI on Windows, Keychain on macOS, Secret Service via `secret-tool` on Linux; insecure test-only path via `OPENMESSAGES_VAULT_INSECURE=1`) |
 | `googlecookies/` | Native Chrome cookie decrypt for Google **self-heal** (keychain/DPAPI + CDP). Pairing is paste-only: current Chrome v20 cookies cannot be unwrapped. CDP, if used, runs against a temp copy only — never the live User Data dir. |
 | `notify/` | macOS / Windows notifications |
@@ -70,7 +70,7 @@ Authoritative usage strings live in `main.go`.
 |---|---|
 | `web/` | Loopback REST, SSE, MCP HTTP, auth (no bundled static UI on this fork) |
 | `localapi/` | Authenticated daemon HTTP client (CLI / TUI / MCP client) |
-| `tui/` | Bubble Tea UI: rivers, list/thread/composer, media, reactions, broadcast |
+| `tui/` | Bubble Tea UI: rivers, list/thread/composer, media, reactions, broadcast; WhatsApp/Signal pair overlay (sixel/kitty/cells QR) |
 | `tools/` | MCP tool registration + handlers (24 tools) |
 
 ### Import / analytics / migration

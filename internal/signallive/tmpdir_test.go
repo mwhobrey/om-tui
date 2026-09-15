@@ -39,6 +39,149 @@ func TestSignalCLIEnvReplacesTmpDirAndSetsJavaOpt(t *testing.T) {
 	}
 }
 
+func TestSignalCLIEnvDropsJava8Home(t *testing.T) {
+	t.Setenv("OPENMESSAGES_JAVA_HOME", "")
+	orig := discoverSignalCLIJavaHomeFn
+	discoverSignalCLIJavaHomeFn = func() string { return "" }
+	t.Cleanup(func() { discoverSignalCLIJavaHomeFn = orig })
+	env := signalCLIEnv([]string{
+		`JAVA_HOME=C:\Program Files\Java\jdk1.8.0_261`,
+		"PATH=/usr/bin",
+	}, "/tmp/run")
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "JAVA_HOME=") {
+			t.Fatalf("Java 8 JAVA_HOME leaked into signal-cli env: %v", env)
+		}
+	}
+}
+
+func TestSignalCLIEnvDropsJava21HomeWhenBelowMinimum(t *testing.T) {
+	t.Setenv("OPENMESSAGES_JAVA_HOME", "")
+	orig := discoverSignalCLIJavaHomeFn
+	discoverSignalCLIJavaHomeFn = func() string { return "" }
+	t.Cleanup(func() { discoverSignalCLIJavaHomeFn = orig })
+	env := signalCLIEnv([]string{
+		`JAVA_HOME=C:\Program Files\Java\jdk-21`,
+		"PATH=/usr/bin",
+	}, "/tmp/run")
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "JAVA_HOME=") {
+			t.Fatalf("Java 21 JAVA_HOME leaked into signal-cli env: %v", env)
+		}
+	}
+}
+
+func TestSignalCLIEnvKeepsModernJavaHome(t *testing.T) {
+	t.Setenv("OPENMESSAGES_JAVA_HOME", "")
+	orig := discoverSignalCLIJavaHomeFn
+	discoverSignalCLIJavaHomeFn = func() string { return "" }
+	t.Cleanup(func() { discoverSignalCLIJavaHomeFn = orig })
+	want := `JAVA_HOME=C:\Program Files\Java\jdk-25`
+	env := signalCLIEnv([]string{want, "PATH=/usr/bin"}, "/tmp/run")
+	found := false
+	for _, kv := range env {
+		if kv == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("modern JAVA_HOME dropped: %v", env)
+	}
+}
+
+func TestSignalCLIEnvHonorsOpenMessagesJavaHome(t *testing.T) {
+	t.Setenv("OPENMESSAGES_JAVA_HOME", `C:\jdk-25`)
+	orig := discoverSignalCLIJavaHomeFn
+	discoverSignalCLIJavaHomeFn = func() string { return `C:\discovered-jdk` }
+	t.Cleanup(func() { discoverSignalCLIJavaHomeFn = orig })
+	env := signalCLIEnv([]string{`JAVA_HOME=C:\Program Files\Java\jdk1.8.0_261`}, "/tmp/run")
+	found := false
+	for _, kv := range env {
+		if kv == `JAVA_HOME=C:\jdk-25` {
+			found = true
+		}
+		if kv == `JAVA_HOME=C:\Program Files\Java\jdk1.8.0_261` || kv == `JAVA_HOME=C:\discovered-jdk` {
+			t.Fatal("stale or discovered JAVA_HOME kept alongside override")
+		}
+	}
+	if !found {
+		t.Fatalf("OPENMESSAGES_JAVA_HOME missing: %v", env)
+	}
+}
+
+func TestSignalCLIEnvInjectsDiscoveredJavaHome(t *testing.T) {
+	t.Setenv("OPENMESSAGES_JAVA_HOME", "")
+	orig := discoverSignalCLIJavaHomeFn
+	discoverSignalCLIJavaHomeFn = func() string { return `C:\jdk-25` }
+	t.Cleanup(func() { discoverSignalCLIJavaHomeFn = orig })
+	env := signalCLIEnv([]string{`JAVA_HOME=C:\Program Files\Java\jdk1.8.0_261`}, "/tmp/run")
+	found := false
+	for _, kv := range env {
+		if kv == `JAVA_HOME=C:\jdk-25` {
+			found = true
+		}
+		if kv == `JAVA_HOME=C:\Program Files\Java\jdk1.8.0_261` {
+			t.Fatal("stale JAVA_HOME kept alongside discovery")
+		}
+	}
+	if !found {
+		t.Fatalf("discovered JAVA_HOME missing: %v", env)
+	}
+}
+
+func TestParseJavaMajorFromName(t *testing.T) {
+	cases := []struct {
+		name string
+		want int
+	}{
+		{"jdk1.8.0_261", 8},
+		{"jdk-11", 11},
+		{"jdk-21", 21},
+		{"jdk-21.0.6", 21},
+		{"jdk-25", 25},
+		{"temurin25-jdk", 25},
+		{"openjdk@25", 25},
+		{"25.0.4-101.0", 25},
+		{"current", 0},
+		{"latest", 0},
+	}
+	for _, tc := range cases {
+		if got := parseJavaMajorFromName(tc.name); got != tc.want {
+			t.Errorf("parseJavaMajorFromName(%q) = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestJavaHomeMajorVersionWalksScoopCurrent(t *testing.T) {
+	got := javaHomeMajorVersion(`C:\Users\u\scoop\apps\temurin25-jdk\current`)
+	if got != 25 {
+		t.Fatalf("scoop current JAVA_HOME major = %d, want 25", got)
+	}
+}
+
+func TestFirstUsableSignalCLIJavaHomePrefers25(t *testing.T) {
+	root := t.TempDir()
+	j8 := filepath.Join(root, "jdk1.8.0_261")
+	j21 := filepath.Join(root, "jdk-21")
+	j25 := filepath.Join(root, "jdk-25")
+	javaName := "java"
+	if os.PathSeparator == '\\' {
+		javaName = "java.exe"
+	}
+	for _, dir := range []string{j8, j21, j25} {
+		if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "bin", javaName), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := firstUsableSignalCLIJavaHome([]string{j8, j21, j25})
+	if got != j25 {
+		t.Fatalf("firstUsableSignalCLIJavaHome = %q, want %q", got, j25)
+	}
+}
+
 func TestSignalCLIEnvAppendsToExistingOptsSoOursWins(t *testing.T) {
 	base := []string{"SIGNAL_CLI_OPTS=-Xmx512m -Djava.io.tmpdir=/users/choice"}
 	env := signalCLIEnv(base, "/confined")

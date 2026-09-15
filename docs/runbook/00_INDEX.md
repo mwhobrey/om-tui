@@ -38,7 +38,7 @@ NOTICE.md — so upstream diffs stay easy to compare and port).
 | Doc | Role |
 |---|---|
 | [../agent-runbook.md](../agent-runbook.md) | Live-install support: data dir, WAL, MCP transport ownership, re-pair recipes |
-| [../tui.md](../tui.md) | TUI + Slack rivers product path (all platforms) |
+| [../tui.md](../tui.md) | TUI + rivers product path (all platforms) |
 | [../migration-backup.md](../migration-backup.md) | Offline `backup` / cutover prep |
 | [../release-checklist.md](../release-checklist.md) | Pre-release dogfood + privacy checklist |
 | [../../SECURITY.md](../../SECURITY.md) | Vulnerability reporting (private advisory) |
@@ -75,8 +75,8 @@ go test -race ./...
 | Platform | Live | Import | Notes |
 |---|---|---|---|
 | Google Messages (SMS/RCS) | yes | — | libgm / mautrix-gmessages fork |
-| WhatsApp | yes | text export / Desktop | whatsmeow; single-owner session |
-| Signal | yes | Desktop | local `signal-cli` ≥ 0.14.5 |
-| Slack | yes | — | rivers + vault; text send + recent sync; not on V2 ingest |
+| WhatsApp | yes | text export / Desktop | `whatsapp-default` plus extra `whatsapp-N` rivers; TUI QR pair; whatsmeow; one daemon owns all sessions |
+| Signal | yes | Desktop | `signal-default` plus extra `signal-N` rivers; TUI QR pair; local `signal-cli` ≥ 0.14.5 |
+| Slack | yes | — | `slack-<team>` rivers + vault; text send + recent sync; not on V2 ingest |
 | Google Chat | — | Takeout | importer only |
 | iMessage | — | `chat.db` | macOS Full Disk Access |

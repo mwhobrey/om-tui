@@ -10,13 +10,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
+	"github.com/maxghenis/openmessage/internal/river"
 )
 
 const (
-	pairOverlayWidth     = 64
-	pairTickInterval     = 100 * time.Millisecond
-	pairStatusEveryTicks = 2
-	pairFailedGrace      = 2 * time.Second
+	pairOverlayWidth        = 64
+	pairTickInterval        = 100 * time.Millisecond
+	pairGraphicTickInterval = time.Second
+	pairStatusEveryTicks    = 2
+	pairFailedGrace         = 2 * time.Second
+
+	pairKindGoogle   = "google"
+	pairKindWhatsApp = "whatsapp"
+	pairKindSignal   = "signal"
 )
 
 var pairSpinnerFrames = []string{"|", "/", "-", "\\"}
@@ -25,6 +31,7 @@ var pairStepNames = []string{"Chrome", "Google", "Phone", "Connect"}
 
 type pairOverlay struct {
 	open              bool
+	kind              string
 	submitting        bool
 	dismissed         bool
 	successUntil      time.Time
@@ -33,6 +40,13 @@ type pairOverlay struct {
 	ignoreFailedUntil time.Time
 	ticks             int
 	ticking           bool
+	qrCells           string
+	qrGraphic         string
+	qrCellW           int
+	qrCellH           int
+	qrPayload         string
+	qrUpdatedAt       int64
+	gfx               pairGraphicsKind
 }
 
 func (p pairOverlay) ignoringStaleFailed() bool {
@@ -49,6 +63,77 @@ type pairTickMsg struct{}
 func (m Model) googleNeedsPair() bool {
 	g := m.status.Google
 	return g.NeedsPairing || !g.Paired || g.NeedsRepair
+}
+
+func extraLiveRiverID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && !river.IsDefaultRiverID(id)
+}
+
+func (m Model) whatsappStatusForActive() localapi.WhatsAppStatus {
+	id := m.activeRiverID
+	if extraLiveRiverID(id) {
+		for _, s := range m.status.WhatsAppRivers {
+			if s.RiverID == id {
+				return s
+			}
+		}
+		return localapi.WhatsAppStatus{RiverID: id}
+	}
+	return m.status.WhatsApp
+}
+
+func (m Model) signalStatusForActive() localapi.SignalStatus {
+	id := m.activeRiverID
+	if extraLiveRiverID(id) {
+		for _, s := range m.status.SignalRivers {
+			if s.RiverID == id {
+				return s
+			}
+		}
+		return localapi.SignalStatus{RiverID: id}
+	}
+	return m.status.Signal
+}
+
+func (m Model) whatsappNeedsPair() bool {
+	return !m.whatsappStatusForActive().Paired
+}
+
+func (m Model) signalNeedsPair() bool {
+	s := m.signalStatusForActive()
+	return !s.Paired || s.NeedsReauth
+}
+
+func (m Model) riverNeedsPair() bool {
+	switch m.activeRiverProvider() {
+	case "whatsapp":
+		return m.whatsappNeedsPair()
+	case "signal":
+		return m.signalNeedsPair()
+	case "slack":
+		return false
+	default:
+		return m.googleNeedsPair()
+	}
+}
+
+func (m Model) pairKindFromRiver() string {
+	switch m.activeRiverProvider() {
+	case "whatsapp":
+		return pairKindWhatsApp
+	case "signal":
+		return pairKindSignal
+	default:
+		return pairKindGoogle
+	}
+}
+
+func (m Model) pairKind() string {
+	if m.pair.kind != "" {
+		return m.pair.kind
+	}
+	return m.pairKindFromRiver()
 }
 
 func (m Model) pairingFromDaemon() *localapi.GooglePairingStatus {
@@ -74,14 +159,25 @@ func (m Model) pairPhase() string {
 }
 
 func (m Model) openPairOverlay() (tea.Model, tea.Cmd) {
+	m.pair.kind = m.pairKindFromRiver()
 	m.pair.open = true
 	m.pair.dismissed = false
 	m.pair.pasteErr = ""
 	m.pair.submitting = false
 	m.pair.started = time.Time{}
 	m.pair.ticks = 0
+	m.pair.qrCells = ""
+	m.pair.qrGraphic = ""
+	m.pair.qrCellW = 0
+	m.pair.qrCellH = 0
+	m.pair.qrPayload = ""
+	m.pair.qrUpdatedAt = 0
+	m.pair.gfx = detectPairGraphics()
 	m.info = ""
 	m.err = ""
+	if m.pair.kind == pairKindWhatsApp || m.pair.kind == pairKindSignal {
+		return m.startLivePair()
+	}
 	if pairing := m.pairingFromDaemon(); pairing != nil && pairing.Phase != "" && pairing.Phase != "failed" {
 		return m.armPairTick()
 	}
@@ -90,6 +186,7 @@ func (m Model) openPairOverlay() (tea.Model, tea.Cmd) {
 
 func (m Model) closePairOverlay() (tea.Model, tea.Cmd) {
 	m.pair.open = false
+	m.pair.kind = ""
 	m.pair.submitting = false
 	m.pair.dismissed = true
 	m.pair.pasteErr = ""
@@ -98,6 +195,12 @@ func (m Model) closePairOverlay() (tea.Model, tea.Cmd) {
 	m.pair.ignoreFailedUntil = time.Time{}
 	m.pair.ticks = 0
 	m.pair.ticking = false
+	m.pair.qrCells = ""
+	m.pair.qrGraphic = ""
+	m.pair.qrCellW = 0
+	m.pair.qrCellH = 0
+	m.pair.qrPayload = ""
+	m.pair.qrUpdatedAt = 0
 	return m, nil
 }
 
@@ -107,6 +210,12 @@ func (m Model) pairBusy() bool {
 	}
 	if m.pair.submitting {
 		return true
+	}
+	switch m.pairKind() {
+	case pairKindWhatsApp:
+		return m.status.WhatsApp.Pairing || m.status.WhatsApp.Connecting
+	case pairKindSignal:
+		return m.status.Signal.Pairing || m.status.Signal.Connecting
 	}
 	pairing := m.pairingFromDaemon()
 	if pairing == nil {
@@ -123,6 +232,13 @@ func (m Model) pairBusy() bool {
 func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 	if m.pair.dismissed {
 		return m, nil
+	}
+	kind := m.pairKind()
+	if kind == pairKindWhatsApp || kind == pairKindSignal {
+		if !m.pair.open {
+			return m, nil
+		}
+		return m.syncLivePairFromStatus()
 	}
 	pairing := m.pairingFromDaemon()
 	if pairing != nil && pairing.Phase != "" && pairing.Phase != "failed" {
@@ -164,7 +280,11 @@ func (m Model) armPairTick() (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pair.ticking = true
-	return m, tea.Tick(pairTickInterval, func(time.Time) tea.Msg { return pairTickMsg{} })
+	interval := pairTickInterval
+	if m.pair.qrGraphic != "" {
+		interval = pairGraphicTickInterval
+	}
+	return m, tea.Tick(interval, func(time.Time) tea.Msg { return pairTickMsg{} })
 }
 
 func (m Model) submitPairCookies(raw string) (tea.Model, tea.Cmd) {
@@ -215,16 +335,23 @@ func (m Model) pastePairCookiesCmd() tea.Cmd {
 
 func (m Model) updatePairKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	busy := m.pairBusy()
+	kind := m.pairKind()
 	switch msg.String() {
 	case "ctrl+c":
-		cmds := []tea.Cmd{m.cancelPairCmd()}
+		cmds := []tea.Cmd{}
+		if kind == pairKindGoogle {
+			cmds = append(cmds, m.cancelPairCmd())
+		}
 		next, cmd := m.closePairOverlay()
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return next, tea.Batch(append(cmds, tea.Quit)...)
 	case "esc":
-		cmds := []tea.Cmd{m.cancelPairCmd()}
+		cmds := []tea.Cmd{}
+		if kind == pairKindGoogle {
+			cmds = append(cmds, m.cancelPairCmd())
+		}
 		next, cmd := m.closePairOverlay()
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -236,10 +363,13 @@ func (m Model) updatePairKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if busy {
 			return m, nil
 		}
+		if kind == pairKindWhatsApp || kind == pairKindSignal {
+			return m.startLivePair()
+		}
 		m.pair.pasteErr = "paste a messages.google.com curl with ctrl+v"
 		return m, nil
 	case "ctrl+v":
-		if busy {
+		if busy || kind != pairKindGoogle {
 			return m, nil
 		}
 		return m, m.pastePairCookiesCmd()
@@ -338,6 +468,9 @@ func (m Model) pairProgressHeader(innerW, current int) []string {
 }
 
 func (m Model) renderPairOverlay() string {
+	if m.pairKind() == pairKindWhatsApp || m.pairKind() == pairKindSignal {
+		return m.renderLivePairOverlay()
+	}
 	width := pairOverlayWidth
 	if m.width > 0 && width > m.width-4 {
 		width = m.width - 4

@@ -888,6 +888,67 @@ func (t *manualTimer) Stop() bool {
 	return true
 }
 
+func TestPairEventResultWaitsFor515Connected(t *testing.T) {
+	a := newTestAdapter(t, newFakeLifecycleClient(), func() time.Time { return whatsappAdapterTestEpoch })
+	ctx := context.Background()
+
+	assertPairWait := func(name string, event whatsapplive.LifecycleEvent) {
+		t.Helper()
+		_, err, terminal := a.pairEventResult(ctx, event, nil)
+		if err != nil || terminal {
+			t.Fatalf("%s: terminal=%v err=%v, want continue for 515 handoff", name, terminal, err)
+		}
+	}
+	assertPairWait("PairSuccess", whatsapplive.LifecycleEvent{
+		Raw:    &waevents.PairSuccess{},
+		Paired: true,
+		At:     whatsappAdapterTestEpoch,
+	})
+	assertPairWait("paired Disconnected", whatsapplive.LifecycleEvent{
+		Raw:    &waevents.Disconnected{},
+		Paired: true,
+		At:     whatsappAdapterTestEpoch,
+	})
+	assertPairWait("ManualLoginReconnect", whatsapplive.LifecycleEvent{
+		Raw:    &waevents.ManualLoginReconnect{},
+		Paired: true,
+		At:     whatsappAdapterTestEpoch,
+	})
+
+	result, err, terminal := a.pairEventResult(ctx, whatsapplive.LifecycleEvent{
+		Raw:    &waevents.Connected{},
+		Paired: true,
+		At:     whatsappAdapterTestEpoch,
+	}, nil)
+	if err != nil || !terminal {
+		t.Fatalf("paired Connected: terminal=%v err=%v", terminal, err)
+	}
+	if result.RemoteAccountID != "15551234567@s.whatsapp.net" {
+		t.Fatalf("RemoteAccountID = %q", result.RemoteAccountID)
+	}
+
+	_, err, terminal = a.pairEventResult(ctx, whatsapplive.LifecycleEvent{
+		Raw:    &waevents.Disconnected{},
+		Paired: false,
+		At:     whatsappAdapterTestEpoch,
+	}, nil)
+	if !terminal || err == nil {
+		t.Fatal("unpaired Disconnected should fail pairing")
+	}
+
+	_, err, terminal = a.pairEventResult(ctx, whatsapplive.LifecycleEvent{
+		Raw: &waevents.LoggedOut{
+			OnConnect: true,
+			Reason:    waevents.ConnectFailureLoggedOut,
+		},
+		Paired: true,
+		At:     whatsappAdapterTestEpoch,
+	}, nil)
+	if !terminal || err == nil {
+		t.Fatal("LoggedOut should still fail pairing")
+	}
+}
+
 var (
 	_ bridge.Clock          = (*manualClock)(nil)
 	_ bridge.Timer          = (*manualTimer)(nil)

@@ -1,8 +1,9 @@
 # TUI + rivers
 
 om-tui's only client is a Bubble Tea terminal UI with **rivers**
-(account/workspace instances). Google Messages is the built-in river; Slack
-workspaces are additional rivers. It runs on Windows, macOS, and Linux.
+(account/workspace instances). Built-in rivers: Google Messages, WhatsApp,
+and Signal. Slack workspaces are additional rivers. It runs on Windows,
+macOS, and Linux.
 
 ## Data directory
 
@@ -65,8 +66,40 @@ token with `connections:write`, and subscribe that app to `message.channels`,
 `--app-token`. Socket Mode is optional: startup reconciliation and the 45-second
 incremental poll remain active as a fallback.
 
-In the TUI, press `[` / `]` to switch rivers. Streams (DMs / `#channels`) appear
-in the list for the active river.
+In the TUI, press `[` / `]` to switch rivers. Streams appear in the list for
+the active river.
+
+### Extra WhatsApp / Signal accounts
+
+The built-in `*-default` rivers stay the first account. Add another from the
+palette: `Ctrl+K` then `>add whatsapp` or `>add signal`. That creates
+`whatsapp-2` / `signal-2` (then `-3`, …) with its own session under
+`rivers/<id>/`. Switch onto it with `[` / `]` and press `p` to pair.
+
+Google Messages stays a single live river (`messages-default`). Extra
+WhatsApp and Signal conversations are namespaced
+(`whatsapp/whatsapp-2/<jid>`) so two accounts chatting with the same peer
+do not collide. Default-river IDs stay `whatsapp:<jid>` / `signal:+e164`.
+Extra accounts start like Slack extras (`ConnectIfPaired`); the `*-default`
+rivers keep the serve supervisors.
+
+### WhatsApp / Signal river
+
+```text
+[ / ] to WhatsApp or Signal → p → scan the QR from Linked devices on your phone
+```
+
+`p` starts companion-device pairing and draws the QR in an overlay. `esc`
+closes the overlay (pairing on the daemon may keep running). `r` reconnects
+an already-linked session. WhatsApp phone-number pairing codes remain on
+`POST /api/whatsapp/pair-code`; the TUI is QR-only.
+
+The overlay prefers a **sixel** QR in Windows Terminal (`WT_SESSION`) and a
+**Kitty graphics** QR in Kitty / Ghostty / WezTerm. Cursor, VS Code, and
+tmux stay on Unicode half-block cells (xterm.js / tmux eat DCS). Override
+with `OPENMESSAGES_TUI_GRAPHICS=sixel|kitty|cells`. Raster QRs tick at 1s
+once shown so the 100ms spinner does not re-upload the image. Inline media
+thumbs are still a non-goal.
 
 `tui` attaches to a local API daemon on `http://127.0.0.1:7007` (or `OPENMESSAGES_PORT`). If none is running, it starts:
 
@@ -108,7 +141,7 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | Key | Action |
 |---|---|
 | `Ctrl+K` | Universal palette (jump or `>` commands; `j`/`k`/arrows move; Enter runs; Esc closes) |
-| `[` / `]` | Switch river (Messages, Slack workspaces, …) — list focus |
+| `[` / `]` | Switch river (Messages, WhatsApp, Signal, Slack workspaces, …) — list focus |
 | `j` / `k` / arrows | Move in the conversation list; in **thread** focus, select a message |
 | mouse wheel | Scroll the pane under the cursor (list or thread) |
 | `/` | Jump: filter by name / `#channel` / contact / id. Slack also accepts `type:dm`, `type:channel`, `is:unread`, and combinations such as `type:dm is:unread alice`. |
@@ -122,11 +155,11 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `PgUp` / `Ctrl+U` | Fetch an older page for the active Slack channel (composer or thread focus) |
 | `Ctrl+E` | React: open emoji palette on the selected message, then `1`–`9` to add/remove (composer or thread; bare `e` only in thread focus) |
 | `Ctrl+A` | Attach file (OS file picker on Windows; drop a path elsewhere). Composer text becomes the caption. Bare `a` works from list/thread only. |
-| `p` | Pair Google Messages when unpaired (overlay: paste a `messages.google.com` curl with `Ctrl+V`, then tap the emoji on your phone) |
+| `p` | Pair the active river when unpaired (Messages: paste a `messages.google.com` curl; WhatsApp/Signal: scan the overlay QR). `Esc` closes, `q` closes the overlay |
 | `Ctrl+V` | Pair overlay: paste cookies. Otherwise paste media from the OS clipboard and send; falls back to pasting text into the composer |
 | `Ctrl+O` | Open latest media (or the selected message in thread focus) with the OS default app (`open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows). Bare `o` works from list/thread only — in the composer letters always type. |
 | `Ctrl+S` | Save media (same focus rules as open) |
-| `Ctrl+R` / `r` | Reconnect Google Messages (`r` from list/thread; `Ctrl+R` also from composer) |
+| `Ctrl+R` / `r` | Reconnect the active river (`r` from list/thread; `Ctrl+R` also from composer) |
 | `Esc` | Return from a Slack reply thread to its channel / back to conversation list / clear jump filter / leave search |
 | `q` / `Ctrl+C` | Quit |
 
@@ -231,7 +264,7 @@ Slack remains text-first.
 4. `./om-tui tui` attaches ("Attached to local API daemon…")
 5. Quit TUI — standalone daemon still running
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
-7. Press `p` when unpaired to pair Google Messages: paste a `messages.google.com` curl with `Ctrl+V`, then confirm the emoji on your phone; `Esc` cancels, `q` closes the overlay; `r` reconnects an existing session
+7. Press `p` when unpaired to pair the active river: Messages = paste a `messages.google.com` curl; WhatsApp/Signal = scan the QR from Linked devices; `Esc` cancels/closes, `q` closes the overlay; `r` reconnects an existing session
 8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
 9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes
@@ -239,6 +272,7 @@ Slack remains text-first.
 12. From the composer (default after open): `Ctrl+F` search, `Ctrl+R` reconnect, `Ctrl+A` attach — bare letters stay typable
 13. `Ctrl+K` opens the palette: bare text jumps across rivers; `>react` / `>msg name::hi` run commands; Esc closes without changing the draft; footer stays context-aware
 14. Optional `commands.json` custom send/open shortcuts appear under `>`
+15. Extra account: `Ctrl+K` → `>add whatsapp` (or signal) → `p` to scan that river's QR; `[` / `]` switches among them
 
 ## Notifications
 
@@ -251,7 +285,8 @@ Unread badges in the conversation list come from `unread_count`. Fresh inbound G
 ## Known cross-platform gaps
 
 - **Vault**: Keychain (macOS) and Secret Service (Linux) backends are shipped but not yet runtime-verified on real hardware (see "Data directory" above). Windows DPAPI is the daily-driver path today.
-- **Google pairing**: current Chrome on Windows encrypts Gaia cookies (v20 / app-bound). The TUI does not auto-read Chrome; paste a `messages.google.com` curl.
+- **Google pairing**: current Chrome on Windows encrypts Gaia cookies (v20 / app-bound). The TUI does not auto-read Chrome; paste a `messages.google.com` curl. Those cookies go `SESSION_COOKIE_INVALID` after hours (and on TUI-owned daemon restart); self-heal cannot decrypt v20, so Google needs a fresh paste. Leave `serve --api --no-web` running as a standalone daemon if you want the TUI to attach without killing the long-poll, but that does not stop Google rotating the cookies.
+- **Signal QR on Windows**: pairing used to wrap `signal-cli` in Unix `script` (PTY). That binary does not exist on Windows, so the overlay spun with no QR. Direct `signal-cli link` now. Install `signal-cli` ≥ 0.14.5 **and JRE 25** (`scoop install signal-cli temurin25-jdk`). Stale `JAVA_HOME` (Java 8/21) is ignored; om-tui points the child at a discovered JDK 25+ or `OPENMESSAGES_JAVA_HOME`.
 - **Notifications**: Windows toast notifications only; no native macOS/Linux equivalent yet.
 - **File picker**: `Ctrl+A` opens a native picker on Windows; macOS/Linux currently require typing/pasting a path.
 
@@ -259,5 +294,6 @@ Unread badges in the conversation list come from `unread_count`. Fresh inbound G
 
 - Native GUI / tray app
 - iMessage live sync (import-only)
-- Inline Kitty/sixel/ASCII media thumbs (for now)
+- Inline Kitty/sixel/ASCII **media thumbs** (pair-overlay QR raster is in;
+  message attachments stay `o` / `s` / OS open)
 - Signed installers

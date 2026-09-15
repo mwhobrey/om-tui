@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/maxghenis/openmessage/internal/localapi"
+	"github.com/maxghenis/openmessage/internal/river"
 )
 
 type focusPane int
@@ -67,10 +68,11 @@ func (i searchItem) FilterValue() string {
 }
 
 type (
-	statusMsg        localapi.DaemonStatus
-	riversMsg        []localapi.River
-	conversationsMsg []localapi.Conversation
-	messagesMsg      struct {
+	statusMsg           localapi.DaemonStatus
+	riversMsg           []localapi.River
+	liveRiverCreatedMsg localapi.River
+	conversationsMsg    []localapi.Conversation
+	messagesMsg         struct {
 		conversationID string
 		generation     uint64
 		messages       []localapi.Message
@@ -254,8 +256,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.closePairOverlay()
 		}
 		var cmds []tea.Cmd
-		if m.pair.ticks%pairStatusEveryTicks == 0 {
+		refresh := m.pair.ticks%pairStatusEveryTicks == 0 || m.pair.qrGraphic != ""
+		if refresh {
 			cmds = append(cmds, m.refreshStatusCmd())
+			if m.pair.open && (m.pair.kind == pairKindWhatsApp || m.pair.kind == pairKindSignal) {
+				cmds = append(cmds, m.livePairQRCmd())
+			}
 		}
 		var tick tea.Cmd
 		m, tick = m.armPairTick()
@@ -263,6 +269,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tick)
 		}
 		return m, tea.Batch(cmds...)
+
+	case pairQRMsg:
+		return m.applyPairQR(msg)
 
 	case pairStartedMsg:
 		if msg.err != nil {
@@ -295,6 +304,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.title = msg[0].DisplayName
 		}
 		return m, m.refreshConversationsCmd()
+
+	case liveRiverCreatedMsg:
+		created := localapi.River(msg)
+		found := false
+		for i, r := range m.rivers {
+			if r.ID == created.ID {
+				m.rivers[i] = created
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.rivers = append(m.rivers, created)
+		}
+		m.activeRiverID = created.ID
+		m.list.title = created.DisplayName
+		m.info = fmt.Sprintf("Added %s — press p to pair", created.DisplayName)
+		next, cmd := m.openPairOverlay()
+		return next, tea.Batch(m.refreshRiversCmd(), cmd)
 
 	case conversationsMsg:
 		if m.list.filtering {
@@ -439,7 +467,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+			m.err = m.sendBlockedReason()
 			return m, nil
 		}
 		m.err = ""
@@ -574,7 +602,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.info = "Reconnecting…"
 			return m, m.reconnectCmd()
 		case "p":
-			if m.googleNeedsPair() {
+			if m.riverNeedsPair() {
 				return m.openPairOverlay()
 			}
 		case "o", "ctrl+o":
@@ -590,7 +618,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a", "ctrl+a":
 			if m.activeID != "" {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+					m.err = m.sendBlockedReason()
 					return m, nil
 				}
 				m.info = "Attach file…"
@@ -603,7 +631,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+v":
 			if m.activeID != "" {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+					m.err = m.sendBlockedReason()
 					return m, nil
 				}
 				m.info = "Checking clipboard…"
@@ -733,7 +761,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+				m.err = m.sendBlockedReason()
 				return m, nil
 			}
 			emoji := reactPaletteEmojis[idx]
@@ -806,7 +834,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a", "ctrl+a":
 		if m.activeID != "" {
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+				m.err = m.sendBlockedReason()
 				return m, nil
 			}
 			m.info = "Attach file…"
@@ -815,7 +843,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+v":
 		if m.activeID != "" {
 			if !m.canSend() {
-				m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+				m.err = m.sendBlockedReason()
 				return m, nil
 			}
 			m.info = "Checking clipboard…"
@@ -825,7 +853,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.info = "Reconnecting…"
 		return m, m.reconnectCmd()
 	case "p":
-		if m.googleNeedsPair() {
+		if m.riverNeedsPair() {
 			return m.openPairOverlay()
 		}
 	case "/":
@@ -854,7 +882,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		// Status bar advertises "press p to pair". Honor it from an empty
 		// composer; a non-empty draft still types the letter.
-		if m.googleNeedsPair() && strings.TrimSpace(m.compose.Value()) == "" {
+		if m.riverNeedsPair() && strings.TrimSpace(m.compose.Value()) == "" {
 			return m.openPairOverlay()
 		}
 	case "ctrl+o":
@@ -877,7 +905,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+			m.err = m.sendBlockedReason()
 			return m, nil
 		}
 		m.info = "Attach file…"
@@ -905,7 +933,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+			m.err = m.sendBlockedReason()
 			return m, nil
 		}
 		m.info = "Checking clipboard…"
@@ -919,7 +947,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.canSend() {
-			m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+			m.err = m.sendBlockedReason()
 			return m, nil
 		}
 		if ids := m.broadcastIDList(); len(ids) > 0 {
@@ -1207,7 +1235,7 @@ func (m Model) View() string {
 	if !m.ready {
 		return "Starting OM-TUI…"
 	}
-	status := renderStatus(m.status, m.activeRiverName(), m.err, m.info, m.activeSlackBadge(), m.list.totalUnread(), m.width)
+	status := m.renderStatusBar()
 	help := renderContextHelpStyled(m)
 
 	d := m.paneDims()
@@ -1440,8 +1468,14 @@ func leftWidth(total int) int {
 
 func (m Model) canSend() bool {
 	switch m.activeRiverProvider() {
-	case "slack":
+	case river.ProviderSlack:
 		return true
+	case river.ProviderWhatsApp:
+		w := m.whatsappStatusForActive()
+		return w.Paired && w.Connected && !w.Pairing
+	case river.ProviderSignal:
+		s := m.signalStatusForActive()
+		return s.Paired && s.Connected && !s.Pairing && !s.NeedsReauth
 	default:
 		g := m.status.Google
 		if g.NeedsPairing || !g.Paired {
@@ -1451,6 +1485,19 @@ func (m Model) canSend() bool {
 			return false
 		}
 		return g.Connected || m.status.Connected
+	}
+}
+
+func (m Model) sendBlockedReason() string {
+	switch m.activeRiverProvider() {
+	case river.ProviderWhatsApp:
+		return "WhatsApp is not connected — press p to pair or r to reconnect"
+	case river.ProviderSignal:
+		return "Signal is not connected — press p to pair or r to reconnect"
+	case river.ProviderSlack:
+		return "Slack is not connected"
+	default:
+		return "Google Messages is not connected — press p to pair or r to reconnect"
 	}
 }
 
@@ -1494,6 +1541,26 @@ func (m Model) refreshRiversCmd() tea.Cmd {
 	}
 }
 
+func (m Model) addLiveRiver(provider string) (tea.Model, tea.Cmd) {
+	if m.session == nil || m.session.Client == nil {
+		m.err = "not attached to the local API daemon"
+		return m, nil
+	}
+	return m, m.createLiveRiverCmd(provider)
+}
+
+func (m Model) createLiveRiverCmd(provider string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		row, err := m.session.Client.CreateRiver(ctx, provider, "")
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return liveRiverCreatedMsg(row)
+	}
+}
+
 func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
 	if len(m.rivers) == 0 {
 		return m, m.refreshRiversCmd()
@@ -1528,8 +1595,14 @@ func (m Model) activeRiverName() string {
 			return r.DisplayName
 		}
 	}
-	if m.activeRiverID == "messages-default" {
+	if m.activeRiverID == river.DefaultMessagesRiverID {
 		return "Messages"
+	}
+	if m.activeRiverID == river.DefaultWhatsAppRiverID {
+		return "WhatsApp"
+	}
+	if m.activeRiverID == river.DefaultSignalRiverID {
+		return "Signal"
 	}
 	return m.activeRiverID
 }
@@ -1540,7 +1613,16 @@ func (m Model) activeRiverProvider() string {
 			return r.Provider
 		}
 	}
-	return "messages"
+	switch {
+	case strings.HasPrefix(m.activeRiverID, "whatsapp-"):
+		return river.ProviderWhatsApp
+	case strings.HasPrefix(m.activeRiverID, "signal-"):
+		return river.ProviderSignal
+	case strings.HasPrefix(m.activeRiverID, "slack-"):
+		return river.ProviderSlack
+	default:
+		return river.ProviderMessages
+	}
 }
 
 // activeSlackBadge renders a small live/poll indicator for the active Slack
@@ -1671,10 +1753,32 @@ func (m Model) searchCmd(query string) tea.Cmd {
 }
 
 func (m Model) reconnectCmd() tea.Cmd {
+	provider := m.activeRiverProvider()
+	riverID := m.activeRiverID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		status, err := m.session.Client.ReconnectGoogle(ctx)
+		if m.session == nil || m.session.Client == nil {
+			return errMsg{err: fmt.Errorf("not attached to the local API daemon")}
+		}
+		var status localapi.DaemonStatus
+		var err error
+		switch provider {
+		case river.ProviderWhatsApp:
+			err = m.session.Client.ConnectWhatsAppRiver(ctx, riverID)
+			if err == nil {
+				status, _, err = m.session.Client.Status(ctx)
+			}
+		case river.ProviderSignal:
+			err = m.session.Client.ConnectSignalRiver(ctx, riverID)
+			if err == nil {
+				status, _, err = m.session.Client.Status(ctx)
+			}
+		case river.ProviderSlack:
+			status, _, err = m.session.Client.Status(ctx)
+		default:
+			status, err = m.session.Client.ReconnectGoogle(ctx)
+		}
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -2062,11 +2166,6 @@ func min(a, b int) int {
 	return b
 }
 
-// renderStatus builds the segmented status line: a connection dot, plain
-// label, colored state, "│"-separated segments, and a right-aligned
-// accent unread badge when there's anything unread. width is the target
-// terminal width used only to right-align the badge — the final paintLine
-// pass in View() still truncates/pads the whole line to the real width.
 // composeCharLimitThreshold is how close to compose.CharLimit a draft has
 // to get before the counter appears — quiet until it's actually relevant,
 // rather than a permanent "0/4000" fixture.
@@ -2107,56 +2206,112 @@ func (m Model) renderThreadTitleLine(title string, width int) string {
 	return paintLine(lipgloss.NewStyle(), line, width)
 }
 
-func renderStatus(status localapi.DaemonStatus, riverName, errText, info, slackBadge string, unread, width int) string {
-	g := status.Google
-	state := "disconnected"
-	style := warnStyle
-	dot := "○"
-	switch {
-	case g.NeedsPairing || (!g.Paired && !status.Connected):
-		state = "unpaired — press p to pair"
-		style = warnStyle
-	case g.NeedsRepair:
-		state = "needs repair — press p to re-pair"
-		style = warnStyle
-	case g.AuthExpired:
-		state = "auth expired"
-		style = warnStyle
-	case g.Connected || status.Connected:
-		state = "connected"
-		style = okStyle
-		dot = "●"
-		if !g.PhoneResponding {
-			state = "connected (phone not responding)"
-			style = warnStyle
-			dot = "○"
-		}
-	}
-	riverLabel := strings.TrimSpace(riverName)
+func (m Model) renderStatusBar() string {
+	name, state, style, dot := m.riverStatusChip()
+	riverLabel := strings.TrimSpace(m.activeRiverName())
 	if riverLabel == "" {
-		riverLabel = "Messages"
+		riverLabel = name
 	}
 	sep := dimStyle.Render(" │ ")
-	left := style.Render(dot) + " Google Messages " + style.Render(state) +
+	left := style.Render(dot) + " " + name + " " + style.Render(state) +
 		sep + mutedStyle.Render("river ") + riverLabel
-	if slackBadge != "" {
-		left += sep + slackBadge
+	if badge := m.activeSlackBadge(); badge != "" {
+		left += sep + badge
 	}
-	if info != "" {
-		left += sep + mutedStyle.Render(info)
+	if m.info != "" {
+		left += sep + mutedStyle.Render(m.info)
 	}
-	if errText != "" {
-		left += sep + errStyle.Render(errText)
+	if m.err != "" {
+		left += sep + errStyle.Render(m.err)
 	}
+	unread := m.list.totalUnread()
 	if unread <= 0 {
 		return left
 	}
-	badge := badgeStyle.Render(fmt.Sprintf("%d unread", unread))
-	pad := width - cellWidth(left) - cellWidth(badge)
+	count := badgeStyle.Render(fmt.Sprintf("%d unread", unread))
+	pad := m.width - cellWidth(left) - cellWidth(count)
 	if pad < 1 {
 		pad = 1
 	}
-	return left + strings.Repeat(" ", pad) + badge
+	return left + strings.Repeat(" ", pad) + count
+}
+
+func (m Model) riverStatusChip() (name, state string, style lipgloss.Style, dot string) {
+	style = warnStyle
+	dot = "○"
+	state = "disconnected"
+	switch m.activeRiverProvider() {
+	case river.ProviderWhatsApp:
+		name = "WhatsApp"
+		w := m.whatsappStatusForActive()
+		switch {
+		case !w.Paired:
+			state = "unpaired — press p to pair"
+		case w.Pairing || w.Connecting:
+			state = "pairing"
+		case w.Connected:
+			state = "connected"
+			style = okStyle
+			dot = "●"
+		default:
+			state = "disconnected — press r to reconnect"
+		}
+	case river.ProviderSignal:
+		name = "Signal"
+		s := m.signalStatusForActive()
+		switch {
+		case s.NeedsReauth:
+			state = "needs re-pair — press p"
+		case !s.Paired:
+			state = "unpaired — press p to pair"
+		case s.Pairing || s.Connecting:
+			state = "pairing"
+		case s.Connected:
+			state = "connected"
+			style = okStyle
+			dot = "●"
+		default:
+			state = "disconnected — press r to reconnect"
+		}
+	case river.ProviderSlack:
+		name = m.activeRiverName()
+		if name == "" {
+			name = "Slack"
+		}
+		connected := false
+		for _, s := range m.status.Slack {
+			if s.RiverID == m.activeRiverID {
+				connected = s.Connected
+				break
+			}
+		}
+		if connected {
+			state = "connected"
+			style = okStyle
+			dot = "●"
+		}
+	default:
+		name = "Google Messages"
+		g := m.status.Google
+		switch {
+		case g.NeedsPairing || (!g.Paired && !m.status.Connected):
+			state = "unpaired — press p to pair"
+		case g.NeedsRepair:
+			state = "needs repair — press p to re-pair"
+		case g.AuthExpired:
+			state = "auth expired"
+		case g.Connected || m.status.Connected:
+			state = "connected"
+			style = okStyle
+			dot = "●"
+			if !g.PhoneResponding {
+				state = "connected (phone not responding)"
+				style = warnStyle
+				dot = "○"
+			}
+		}
+	}
+	return name, state, style, dot
 }
 
 func truncate(s string, n int) string {
