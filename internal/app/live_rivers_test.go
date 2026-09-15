@@ -100,6 +100,76 @@ func TestLiveRiverIDForConversation(t *testing.T) {
 	}
 }
 
+func TestLiveRiverIDForMessage(t *testing.T) {
+	a := &App{}
+	if got := a.liveRiverIDForMessage(nil, river.DefaultWhatsAppRiverID); got != river.DefaultWhatsAppRiverID {
+		t.Fatalf("nil = %q", got)
+	}
+	if got := a.liveRiverIDForMessage(&db.Message{}, river.DefaultSignalRiverID); got != river.DefaultSignalRiverID {
+		t.Fatalf("empty convo = %q", got)
+	}
+	if got := a.liveRiverIDForMessage(&db.Message{ConversationID: "whatsapp/whatsapp-2/1555@s.whatsapp.net"}, river.DefaultWhatsAppRiverID); got != "whatsapp-2" {
+		t.Fatalf("scoped wa = %q", got)
+	}
+	if got := a.liveRiverIDForMessage(&db.Message{ConversationID: "signal:+15551212"}, river.DefaultSignalRiverID); got != river.DefaultSignalRiverID {
+		t.Fatalf("default signal = %q", got)
+	}
+	if got := a.liveRiverIDForMessage(&db.Message{ConversationID: "signal/signal-2/+15551212"}, river.DefaultSignalRiverID); got != "signal-2" {
+		t.Fatalf("scoped signal = %q", got)
+	}
+}
+
+func TestDownloadLiveMediaUsesConversationRiver(t *testing.T) {
+	t.Setenv("OPENMESSAGES_DATA_DIR", t.TempDir())
+	t.Setenv("OPENMESSAGES_VAULT_INSECURE", "1")
+	t.Setenv("OPENMESSAGES_DEMO", "")
+
+	a, err := New(zerolog.Nop())
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	defer a.Close()
+
+	wa, err := a.CreateLiveRiver(river.ProviderWhatsApp, "")
+	if err != nil {
+		t.Fatalf("CreateLiveRiver(whatsapp): %v", err)
+	}
+	sig, err := a.CreateLiveRiver(river.ProviderSignal, "")
+	if err != nil {
+		t.Fatalf("CreateLiveRiver(signal): %v", err)
+	}
+
+	_, _, _ = a.DownloadWhatsAppMedia(&db.Message{ConversationID: "whatsapp/" + wa.ID + "/1555@s.whatsapp.net"})
+	a.whatsAppMu.Lock()
+	if a.WhatsAppRivers[wa.ID] == nil {
+		a.whatsAppMu.Unlock()
+		t.Fatal("extra WhatsApp media must init the conversation river, not whatsapp-default")
+	}
+	if a.WhatsAppRivers[river.DefaultWhatsAppRiverID] != nil || a.WhatsApp != nil {
+		a.whatsAppMu.Unlock()
+		t.Fatal("extra WhatsApp media initialized the default bridge")
+	}
+	a.whatsAppMu.Unlock()
+
+	_, _, _ = a.WhatsAppAvatar("whatsapp/" + wa.ID + "/1555@s.whatsapp.net")
+	a.whatsAppMu.Lock()
+	if a.WhatsAppRivers[river.DefaultWhatsAppRiverID] != nil || a.WhatsApp != nil {
+		a.whatsAppMu.Unlock()
+		t.Fatal("extra WhatsApp avatar initialized the default bridge")
+	}
+	a.whatsAppMu.Unlock()
+
+	_, _, _ = a.DownloadSignalMedia(&db.Message{ConversationID: "signal/" + sig.ID + "/+15551212"})
+	a.signalMu.Lock()
+	defer a.signalMu.Unlock()
+	if a.SignalRivers[sig.ID] == nil {
+		t.Fatal("extra Signal media must init the conversation river, not signal-default")
+	}
+	if a.SignalRivers[river.DefaultSignalRiverID] != nil || a.Signal != nil {
+		t.Fatal("extra Signal media initialized the default bridge")
+	}
+}
+
 func TestEnsureWhatsAppRiverRejectsTraversal(t *testing.T) {
 	t.Setenv("OPENMESSAGES_DATA_DIR", t.TempDir())
 	t.Setenv("OPENMESSAGES_VAULT_INSECURE", "1")

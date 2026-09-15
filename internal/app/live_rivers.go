@@ -392,6 +392,13 @@ func (a *App) ExtraSignalStatuses() []signallive.StatusSnapshot {
 	return out
 }
 
+func (a *App) liveRiverIDForMessage(msg *db.Message, fallback string) string {
+	if msg == nil || strings.TrimSpace(msg.ConversationID) == "" {
+		return fallback
+	}
+	return a.liveRiverIDForConversation(msg.ConversationID)
+}
+
 func (a *App) liveRiverIDForConversation(conversationID string) string {
 	if id := river.RiverIDFromScoped(conversationID); id != "" {
 		return id

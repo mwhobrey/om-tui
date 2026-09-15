@@ -19,7 +19,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Area | Status |
 |---|---|
 | Rivers model (`messages-default`, `whatsapp-default`, `signal-default`, extra `whatsapp-N`/`signal-N`, Slack rivers) | Shipped in `internal/river`, `internal/db/rivers*`, `internal/app/live_rivers.go` |
-| Extra live WhatsApp / Signal pair | Palette `>add whatsapp` / `>add signal`; isolated session dirs; namespaced conversation IDs; extra start is Slack-shaped `ConnectIfPaired` |
+| Extra live WhatsApp / Signal pair | Palette `>add whatsapp` / `>add signal`; isolated session dirs; namespaced conversation IDs; extra start is Slack-shaped `ConnectIfPaired`; media/avatar download uses the conversation's river bridge |
 | Vault (DPAPI Windows, Keychain macOS, Secret Service Linux) | Shipped for Slack (and optional Google session copy); insecure path for tests only |
 | `pair slack --token [--app-token]` | Shipped; optional `xapp` token enables Socket Mode |
 | WhatsApp / Signal TUI QR pair | Shipped; `[` / `]` to the river, `p` shows the QR (sixel in Windows Terminal, Kitty protocol in Kitty/Ghostty/WezTerm, half-block cells elsewhere); default sessions stay in `whatsapp-session.db` / `signal-cli/`; extras under `rivers/<id>/` |

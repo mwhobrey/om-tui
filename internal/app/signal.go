@@ -90,7 +90,7 @@ func (a *App) SendSignalReaction(conversationID, messageID, emoji, action string
 }
 
 func (a *App) DownloadSignalMedia(msg *db.Message) ([]byte, string, error) {
-	bridge, err := a.ensureSignal()
+	bridge, err := a.ensureSignalRiver(a.liveRiverIDForMessage(msg, river.DefaultSignalRiverID))
 	if err != nil {
 		return nil, "", fmt.Errorf("init Signal bridge: %w", err)
 	}
