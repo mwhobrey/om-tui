@@ -35,6 +35,20 @@ func TestNextExtraRiverIDSkipsDefaultAndUsed(t *testing.T) {
 	}
 }
 
+func TestSafeLiveRiverID(t *testing.T) {
+	if SafeLiveRiverID(DefaultWhatsAppRiverID) || SafeLiveRiverID("") {
+		t.Fatal("default/empty must be rejected")
+	}
+	if !SafeLiveRiverID("whatsapp-2") || !SafeLiveRiverID("signal-3") {
+		t.Fatal("extra live ids should pass")
+	}
+	for _, id := range []string{"../whatsapp-2", "whatsapp-2/../etc", `whatsapp\..\tmp`, "messages-2", "slack-T1"} {
+		if SafeLiveRiverID(id) {
+			t.Fatalf("%q should be rejected", id)
+		}
+	}
+}
+
 func TestScopedIDKeepsDefaultForm(t *testing.T) {
 	if got := ScopedID(ProviderWhatsApp, DefaultWhatsAppRiverID, "1555@s.whatsapp.net"); got != "whatsapp:1555@s.whatsapp.net" {
 		t.Fatalf("default wa = %q", got)

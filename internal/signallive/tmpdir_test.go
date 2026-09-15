@@ -129,6 +129,15 @@ func TestSignalCLIEnvInjectsDiscoveredJavaHome(t *testing.T) {
 	}
 }
 
+func TestJavaHomeTooOldRejectsUnknownNames(t *testing.T) {
+	if !javaHomeTooOldForSignalCLI(`/usr/lib/jvm/default-java`) {
+		t.Fatal("unknown JAVA_HOME names must not be trusted")
+	}
+	if javaHomeTooOldForSignalCLI(`C:\Program Files\Java\jdk-25`) {
+		t.Fatal("jdk-25 should be accepted")
+	}
+}
+
 func TestParseJavaMajorFromName(t *testing.T) {
 	cases := []struct {
 		name string

@@ -209,6 +209,27 @@ func TestCanSendExtraWhatsAppUsesRiverStatus(t *testing.T) {
 	}
 }
 
+func TestPairBusyUsesActiveRiverStatus(t *testing.T) {
+	m := Model{
+		activeRiverID: "whatsapp-2",
+		rivers:        []localapi.River{{ID: "whatsapp-2", Provider: river.ProviderWhatsApp}},
+		pair:          pairOverlay{kind: pairKindWhatsApp},
+		status: localapi.DaemonStatus{
+			WhatsApp: localapi.WhatsAppStatus{Connecting: true},
+			WhatsAppRivers: []localapi.WhatsAppStatus{
+				{RiverID: "whatsapp-2", Connecting: false, Pairing: false},
+			},
+		},
+	}
+	if m.pairBusy() {
+		t.Fatal("busy default account should not block an idle extra river")
+	}
+	m.status.WhatsAppRivers[0].Pairing = true
+	if !m.pairBusy() {
+		t.Fatal("pairing extra river should be busy")
+	}
+}
+
 func TestLiveRiverCreatedOpensWhatsAppPair(t *testing.T) {
 	m := Model{width: 80, height: 24, activeRiverID: river.DefaultMessagesRiverID}
 	next, _ := m.Update(liveRiverCreatedMsg{

@@ -253,25 +253,11 @@ func parseJavaMajorFromName(name string) int {
 }
 
 func javaHomeTooOldForSignalCLI(home string) bool {
-	if v := javaHomeMajorVersion(home); v > 0 {
-		return v < minimumSignalCLIJavaMajor
-	}
-	home = strings.TrimSpace(strings.Trim(home, `"`))
-	if home == "" {
-		return false
-	}
-	lower := strings.ToLower(filepath.ToSlash(home))
-	base := strings.ToLower(filepath.Base(filepath.Clean(home)))
-	switch {
-	case strings.Contains(base, "1.8"), strings.Contains(base, "jdk1.8"), strings.Contains(base, "jre1.8"):
+	v := javaHomeMajorVersion(home)
+	if v <= 0 {
 		return true
-	case strings.Contains(base, "jdk-8"), strings.Contains(base, "jdk8"):
-		return true
-	case strings.Contains(base, "jdk-11"), strings.Contains(base, "jdk11"), strings.Contains(lower, "/jdk-11"):
-		return true
-	default:
-		return false
 	}
+	return v < minimumSignalCLIJavaMajor
 }
 
 func signalTmpSweepDisabled() bool {

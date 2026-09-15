@@ -99,3 +99,20 @@ func TestLiveRiverIDForConversation(t *testing.T) {
 		t.Fatalf("default signal = %q", got)
 	}
 }
+
+func TestEnsureWhatsAppRiverRejectsTraversal(t *testing.T) {
+	t.Setenv("OPENMESSAGES_DATA_DIR", t.TempDir())
+	t.Setenv("OPENMESSAGES_VAULT_INSECURE", "1")
+	t.Setenv("OPENMESSAGES_DEMO", "")
+	a, err := New(zerolog.Nop())
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	defer a.Close()
+	if _, err := a.ensureWhatsAppRiver("../whatsapp-2"); err == nil {
+		t.Fatal("expected traversal river id to be rejected")
+	}
+	if _, err := a.ensureWhatsAppRiver("whatsapp-2"); err == nil {
+		t.Fatal("unregistered extra river should be rejected")
+	}
+}

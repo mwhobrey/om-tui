@@ -213,9 +213,11 @@ func (m Model) pairBusy() bool {
 	}
 	switch m.pairKind() {
 	case pairKindWhatsApp:
-		return m.status.WhatsApp.Pairing || m.status.WhatsApp.Connecting
+		w := m.whatsappStatusForActive()
+		return w.Pairing || w.Connecting
 	case pairKindSignal:
-		return m.status.Signal.Pairing || m.status.Signal.Connecting
+		s := m.signalStatusForActive()
+		return s.Pairing || s.Connecting
 	}
 	pairing := m.pairingFromDaemon()
 	if pairing == nil {

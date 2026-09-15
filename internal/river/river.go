@@ -76,6 +76,26 @@ func IsDefaultRiverID(id string) bool {
 	}
 }
 
+// SafeLiveRiverID reports whether id is a non-default extra WhatsApp/Signal
+// river that cannot escape dataDir/rivers when joined as a path segment.
+func SafeLiveRiverID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || IsDefaultRiverID(id) {
+		return false
+	}
+	if filepath.Base(id) != id || strings.Contains(id, "..") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(id, "whatsapp-") && len(id) > len("whatsapp-"):
+		return true
+	case strings.HasPrefix(id, "signal-") && len(id) > len("signal-"):
+		return true
+	default:
+		return false
+	}
+}
+
 func ProviderPrefix(provider string) string {
 	switch NormalizeProvider(provider) {
 	case ProviderMessages:
