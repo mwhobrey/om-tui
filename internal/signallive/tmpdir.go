@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +44,10 @@ const (
 	legacyLibsignalMaxAge = 24 * time.Hour
 
 	signalTmpSweepEnvVar = "OPENMESSAGES_SIGNAL_TMP_SWEEP"
+
+	// signal-cli 0.14.8 ships class-file 69 (Java 25). Older JDKs die with
+	// UnsupportedClassVersionError; Java 8 also rejects --enable-native-access.
+	minimumSignalCLIJavaMajor = 25
 )
 
 // signalTmpRoot lives under the system temp dir rather than the Signal
@@ -72,10 +78,20 @@ func newSignalRunTmpDir() (string, func(), error) {
 // signal-cli itself plus anything it spawns; java.io.tmpdir (appended last
 // to SIGNAL_CLI_OPTS so it wins) covers JVMs that derive their temp dir from
 // the platform default instead of TMPDIR.
+//
+// JAVA_HOME is replaced when OPENMESSAGES_JAVA_HOME is set, or when a JDK
+// ≥ 25 is found under well-known install roots (scoop temurin, Program
+// Files\Java, Homebrew openjdk). Stale JAVA_HOME (this box: jdk1.8) makes
+// signal-cli.bat ignore PATH java and die; PATH java 21 is still too old
+// for signal-cli 0.14.8 (needs JRE 25).
 func signalCLIEnv(base []string, dir string) []string {
 	javaOpt := "-Djava.io.tmpdir=" + dir
 	opts := javaOpt
-	env := make([]string, 0, len(base)+2)
+	overrideJavaHome := strings.TrimSpace(os.Getenv("OPENMESSAGES_JAVA_HOME"))
+	if overrideJavaHome == "" {
+		overrideJavaHome = discoverSignalCLIJavaHomeFn()
+	}
+	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
 		switch {
 		case strings.HasPrefix(kv, "TMPDIR="):
@@ -85,10 +101,163 @@ func signalCLIEnv(base []string, dir string) []string {
 				opts = existing + " " + javaOpt
 			}
 			continue
+		case strings.HasPrefix(kv, "JAVA_HOME="):
+			if overrideJavaHome != "" || javaHomeTooOldForSignalCLI(strings.TrimPrefix(kv, "JAVA_HOME=")) {
+				continue
+			}
 		}
 		env = append(env, kv)
 	}
-	return append(env, "TMPDIR="+dir, "SIGNAL_CLI_OPTS="+opts)
+	env = append(env, "TMPDIR="+dir, "SIGNAL_CLI_OPTS="+opts)
+	if overrideJavaHome != "" {
+		env = append(env, "JAVA_HOME="+overrideJavaHome)
+	}
+	return env
+}
+
+var discoverSignalCLIJavaHomeFn = discoverSignalCLIJavaHome
+
+func discoverSignalCLIJavaHome() string {
+	return firstUsableSignalCLIJavaHome(signalCLIJavaHomeCandidates())
+}
+
+func signalCLIJavaHomeCandidates() []string {
+	var out []string
+	if runtime.GOOS == "windows" {
+		out = append(out, javaHomesUnder(`C:\Program Files\Java`)...)
+		out = append(out, javaHomesUnder(`C:\Program Files\Eclipse Adoptium`)...)
+		if home, err := os.UserHomeDir(); err == nil {
+			out = append(out, scoopJavaHomes(filepath.Join(home, "scoop", "apps"))...)
+		}
+		return out
+	}
+	for _, p := range []string{
+		"/opt/homebrew/opt/openjdk@25",
+		"/opt/homebrew/opt/openjdk",
+		"/usr/local/opt/openjdk@25",
+		"/usr/local/opt/openjdk",
+	} {
+		out = append(out, p)
+	}
+	return out
+}
+
+func javaHomesUnder(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, filepath.Join(root, entry.Name()))
+		}
+	}
+	return out
+}
+
+func scoopJavaHomes(appsRoot string) []string {
+	entries, err := os.ReadDir(appsRoot)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() || !looksLikeScoopJDKApp(entry.Name()) {
+			continue
+		}
+		out = append(out, filepath.Join(appsRoot, entry.Name(), "current"))
+	}
+	return out
+}
+
+func looksLikeScoopJDKApp(name string) bool {
+	n := strings.ToLower(name)
+	for _, key := range []string{"temurin", "openjdk", "zulu", "graal", "liberica", "semeru", "microsoft-jdk"} {
+		if strings.Contains(n, key) {
+			return true
+		}
+	}
+	return strings.Contains(n, "jdk") && !strings.Contains(n, "signal")
+}
+
+func firstUsableSignalCLIJavaHome(candidates []string) string {
+	best := ""
+	bestVer := 0
+	for _, home := range candidates {
+		if !javaHomeHasJava(home) {
+			continue
+		}
+		ver := javaHomeMajorVersion(home)
+		if ver >= minimumSignalCLIJavaMajor && ver >= bestVer {
+			best = home
+			bestVer = ver
+		}
+	}
+	return best
+}
+
+func javaHomeHasJava(home string) bool {
+	home = strings.TrimSpace(strings.Trim(home, `"`))
+	if home == "" {
+		return false
+	}
+	for _, name := range []string{"java", "java.exe"} {
+		if _, err := os.Stat(filepath.Join(home, "bin", name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	javaMajorFromName = regexp.MustCompile(`(?i)(?:jdk-?|jre-?|temurin-?|openjdk-?|zulu-?|@)(\d{1,2})\b`)
+	javaDottedVersion = regexp.MustCompile(`^(\d{1,2})(?:\.\d+)`)
+)
+
+func javaHomeMajorVersion(home string) int {
+	home = strings.TrimSpace(strings.Trim(home, `"`))
+	if home == "" {
+		return 0
+	}
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(home)), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if v := parseJavaMajorFromName(parts[i]); v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func parseJavaMajorFromName(name string) int {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" || n == "current" || n == "bin" || n == "latest" || n == "java" {
+		return 0
+	}
+	if strings.Contains(n, "1.8") {
+		return 8
+	}
+	if m := javaMajorFromName.FindStringSubmatch(n); len(m) == 2 {
+		v, _ := strconv.Atoi(m[1])
+		if v >= 8 {
+			return v
+		}
+	}
+	if m := javaDottedVersion.FindStringSubmatch(n); len(m) == 2 {
+		v, _ := strconv.Atoi(m[1])
+		if v >= 8 {
+			return v
+		}
+	}
+	return 0
+}
+
+func javaHomeTooOldForSignalCLI(home string) bool {
+	v := javaHomeMajorVersion(home)
+	if v <= 0 {
+		return true
+	}
+	return v < minimumSignalCLIJavaMajor
 }
 
 func signalTmpSweepDisabled() bool {

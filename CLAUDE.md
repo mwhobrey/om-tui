@@ -22,7 +22,7 @@ state.
 │   ├── app/             Bootstrap, data dir, backfill, Slack rivers
 │   ├── client/          libgm Google Messages protocol
 │   ├── db/              Legacy SQLite (conversations, messages, contacts, rivers, drafts)
-│   ├── river/           Account/workspace identity (messages-default, slack-<team>)
+│   ├── river/           Account/workspace identity (messages-default, whatsapp-default, signal-default, slack-<team>)
 │   ├── vault/           Per-river sealed credentials (DPAPI Windows, Keychain macOS, Secret Service Linux)
 │   ├── slacklive/       Slack Web API client + recent sync + text send
 │   ├── bridge/          Transport contracts, capability registry, supervisors
@@ -39,7 +39,7 @@ state.
 └── docs/
     ├── runbook/         Federated agent/developer runbook (START HERE)
     ├── agent-runbook.md Live-install support (data dir, MCP fratricide, re-pair)
-    └── tui.md           TUI + Slack rivers product path (all platforms)
+    └── tui.md           TUI + rivers product path (all platforms)
 ```
 
 There is no `macos/` (native app), `internal/web/static/` (React UI), or
@@ -81,9 +81,9 @@ go build -o om-tui .                       # om-tui.exe on Windows
 ./om-tui pair slack --token xoxp-... --name "Acme"
 ```
 
-- Rivers: built-in `messages-default`; Slack rivers are `slack-<team-id>`.
+- Rivers: built-in `messages-default`, `whatsapp-default`, `signal-default`; extras are `whatsapp-2` / `signal-2` (`Ctrl+K` → `>add …`); Slack rivers are `slack-<team-id>`. Google Messages is one live river.
 - Credentials: `rivers/<id>/credentials.enc`, OS-backed sealing (see vault note above).
-- TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media; `p` Google Account pair when unpaired.
+- TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media; `p` pair the active river (Google paste / WhatsApp QR / Signal QR)
 - API daemon: `serve --api --no-web` exposes `/api/rivers`, `/api/conversations?river_id=…`.
 
 ## Local CLI (read-only, no transports)

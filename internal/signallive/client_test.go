@@ -50,6 +50,19 @@ func TestParseSignalAccountsAcceptsJSONPhoneNumbers(t *testing.T) {
 	}
 }
 
+func TestParseSignalAccountsAcceptsJSONAfterAccountHelperInfo(t *testing.T) {
+	raw := []byte("INFO  AccountHelper - The Signal protocol expects that incoming messages are regularly received.\n[{\"number\":\"+16015758787\"}]\n")
+	got := parseSignalAccounts(raw)
+	if len(got) != 1 || got[0] != "+16015758787" {
+		t.Fatalf("parseSignalAccounts() = %#v, want +16015758787", got)
+	}
+	sameLine := []byte(`INFO AccountHelper - The Signal protocol expects that incoming messages are regularly received.: [{"number":"+16015758787"}]`)
+	got = parseSignalAccounts(sameLine)
+	if len(got) != 1 || got[0] != "+16015758787" {
+		t.Fatalf("same-line parseSignalAccounts() = %#v, want +16015758787", got)
+	}
+}
+
 func TestBridgeSendTextRunsSignalCLI(t *testing.T) {
 	t.Setenv("OPENMESSAGES_MY_NAME", "")
 	bridge := &Bridge{
@@ -3087,6 +3100,17 @@ func TestCloseDuringSignalPairingSkipsPostCancelAccountProbe(t *testing.T) {
 	}
 	if got := probeCalls.Load(); got != 0 {
 		t.Fatalf("post-cancel account probe calls = %d, want 0", got)
+	}
+}
+
+func TestParseConversationTargetExtraRiver(t *testing.T) {
+	target, isGroup, err := parseConversationTarget("signal/signal-2/+15551212")
+	if err != nil || isGroup || target != "+15551212" {
+		t.Fatalf("dm = %q %v %v", target, isGroup, err)
+	}
+	target, isGroup, err = parseConversationTarget("signal-group/signal-2/abc")
+	if err != nil || !isGroup || target != "abc" {
+		t.Fatalf("group = %q %v %v", target, isGroup, err)
 	}
 }
 

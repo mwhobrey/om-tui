@@ -154,10 +154,12 @@ type App struct {
 	avatarSyncStop            chan struct{}
 	whatsAppMu                sync.Mutex
 	WhatsApp                  *whatsapplive.Bridge
+	WhatsAppRivers            map[string]*whatsapplive.Bridge
 	whatsAppLifecycleMu       sync.RWMutex
 	whatsAppLifecycleNotifier WhatsAppLifecycleNotifier
 	signalMu                  sync.Mutex
 	Signal                    *signallive.Bridge
+	SignalRivers              map[string]*signallive.Bridge
 	slackMu                   sync.Mutex
 	SlackRivers               map[string]*slacklive.Client // riverID -> client
 	statusMu                  sync.Mutex
@@ -906,16 +908,7 @@ func (a *App) Close() {
 	if cli := a.GetClient(); cli != nil {
 		cli.GM.Disconnect()
 	}
-	if signal := a.GetSignal(); signal != nil {
-		if err := signal.Close(); err != nil {
-			a.Logger.Warn().Err(err).Msg("Failed to close Signal bridge")
-		}
-	}
-	if wa := a.GetWhatsApp(); wa != nil {
-		if err := wa.Close(); err != nil {
-			a.Logger.Warn().Err(err).Msg("Failed to close WhatsApp bridge")
-		}
-	}
+	a.closeLiveBridges()
 	a.StopAllSlackRivers()
 	if a.Store != nil {
 		a.Store.Close()

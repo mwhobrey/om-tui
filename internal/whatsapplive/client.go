@@ -32,6 +32,7 @@ import (
 	"rsc.io/qr"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/whatsappmedia"
 )
 
@@ -254,6 +255,7 @@ type AccountInfo struct {
 }
 
 type StatusSnapshot struct {
+	RiverID     string `json:"river_id,omitempty"`
 	Connected   bool   `json:"connected"`
 	Connecting  bool   `json:"connecting"`
 	Paired      bool   `json:"paired"`
@@ -273,7 +275,7 @@ type QRSnapshot struct {
 	ExpiresAt  int64  `json:"expires_at,omitempty"`
 	PNGDataURL string `json:"png_data_url,omitempty"`
 
-	Code string `json:"-"`
+	Code string `json:"code,omitempty"`
 }
 
 type participantJSON struct {
@@ -306,6 +308,7 @@ type Bridge struct {
 	store       *db.Store
 	logger      zerolog.Logger
 	sessionPath string
+	riverID     string
 	callbacks   Callbacks
 
 	container *sqlstore.Container
@@ -334,10 +337,18 @@ type Bridge struct {
 }
 
 func New(sessionPath string, store *db.Store, logger zerolog.Logger, callbacks Callbacks) (*Bridge, error) {
+	return NewForRiver(river.DefaultWhatsAppRiverID, sessionPath, store, logger, callbacks)
+}
+
+func NewForRiver(riverID, sessionPath string, store *db.Store, logger zerolog.Logger, callbacks Callbacks) (*Bridge, error) {
+	if strings.TrimSpace(riverID) == "" {
+		riverID = river.DefaultWhatsAppRiverID
+	}
 	bridge := &Bridge{
 		store:              store,
 		logger:             logger,
 		sessionPath:        sessionPath,
+		riverID:            riverID,
 		callbacks:          callbacks,
 		recentlyLeftGroups: make(map[string]time.Time),
 	}
@@ -364,10 +375,7 @@ func (b *Bridge) initClientLocked() error {
 		container.Close()
 		return fmt.Errorf("load WhatsApp device store: %w", err)
 	}
-	// Route whatsmeow's internal logs through the bridge logger. Pairing
-	// failures in particular (code-pair notification decrypt, stream errors)
-	// are log-only — with a Noop logger they are invisible and a failed pair
-	// just silently returns to idle.
+	wastore.SetOSInfo(whatsappCompanionOS, whatsappCompanionVersion)
 	cli := whatsmeow.NewClient(deviceStore, waLog.Zerolog(b.logger.With().Str("component", "whatsmeow").Logger()))
 	// The bridge Supervisor is the sole reconnect owner. In addition to the
 	// normal reconnect toggles, DisableLoginAutoReconnect prevents whatsmeow's
@@ -919,6 +927,13 @@ func (b *Bridge) PairedAccount() AccountInfo {
 // PairClientChrome below and is what shows on the phone's linked-devices list.
 const pairPhoneDisplayName = "Chrome (macOS)"
 
+// whatsappCompanionOS is DeviceProps.Os, the name WhatsApp shows under Linked
+// devices for QR pairing. PairPhone still uses pairPhoneDisplayName because
+// that path is allowlisted as `Browser (OS)` and rejects product names.
+const whatsappCompanionOS = "om-tui"
+
+var whatsappCompanionVersion = [3]uint32{0, 4, 0}
+
 // PairPhone begins phone-number pairing: it connects the unpaired client and
 // asks WhatsApp for an 8-character linking code the user types into their phone
 // (WhatsApp > Linked devices > "Link with phone number instead"). Unlike the QR
@@ -1132,6 +1147,7 @@ func (b *Bridge) Status() StatusSnapshot {
 	defer b.mu.RUnlock()
 
 	status := StatusSnapshot{
+		RiverID:    b.riverID,
 		Connected:  b.connected && clientIsConnected(b.client),
 		Connecting: b.connecting,
 		Pairing:    b.pairing,
@@ -1839,7 +1855,7 @@ func (b *Bridge) ProfilePhoto(conversationID string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	jid = b.canonicalJID(jid)
-	cacheKey := waConversationID(jid)
+	cacheKey := b.conversationID(jid)
 
 	cached, hasCached := b.avatarCacheEntry(cacheKey)
 	if hasCached && time.Since(cached.FetchedAt) < avatarCacheTTL {
@@ -2135,7 +2151,7 @@ func (b *Bridge) captureMentionLabels(msg *waE2E.Message, chatJID watypes.JID) m
 	}
 	var convo *db.Conversation
 	if b.store != nil {
-		convo, _ = b.store.GetConversation(waConversationID(chatJID))
+		convo, _ = b.store.GetConversation(b.conversationID(chatJID))
 	}
 	for _, raw := range ctx.GetMentionedJID() {
 		jid, err := watypes.ParseJID(strings.TrimSpace(raw))
@@ -2323,7 +2339,7 @@ func (b *Bridge) handleProtocolMessage(evt *waevents.Message) bool {
 			b.logger.Debug().Err(err).Str("target_msg_id", targetID).Msg("Failed to delete revoked WhatsApp message")
 		}
 		if b.callbacks.OnMessagesChange != nil {
-			b.callbacks.OnMessagesChange(waConversationID(b.normalizeConversationJID(evt.Info.Chat)))
+			b.callbacks.OnMessagesChange(b.conversationID(b.normalizeConversationJID(evt.Info.Chat)))
 		}
 		return true
 	case waE2E.ProtocolMessage_MESSAGE_EDIT:
@@ -2377,7 +2393,7 @@ func (b *Bridge) handleMessageWithoutIngress(evt *waevents.Message) {
 }
 
 func (b *Bridge) handleLegacyMessage(evt *waevents.Message, chatJID watypes.JID) {
-	if evt.Info.IsGroup && b.shouldSuppressLeftGroup(waConversationID(chatJID)) {
+	if evt.Info.IsGroup && b.shouldSuppressLeftGroup(b.conversationID(chatJID)) {
 		return
 	}
 	if b.handleReactionMessage(evt) {
@@ -2422,7 +2438,7 @@ func (b *Bridge) handleLegacyMessage(evt *waevents.Message, chatJID watypes.JID)
 	senderName, senderNumber := b.resolveSender(evt, conv)
 	msg := &db.Message{
 		MessageID:      "whatsapp:" + string(evt.Info.ID),
-		ConversationID: waConversationID(chatJID),
+		ConversationID: b.conversationID(chatJID),
 		SenderName:     senderName,
 		SenderNumber:   senderNumber,
 		Body:           body,
@@ -2596,7 +2612,7 @@ func (b *Bridge) handleChatPresence(evt *waevents.ChatPresence) {
 	if evt == nil || b.callbacks.OnTypingChange == nil {
 		return
 	}
-	conversationID := waConversationID(b.canonicalJID(evt.Chat))
+	conversationID := b.conversationID(b.canonicalJID(evt.Chat))
 	senderJID := b.canonicalJID(evt.Sender)
 	senderNumber := jidToPhone(senderJID)
 	senderName := b.contactDisplayName(senderJID, "")
@@ -2612,7 +2628,7 @@ func (b *Bridge) handleGroupInfo(evt *waevents.GroupInfo) {
 		return
 	}
 	chatJID := b.normalizeConversationJID(evt.JID)
-	conversationID := waConversationID(chatJID)
+	conversationID := b.conversationID(chatJID)
 	if b.didOwnAccountJoinGroup(evt) {
 		b.clearLeftGroup(conversationID)
 	} else if b.shouldSuppressLeftGroup(conversationID) {
@@ -2676,7 +2692,7 @@ func (b *Bridge) handleHistorySync(evt *waevents.HistorySync) {
 
 func (b *Bridge) upsertConversationForMessage(evt *waevents.Message) (*db.Conversation, error) {
 	chatJID := b.normalizeConversationJID(evt.Info.Chat)
-	conversationID := waConversationID(chatJID)
+	conversationID := b.conversationID(chatJID)
 	existing, _ := b.store.GetConversation(conversationID)
 	lastTS := evt.Info.Timestamp.UnixMilli()
 
@@ -2686,6 +2702,7 @@ func (b *Bridge) upsertConversationForMessage(evt *waevents.Message) (*db.Conver
 		LastMessageTS:  lastTS,
 		SourcePlatform: "whatsapp",
 		Participants:   "[]",
+		RiverID:        b.riverID,
 	}
 	if existing != nil {
 		*convo = *existing
@@ -2693,6 +2710,8 @@ func (b *Bridge) upsertConversationForMessage(evt *waevents.Message) (*db.Conver
 		convo.IsGroup = evt.Info.IsGroup
 		convo.SourcePlatform = "whatsapp"
 	}
+
+	b.stampRiver(convo)
 
 	if evt.Info.IsGroup {
 		if convo.Name == "" {
@@ -2748,7 +2767,7 @@ func (b *Bridge) enrichGroupConversation(chatJID watypes.JID) {
 }
 
 func (b *Bridge) upsertGroupConversation(chatJID watypes.JID, groupName string, participants []watypes.GroupParticipant) error {
-	conversationID := waConversationID(chatJID)
+	conversationID := b.conversationID(chatJID)
 	existing, _ := b.store.GetConversation(conversationID)
 	convo := &db.Conversation{
 		ConversationID: conversationID,
@@ -2756,6 +2775,7 @@ func (b *Bridge) upsertGroupConversation(chatJID watypes.JID, groupName string, 
 		IsGroup:        true,
 		Participants:   "[]",
 		SourcePlatform: "whatsapp",
+		RiverID:        b.riverID,
 	}
 	if existing != nil {
 		*convo = *existing
@@ -2768,6 +2788,7 @@ func (b *Bridge) upsertGroupConversation(chatJID watypes.JID, groupName string, 
 	if serialized, err := b.groupParticipantsJSON(participants); err == nil && serialized != "" {
 		convo.Participants = serialized
 	}
+	b.stampRiver(convo)
 	return b.store.UpsertConversation(convo)
 }
 
@@ -3093,8 +3114,8 @@ func (b *Bridge) normalizeConversationJID(jid watypes.JID) watypes.JID {
 	rawJID := jid.ToNonAD()
 	canonical := b.canonicalJID(rawJID)
 	if rawJID != canonical {
-		rawID := waConversationID(rawJID)
-		canonicalID := waConversationID(canonical)
+		rawID := b.conversationID(rawJID)
+		canonicalID := b.conversationID(canonical)
 		if err := b.store.MergeConversationIDs(rawID, canonicalID); err != nil {
 			b.logger.Warn().Err(err).Str("source", rawID).Str("target", canonicalID).Msg("Failed to merge WhatsApp conversation aliases")
 		}
@@ -3483,10 +3504,10 @@ func decodeStoredMediaRef(value string) (storedMediaRef, error) {
 }
 
 func parseConversationJID(conversationID string) (watypes.JID, error) {
-	if !strings.HasPrefix(conversationID, "whatsapp:") {
+	if !strings.HasPrefix(conversationID, "whatsapp:") && !strings.HasPrefix(conversationID, "whatsapp/") {
 		return watypes.JID{}, fmt.Errorf("invalid WhatsApp conversation id: %s", conversationID)
 	}
-	jid, err := watypes.ParseJID(strings.TrimPrefix(conversationID, "whatsapp:"))
+	jid, err := watypes.ParseJID(river.UnscopeID(conversationID))
 	if err != nil {
 		return watypes.JID{}, fmt.Errorf("parse WhatsApp conversation id: %w", err)
 	}
@@ -4178,7 +4199,23 @@ func unwrapWhatsAppMessage(msg *waE2E.Message) *waE2E.Message {
 }
 
 func waConversationID(jid watypes.JID) string {
-	return "whatsapp:" + jid.String()
+	return river.ScopedID(river.ProviderWhatsApp, river.DefaultWhatsAppRiverID, jid.String())
+}
+
+func (b *Bridge) conversationID(jid watypes.JID) string {
+	if b == nil {
+		return waConversationID(jid)
+	}
+	return river.ScopedID(river.ProviderWhatsApp, b.riverID, jid.String())
+}
+
+func (b *Bridge) stampRiver(c *db.Conversation) {
+	if b == nil || c == nil {
+		return
+	}
+	if id := strings.TrimSpace(b.riverID); id != "" {
+		c.RiverID = id
+	}
 }
 
 func jidToPhone(jid watypes.JID) string {

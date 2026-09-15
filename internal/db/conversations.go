@@ -55,13 +55,18 @@ func parseNotificationMode(mode string) (string, error) {
 	}
 }
 
+func assignDefaultRiverID(c *Conversation) {
+	if c == nil || strings.TrimSpace(c.RiverID) != "" {
+		return
+	}
+	c.RiverID = river.DefaultRiverID(c.SourcePlatform)
+}
+
 func (s *Store) UpsertConversation(c *Conversation) error {
 	if c.SourcePlatform == "" {
 		c.SourcePlatform = "sms"
 	}
-	if c.RiverID == "" && (c.SourcePlatform == "sms" || c.SourcePlatform == "rcs" || c.SourcePlatform == "") {
-		c.RiverID = river.DefaultMessagesRiverID
-	}
+	assignDefaultRiverID(c)
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	notificationMode, hasNotificationMode := explicitNotificationMode(c.NotificationMode)
 	_, err := s.db.Exec(`
@@ -469,9 +474,7 @@ func upsertConversationTx(tx *sql.Tx, c *Conversation) error {
 	if c.SourcePlatform == "" {
 		c.SourcePlatform = "sms"
 	}
-	if c.RiverID == "" && (c.SourcePlatform == "sms" || c.SourcePlatform == "rcs" || c.SourcePlatform == "") {
-		c.RiverID = river.DefaultMessagesRiverID
-	}
+	assignDefaultRiverID(c)
 	c.DisplayProtocol = normalizeDisplayProtocol(c.DisplayProtocol)
 	notificationMode, hasNotificationMode := explicitNotificationMode(c.NotificationMode)
 	_, err := tx.Exec(`

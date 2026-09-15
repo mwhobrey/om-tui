@@ -127,7 +127,9 @@ can migrate the schema under the older one.
 **Never** configure MCP to run `serve --web`, `serve --mcp-sse`, or
 `serve ... --transports` alongside a running daemon/TUI: those are daemon
 shapes and will fight for the WhatsApp/Signal sessions exactly as described
-above.
+above. Extra `whatsapp-N` / `signal-N` rivers are still owned by that one
+daemon (isolated session dirs under `rivers/<id>/`); a second process with
+any of those credentials logs the other out.
 
 ## Pairing & the "zombie session"
 
@@ -328,6 +330,10 @@ not to hammer reconnect. Sends may land in brief connected windows meanwhile.
 
 ## WhatsApp linking (QR and phone-number code)
 
+TUI: switch to the WhatsApp river (`[` / `]`), press `p`, scan the overlay QR
+from WhatsApp → Linked devices. Phone-number pairing codes are HTTP-only
+(`POST /api/whatsapp/pair-code`); passkey accounts must use QR anyway.
+
 Hard-won facts from the 2026-07-03/04 re-pair ordeal:
 
 - **Passkey-protected accounts can't use phone-number code linking.** If the
@@ -339,10 +345,25 @@ Hard-won facts from the 2026-07-03/04 re-pair ordeal:
   clear "account is protected by a passkey — scan the QR code instead" error
   via `events.PairPasskeyRequest`. QR linking does **not** involve the
   passkey step (the camera scan is the verification).
-- **Code + QR windows are short.** Pairing codes expire in ~2 minutes;
+- **QR windows are short.** Pairing codes expire in ~2 minutes;
   QR refs rotate ~20–60s within a ~3-minute session that ends silently
   (`qr_event: "timeout"`). Generate the code / show the QR only when the
   user's phone is already on the entry/scanner screen.
+- **Do not treat `PairSuccess` as paired.** WhatsApp still has to finish
+  the 515 login handoff on that socket. Cutting the pairing transport at
+  `PairSuccess` (2026-09-14) logged `Successfully paired …:2@s.whatsapp.net`,
+  then `Successfully authenticated`, then `device_removed` / `LoggedOut`.
+  The phone shows "thought for a bit then failed." Wait for a paired
+  `Connected` before disconnecting; ignore `Disconnected` /
+  `ManualLoginReconnect` after credentials exist. `LoggedOut` is still fatal.
+  A zombie `whatsapp-session.db` after that failure stays `paired=true` with
+  `reauth_required: whatsapp_logged_out` — unpair (or delete the session
+  file) before retrying, and drop the ghost device on the phone.
+- **QR linked-device name is `om-tui`.** whatsmeow's default `DeviceProps.Os`
+  is `"whatsmeow"`, which is what the phone showed on the 2026-09-14 QR pair.
+  `SetOSInfo("om-tui", …)` before `NewClient`. Already-linked devices keep
+  the old name until you unpair and scan again. Phone-number pairing still
+  sends `Chrome (macOS)` because WhatsApp allowlists `Browser (OS)` there.
 - **"Couldn't link device. Try again later." on every QR scan = WhatsApp
   refusing, not our bug.** Two causes: (a) zombie companion entries from
   failed attempts eating the 4-device limit — have the user clear stale
@@ -360,6 +381,25 @@ Hard-won facts from the 2026-07-03/04 re-pair ordeal:
   If a dependency bump mysteriously doesn't take, check `go.work`.
 
 ## signal-cli
+
+TUI: switch to the Signal river, press `p`, scan the overlay QR from Signal →
+Linked devices. `needs_reauth` is the same as unpaired — `p` to re-link.
+
+Windows: do **not** wrap `signal-cli link` in Unix `script -q /dev/null`
+(2026-09-15: overlay waited a minute with no QR; daemon last_error was
+`exec: "script": executable file not found in %PATH%`). Direct
+`signal-cli --config <dir> link -n om-tui`. `script` stays Unix-only for a
+PTY. Install signal-cli ≥ 0.14.5 on PATH, or set `OPENMESSAGES_SIGNAL_CLI`.
+`listAccounts` on 0.14.8 often exits 1 with an INFO `AccountHelper`
+line glued onto a valid `[{"number":"+1…"}]` payload; treat that as
+linked, not a pair failure.
+
+signal-cli 0.14.8 needs **JRE 25**. This box's user `JAVA_HOME` is still
+`jdk1.8.0_261` and PATH `java` is 21 — both fail (`--enable-native-access`
+on 8; class-file 69 on 21). om-tui injects a discovered JDK ≥ 25 (scoop
+`temurin25-jdk`, `Program Files\Java\jdk-25`, Homebrew `openjdk@25`) into
+the child env, or `OPENMESSAGES_JAVA_HOME`. Install: `scoop bucket add java;
+scoop install signal-cli temurin25-jdk`.
 
 Require **signal-cli ≥ 0.14.5**. 0.14.1 throws
 `NullPointerException: …getSender() … content is null` on certain inbound

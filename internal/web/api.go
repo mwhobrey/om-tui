@@ -30,6 +30,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/media"
 	"github.com/maxghenis/openmessage/internal/messaging"
 	"github.com/maxghenis/openmessage/internal/readsource"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/story"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
@@ -125,6 +126,13 @@ type APIOptions struct {
 	FetchOlderSlackHistory func(conversationID string, limit int) ([]*db.Message, error)
 	SlackStatus            func() any
 	ListRivers             func() (any, error)
+	CreateRiver            func(provider, displayName string) (any, error)
+	ConnectWhatsAppRiver   func(riverID string) error
+	ConnectSignalRiver     func(riverID string) error
+	WhatsAppQRCodeRiver    func(riverID string) (any, error)
+	SignalQRCodeRiver      func(riverID string) (any, error)
+	WhatsAppRiverStatuses  func() any
+	SignalRiverStatuses    func() any
 	DownloadWhatsAppMedia  func(msg *db.Message) ([]byte, string, error)
 	DownloadSignalMedia    func(msg *db.Message) ([]byte, string, error)
 	StartDeepBackfill      func() bool
@@ -314,6 +322,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		if opts.SlackStatus != nil {
 			payload["slack"] = opts.SlackStatus()
+		}
+		if opts.WhatsAppRiverStatuses != nil {
+			payload["whatsapp_rivers"] = opts.WhatsAppRiverStatuses()
+		}
+		if opts.SignalRiverStatuses != nil {
+			payload["signal_rivers"] = opts.SignalRiverStatuses()
 		}
 		if opts.BackfillStatus != nil {
 			payload["backfill"] = opts.BackfillStatus()
@@ -871,20 +885,40 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	})
 
 	mux.HandleFunc("/api/rivers", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			if opts.ListRivers == nil {
+				httpError(w, "rivers unavailable", 501)
+				return
+			}
+			payload, err := opts.ListRivers()
+			if err != nil {
+				httpError(w, "list rivers: "+err.Error(), 500)
+				return
+			}
+			writeJSON(w, payload)
+		case http.MethodPost:
+			if opts.CreateRiver == nil {
+				httpError(w, "create river unavailable", 501)
+				return
+			}
+			var req struct {
+				Provider    string `json:"provider"`
+				DisplayName string `json:"display_name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			payload, err := opts.CreateRiver(req.Provider, req.DisplayName)
+			if err != nil {
+				httpError(w, "create river: "+err.Error(), 400)
+				return
+			}
+			writeJSON(w, payload)
+		default:
 			httpError(w, "method not allowed", 405)
-			return
 		}
-		if opts.ListRivers == nil {
-			httpError(w, "rivers unavailable", 501)
-			return
-		}
-		payload, err := opts.ListRivers()
-		if err != nil {
-			httpError(w, "list rivers: "+err.Error(), 500)
-			return
-		}
-		writeJSON(w, payload)
 	})
 
 	mux.HandleFunc("/api/conversations/", func(w http.ResponseWriter, r *http.Request) {
@@ -2842,7 +2876,14 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "signal live bridge not available", 404)
 			return
 		}
-		if err := opts.ConnectSignal(); err != nil {
+		riverID := strings.TrimSpace(r.URL.Query().Get("river_id"))
+		var err error
+		if riverID != "" && !river.IsDefaultRiverID(riverID) && opts.ConnectSignalRiver != nil {
+			err = opts.ConnectSignalRiver(riverID)
+		} else {
+			err = opts.ConnectSignal()
+		}
+		if err != nil {
 			httpError(w, "connect signal: "+err.Error(), 502)
 			return
 		}
@@ -2872,6 +2913,9 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		qrPayload, err := opts.SignalQRCode()
+		if riverID := strings.TrimSpace(r.URL.Query().Get("river_id")); riverID != "" && !river.IsDefaultRiverID(riverID) && opts.SignalQRCodeRiver != nil {
+			qrPayload, err = opts.SignalQRCodeRiver(riverID)
+		}
 		if err != nil {
 			httpError(w, err.Error(), 404)
 			return
@@ -2905,7 +2949,14 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "whatsapp live bridge not available", 404)
 			return
 		}
-		if err := opts.ConnectWhatsApp(); err != nil {
+		riverID := strings.TrimSpace(r.URL.Query().Get("river_id"))
+		var err error
+		if riverID != "" && !river.IsDefaultRiverID(riverID) && opts.ConnectWhatsAppRiver != nil {
+			err = opts.ConnectWhatsAppRiver(riverID)
+		} else {
+			err = opts.ConnectWhatsApp()
+		}
+		if err != nil {
 			httpError(w, "connect whatsapp: "+err.Error(), 502)
 			return
 		}
@@ -2949,6 +3000,9 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		qrPayload, err := opts.WhatsAppQRCode()
+		if riverID := strings.TrimSpace(r.URL.Query().Get("river_id")); riverID != "" && !river.IsDefaultRiverID(riverID) && opts.WhatsAppQRCodeRiver != nil {
+			qrPayload, err = opts.WhatsAppQRCodeRiver(riverID)
+		}
 		if err != nil {
 			httpError(w, err.Error(), 404)
 			return

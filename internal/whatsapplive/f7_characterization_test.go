@@ -24,6 +24,9 @@ func TestPairPhoneProtocolFacts(t *testing.T) {
 	if pairPhoneDisplayName != "Chrome (macOS)" {
 		t.Fatalf("pairPhoneDisplayName = %q, want Chrome (macOS)", pairPhoneDisplayName)
 	}
+	if whatsappCompanionOS == "" || whatsappCompanionOS == "whatsmeow" {
+		t.Fatalf("whatsappCompanionOS = %q, want a product name", whatsappCompanionOS)
+	}
 
 	// PairPhone is a concrete whatsmeow method with no test seam, so inspect its
 	// call structurally. These literals guard the Wave 1 (C5) pairing refactor.

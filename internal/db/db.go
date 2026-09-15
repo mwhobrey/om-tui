@@ -394,8 +394,8 @@ func (s *Store) migrate() error {
 	if err := s.ensureSlackTables(); err != nil {
 		return fmt.Errorf("ensure Slack tables: %w", err)
 	}
-	if _, err := s.EnsureMessagesRiver(); err != nil {
-		return fmt.Errorf("ensure messages river: %w", err)
+	if err := s.EnsureBuiltinRivers(); err != nil {
+		return fmt.Errorf("ensure builtin rivers: %w", err)
 	}
 	if _, err := s.db.Exec(`UPDATE messages SET source_platform = 'sms' WHERE IFNULL(source_platform, '') = ''`); err != nil {
 		return fmt.Errorf("normalize blank message source platform: %w", err)

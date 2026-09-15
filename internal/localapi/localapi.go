@@ -80,8 +80,12 @@ type DaemonStatus struct {
 	Auth      struct {
 		DataDir string `json:"data_dir"`
 	} `json:"auth"`
-	Google GoogleStatus       `json:"google"`
-	Slack  []SlackRiverStatus `json:"slack,omitempty"`
+	Google         GoogleStatus       `json:"google"`
+	WhatsApp       WhatsAppStatus     `json:"whatsapp"`
+	Signal         SignalStatus       `json:"signal"`
+	Slack          []SlackRiverStatus `json:"slack,omitempty"`
+	WhatsAppRivers []WhatsAppStatus   `json:"whatsapp_rivers,omitempty"`
+	SignalRivers   []SignalStatus     `json:"signal_rivers,omitempty"`
 }
 
 // SlackRiverStatus is one Slack river's connectivity, from the "slack" array
@@ -114,6 +118,49 @@ type GooglePairingStatus struct {
 	Phase string `json:"phase"`
 	Emoji string `json:"emoji,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// WhatsAppStatus is the WhatsApp block inside /api/status.
+type WhatsAppStatus struct {
+	RiverID     string `json:"river_id,omitempty"`
+	Connected   bool   `json:"connected"`
+	Connecting  bool   `json:"connecting"`
+	Paired      bool   `json:"paired"`
+	Pairing     bool   `json:"pairing"`
+	LastError   string `json:"last_error,omitempty"`
+	QRAvailable bool   `json:"qr_available"`
+	QRUpdatedAt int64  `json:"qr_updated_at,omitempty"`
+}
+
+// SignalStatus is the Signal block inside /api/status.
+type SignalStatus struct {
+	RiverID     string `json:"river_id,omitempty"`
+	Connected   bool   `json:"connected"`
+	Connecting  bool   `json:"connecting"`
+	Paired      bool   `json:"paired"`
+	Pairing     bool   `json:"pairing"`
+	LastError   string `json:"last_error,omitempty"`
+	NeedsReauth bool   `json:"needs_reauth,omitempty"`
+	QRAvailable bool   `json:"qr_available"`
+	QRUpdatedAt int64  `json:"qr_updated_at,omitempty"`
+}
+
+// QRCode is GET /api/whatsapp/qr or /api/signal/qr.
+type QRCode struct {
+	Event      string `json:"event,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Code       string `json:"code,omitempty"`
+	URI        string `json:"uri,omitempty"`
+	PNGDataURL string `json:"png_data_url,omitempty"`
+	UpdatedAt  int64  `json:"updated_at,omitempty"`
+}
+
+// Payload is the string the TUI renders as an ASCII QR.
+func (q QRCode) Payload() string {
+	if s := strings.TrimSpace(q.Code); s != "" {
+		return s
+	}
+	return strings.TrimSpace(q.URI)
 }
 
 // Conversation is a thread summary from GET /api/conversations.
@@ -734,6 +781,72 @@ func (c *Client) CancelGooglePair(ctx context.Context) (DaemonStatus, error) {
 		return DaemonStatus{}, err
 	}
 	return status, nil
+}
+
+func (c *Client) ConnectWhatsApp(ctx context.Context) error {
+	return c.ConnectWhatsAppRiver(ctx, "")
+}
+
+func (c *Client) ConnectWhatsAppRiver(ctx context.Context, riverID string) error {
+	path := "/api/whatsapp/connect"
+	if strings.TrimSpace(riverID) != "" {
+		path += "?river_id=" + url.QueryEscape(riverID)
+	}
+	return c.postJSON(ctx, path, map[string]any{}, &map[string]any{})
+}
+
+func (c *Client) ConnectSignal(ctx context.Context) error {
+	return c.ConnectSignalRiver(ctx, "")
+}
+
+func (c *Client) ConnectSignalRiver(ctx context.Context, riverID string) error {
+	path := "/api/signal/connect"
+	if strings.TrimSpace(riverID) != "" {
+		path += "?river_id=" + url.QueryEscape(riverID)
+	}
+	return c.postJSON(ctx, path, map[string]any{}, &map[string]any{})
+}
+
+func (c *Client) WhatsAppQR(ctx context.Context) (QRCode, error) {
+	return c.WhatsAppQRRiver(ctx, "")
+}
+
+func (c *Client) WhatsAppQRRiver(ctx context.Context, riverID string) (QRCode, error) {
+	var qr QRCode
+	path := "/api/whatsapp/qr"
+	if strings.TrimSpace(riverID) != "" {
+		path += "?river_id=" + url.QueryEscape(riverID)
+	}
+	_, err := c.getJSON(ctx, path, &qr)
+	return qr, err
+}
+
+func (c *Client) SignalQR(ctx context.Context) (QRCode, error) {
+	return c.SignalQRRiver(ctx, "")
+}
+
+func (c *Client) SignalQRRiver(ctx context.Context, riverID string) (QRCode, error) {
+	var qr QRCode
+	path := "/api/signal/qr"
+	if strings.TrimSpace(riverID) != "" {
+		path += "?river_id=" + url.QueryEscape(riverID)
+	}
+	_, err := c.getJSON(ctx, path, &qr)
+	return qr, err
+}
+
+func (c *Client) CreateRiver(ctx context.Context, provider, displayName string) (River, error) {
+	var out River
+	err := c.postJSON(ctx, "/api/rivers", map[string]any{
+		"provider":     provider,
+		"display_name": displayName,
+	}, &out)
+	return out, err
+}
+
+func IsQRUnavailable(err error) bool {
+	re, ok := AsResponseError(err)
+	return ok && re.StatusCode == 404
 }
 
 // maxDownloadMediaBytes mirrors the TUI/HTTP upload cap (128 MiB) so a

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/maxghenis/openmessage/internal/river"
 )
 
 // tuiAction is a discoverable TUI command shared by the context help footer
@@ -33,9 +35,9 @@ func allActions() []tuiAction {
 		},
 		{
 			ID:       "reconnect",
-			Label:    "Reconnect Google Messages",
+			Label:    "Reconnect",
 			Keys:     []string{"ctrl+r"},
-			Keywords: []string{"repair", "google", "pair"},
+			Keywords: []string{"repair", "google", "pair", "whatsapp", "signal"},
 			Group:    "global",
 			When:     func(m Model) bool { return !m.reactPalette },
 			Run: func(m Model) (tea.Model, tea.Cmd) {
@@ -44,13 +46,13 @@ func allActions() []tuiAction {
 			},
 		},
 		{
-			ID:       "pair-google",
-			Label:    "Pair Google Messages",
+			ID:       "pair",
+			Label:    "Pair",
 			Keys:     []string{"p"},
-			Keywords: []string{"google", "pair", "cookie", "gaia", "account"},
+			Keywords: []string{"google", "pair", "cookie", "gaia", "account", "whatsapp", "signal", "qr"},
 			Group:    "global",
 			InHelp:   true,
-			When:     func(m Model) bool { return !m.reactPalette && m.googleNeedsPair() },
+			When:     func(m Model) bool { return !m.reactPalette && m.riverNeedsPair() },
 			Run: func(m Model) (tea.Model, tea.Cmd) {
 				return m.openPairOverlay()
 			},
@@ -112,6 +114,24 @@ func allActions() []tuiAction {
 			Group:    "list",
 			When:     func(m Model) bool { return !m.reactPalette && m.focus == focusList },
 			Run:      func(m Model) (tea.Model, tea.Cmd) { return m.cycleRiver(1) },
+		},
+		{
+			ID:       "add-whatsapp",
+			Label:    "Add WhatsApp account",
+			Keys:     []string{">add whatsapp"},
+			Keywords: []string{"river", "pair", "account", "whatsapp"},
+			Group:    "global",
+			When:     func(m Model) bool { return !m.reactPalette },
+			Run:      func(m Model) (tea.Model, tea.Cmd) { return m.addLiveRiver(river.ProviderWhatsApp) },
+		},
+		{
+			ID:       "add-signal",
+			Label:    "Add Signal account",
+			Keys:     []string{">add signal"},
+			Keywords: []string{"river", "pair", "account", "signal"},
+			Group:    "global",
+			When:     func(m Model) bool { return !m.reactPalette },
+			Run:      func(m Model) (tea.Model, tea.Cmd) { return m.addLiveRiver(river.ProviderSignal) },
 		},
 		{
 			ID:     "river",
@@ -373,7 +393,7 @@ func allActions() []tuiAction {
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+					m.err = m.sendBlockedReason()
 					return m, nil
 				}
 				m.info = "Attach file…"
@@ -391,7 +411,7 @@ func allActions() []tuiAction {
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
 				if !m.canSend() {
-					m.err = "Google Messages is not connected — press p to pair or r to reconnect"
+					m.err = m.sendBlockedReason()
 					return m, nil
 				}
 				m.info = "Checking clipboard…"
@@ -497,7 +517,7 @@ func contextHelpParts(m Model) []helpPart {
 
 	// Stable order for footer readability (not registry order alone).
 	order := []string{
-		"quit", "pair-google", "back", "river", "jump", "broadcast-toggle", "open-conversation",
+		"quit", "pair", "back", "river", "jump", "broadcast-toggle", "open-conversation",
 		"send", "slack-thread", "react", "slack-older", "open-media", "search",
 	}
 	byID := make(map[string]tuiAction, len(helpActions))
@@ -535,7 +555,7 @@ func contextHelpParts(m Model) []helpPart {
 			label = "jump"
 		case "search":
 			label = "msgs"
-		case "pair-google":
+		case "pair":
 			label = "pair"
 		}
 		chord := ""

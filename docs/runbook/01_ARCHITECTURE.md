@@ -11,7 +11,7 @@
 | Google Messages | `go.mau.fi/mautrix-gmessages` → replaced by `github.com/MaxGhenis/gmessages` |
 | WhatsApp | `go.mau.fi/whatsmeow` |
 | Signal | local `signal-cli` process bridge |
-| Slack | `github.com/slack-go/slack` + `internal/slacklive` (fork WIP) |
+| Slack | `github.com/slack-go/slack` + `internal/slacklive` |
 | MCP | `github.com/mark3labs/mcp-go` |
 | TUI | Bubble Tea / Bubbles / Lip Gloss |
 | Logging | `zerolog` |
@@ -21,7 +21,7 @@
 
 - **Daemon vs client:** one process owns live transports and the write-heavy repair sweeps; other processes attach read-only / proxy writes.
 - **Bridge + adapters:** `internal/bridge` defines contracts, capability registry, dispatch leases, supervisors. Platform glue lives in `internal/bridgeadapters/{google,whatsapp,signal,slack}`.
-- **Rivers:** account/workspace instances (`internal/river`). Built-in Messages river is `messages-default`; Slack rivers are `slack-<team-id>`.
+- **Rivers:** account/workspace instances (`internal/river`). Built-in rivers are `messages-default`, `whatsapp-default`, and `signal-default`. Extra live accounts are `whatsapp-2` / `signal-2` (palette `>add …`); Slack rivers are `slack-<team-id>`. Extra WhatsApp/Signal sessions live under `rivers/<id>/` with namespaced conversation IDs. Google Messages is one live client.
 - **Durable V2 pipeline (staged):** inbox → decoder → normalized events → V2 repos; outbox → `messaging.MessageService` → bridge dispatch.
 - **Legacy compatibility:** when V2 send is on but not primary, a projector mirrors confirmed V2 sends into legacy `messages.db` for legacy UI.
 
@@ -122,7 +122,7 @@ Loopback server (default `127.0.0.1:7007`, override `OPENMESSAGES_HOST` / `OPENM
 | Android phone + Google Messages | SMS/RCS linked device | zombie session / `needs_repair` |
 | Chrome (optional) | Pasted Gaia cookies for TUI/CLI pair; native self-heal when decryptable | Current Windows Chrome stores v20 app-bound cookies om-tui cannot unwrap; paste re-pair |
 | WhatsApp account | companion device | logout if second process links |
-| `signal-cli` ≥ 0.14.5 | Signal live | poison-message crash-loop on older |
+| `signal-cli` ≥ 0.14.5 + JRE 25 | Signal live | poison-message crash-loop on older signal-cli; class-file 69 on Java < 25 |
 | Slack user token (`xoxp-…`) | Slack river history/read/send + identity | DPAPI-bound vault on Windows |
 | Slack app token (`xapp-…`, optional) | Socket Mode realtime events | Polling remains fallback |
 | Claude / MCP host | agent tools | misconfigured transports → fratricide |

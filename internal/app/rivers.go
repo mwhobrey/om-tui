@@ -30,7 +30,7 @@ func (a *App) EnsureRivers() ([]*db.River, error) {
 	if _, err := a.EnsureVault(); err != nil {
 		return nil, err
 	}
-	if _, err := a.Store.EnsureMessagesRiver(); err != nil {
+	if err := a.Store.EnsureBuiltinRivers(); err != nil {
 		return nil, err
 	}
 	if err := a.migrateMessagesSessionToVault(); err != nil {
@@ -54,10 +54,10 @@ func (a *App) migrateMessagesSessionToVault() error {
 		return err
 	}
 	blob, err := json.Marshal(map[string]any{
-		"kind":       "google_session",
-		"migrated":   time.Now().UnixMilli(),
-		"session":    json.RawMessage(raw),
-		"path_hint":  "session.json",
+		"kind":      "google_session",
+		"migrated":  time.Now().UnixMilli(),
+		"session":   json.RawMessage(raw),
+		"path_hint": "session.json",
 	})
 	if err != nil {
 		return err
@@ -82,6 +82,9 @@ func (a *App) ListRiversWithUnread() ([]river.River, error) {
 	out := make([]river.River, 0, len(rows))
 	for _, r := range rows {
 		if r == nil {
+			continue
+		}
+		if r.Provider == river.ProviderMessages && !river.IsDefaultRiverID(r.ID) {
 			continue
 		}
 		out = append(out, river.River{

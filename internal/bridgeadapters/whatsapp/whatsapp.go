@@ -989,10 +989,10 @@ func (a *Adapter) pairEventResult(
 	}
 	switch raw := event.Raw.(type) {
 	case *waevents.PairSuccess:
-		return bridge.PairResult{
-			RemoteAccountID: raw.ID.String(),
-			RemoteDeviceID:  raw.LID.String(),
-		}, nil, true
+		// Store.ID is set, but WhatsApp still has to finish the 515 login
+		// handoff on this same socket. Returning here disconnects pairing and
+		// WhatsApp replies with device_removed (2026-09-14 dogfood).
+		return bridge.PairResult{}, nil, false
 	case *waevents.Connected:
 		if event.Paired {
 			info := a.accountInfo()
@@ -1019,14 +1019,15 @@ func (a *Adapter) pairEventResult(
 	case *waevents.LoggedOut, *waevents.ClientOutdated, *waevents.ConnectFailure:
 		failure, _ := a.classifyEvent(event)
 		return bridge.PairResult{}, failure, true
+	case *waevents.ManualLoginReconnect:
+		return bridge.PairResult{}, nil, false
 	case *waevents.Disconnected, *waevents.StreamReplaced, *waevents.StreamError, *waevents.CATRefreshError:
+		if event.Paired {
+			return bridge.PairResult{}, nil, false
+		}
 		failure, _ := a.classifyEvent(event)
 		failure.Operation = "pair"
 		return bridge.PairResult{}, failure, true
-	case *waevents.ManualLoginReconnect:
-		// PairSuccess is dispatched before the pairing 515 handoff. Ignore the
-		// handoff here; the successful result disconnects this transport and the
-		// command control asks Supervisor to Start the paired lifecycle.
 	}
 	return bridge.PairResult{}, nil, false
 }
