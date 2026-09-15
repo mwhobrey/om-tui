@@ -127,7 +127,7 @@ func (a *App) LeaveWhatsAppGroup(conversationID string) error {
 }
 
 func (a *App) DownloadWhatsAppMedia(msg *db.Message) ([]byte, string, error) {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForMessage(msg, river.DefaultWhatsAppRiverID))
 	if err != nil {
 		return nil, "", fmt.Errorf("init WhatsApp bridge: %w", err)
 	}
@@ -135,7 +135,7 @@ func (a *App) DownloadWhatsAppMedia(msg *db.Message) ([]byte, string, error) {
 }
 
 func (a *App) WhatsAppAvatar(conversationID string) ([]byte, string, error) {
-	bridge, err := a.ensureWhatsApp()
+	bridge, err := a.ensureWhatsAppRiver(a.liveRiverIDForConversation(conversationID))
 	if err != nil {
 		return nil, "", fmt.Errorf("init WhatsApp bridge: %w", err)
 	}
