@@ -346,7 +346,10 @@ func allActions() []tuiAction {
 			Group:    "thread",
 			InHelp:   true,
 			When: func(m Model) bool {
-				if m.reactPalette || m.activeRiverProvider() == "slack" || m.activeID == "" {
+				if m.reactPalette || m.activeID == "" {
+					return false
+				}
+				if m.activeRiverProvider() == "slack" && !m.status.V2Primary {
 					return false
 				}
 				if m.focus != focusCompose && m.focus != focusThread {
@@ -356,6 +359,28 @@ func allActions() []tuiAction {
 				return ok
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) { return m.openReactPalette() },
+		},
+		{
+			ID:       "block-kit",
+			Label:    "Block Kit actions",
+			Keys:     []string{"ctrl+b"},
+			Keywords: []string{"button", "slack", "blocks", "interactive"},
+			Group:    "thread",
+			InHelp:   true,
+			When: func(m Model) bool {
+				if m.reactPalette || m.blockPalette || m.activeID == "" {
+					return false
+				}
+				if m.activeRiverProvider() != "slack" {
+					return false
+				}
+				if m.focus != focusCompose && m.focus != focusThread {
+					return false
+				}
+				target, ok := selectedMessage(m.messages, m.selectedMsg)
+				return ok && len(selectedBlockActions(target)) > 0
+			},
+			Run: func(m Model) (tea.Model, tea.Cmd) { return m.openBlockPalette() },
 		},
 		{
 			ID:       "open-media",
@@ -389,15 +414,10 @@ func allActions() []tuiAction {
 			Keywords: []string{"upload", "send file", "picker"},
 			Group:    "media",
 			When: func(m Model) bool {
-				return !m.reactPalette && m.activeID != "" && m.focus != focusSearch && m.focus != focusList
+				return !m.reactPalette && m.activeID != "" && m.focus != focusSearch && m.focus != focusList && !m.slackFileSendBlocked()
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
-				if !m.canSend() {
-					m.err = m.sendBlockedReason()
-					return m, nil
-				}
-				m.info = "Attach file…"
-				return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+				return m.beginAttach(false)
 			},
 		},
 		{
@@ -407,15 +427,10 @@ func allActions() []tuiAction {
 			Keywords: []string{"paste", "screenshot", "clipboard", "image"},
 			Group:    "media",
 			When: func(m Model) bool {
-				return !m.reactPalette && m.activeID != "" && (m.focus == focusCompose || m.focus == focusThread)
+				return !m.reactPalette && m.activeID != "" && (m.focus == focusCompose || m.focus == focusThread) && !m.slackFileSendBlocked()
 			},
 			Run: func(m Model) (tea.Model, tea.Cmd) {
-				if !m.canSend() {
-					m.err = m.sendBlockedReason()
-					return m, nil
-				}
-				m.info = "Checking clipboard…"
-				return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+				return m.beginAttach(true)
 			},
 		},
 	}
@@ -481,6 +496,9 @@ type helpPart struct {
 // renders the same parts with the accent/muted hierarchy used in View().
 func contextHelpParts(m Model) []helpPart {
 	ctx := m.actionContext()
+	if ctx.blockPalette {
+		return []helpPart{{chord: "1-9", label: "block"}, {chord: "esc", label: "cancel"}}
+	}
 	if ctx.reactPalette {
 		return []helpPart{{chord: "1-9", label: "react"}, {chord: "esc", label: "cancel"}}
 	}
@@ -518,7 +536,7 @@ func contextHelpParts(m Model) []helpPart {
 	// Stable order for footer readability (not registry order alone).
 	order := []string{
 		"quit", "pair", "back", "river", "jump", "broadcast-toggle", "open-conversation",
-		"send", "slack-thread", "react", "slack-older", "open-media", "search",
+		"send", "slack-thread", "react", "block-kit", "slack-older", "open-media", "search",
 	}
 	byID := make(map[string]tuiAction, len(helpActions))
 	for _, a := range helpActions {
@@ -547,6 +565,8 @@ func contextHelpParts(m Model) []helpPart {
 			label = "thread"
 		case "react":
 			label = "react"
+		case "block-kit":
+			label = "blocks"
 		case "slack-older":
 			label = "older"
 		case "open-media":

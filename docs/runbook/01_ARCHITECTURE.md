@@ -35,7 +35,7 @@
 | `read` / `status` | `app.NewClient` | none | **no** |
 | `tui` | attaches via `localapi` | uses daemon | n/a |
 
-**Rule:** exactly one process may hold WhatsApp / signal-cli / Google live sessions. A second MCP stdio process with transports will log out WhatsApp and corrupt Signal. See [../agent-runbook.md](../agent-runbook.md).
+**Rule:** exactly one process may hold WhatsApp / signal-cli / Google live sessions. A second MCP stdio process with transports will log out WhatsApp and corrupt Signal. See [../agent-runbook.md](../agent-runbook.md). Store-owning `serve` also holds `<data-dir>/instance.lock` so `backup` / `migrate` / `repair --apply` / a second daemon fail closed; MCP-stdio clients and `--demo` skip the lock.
 
 ## Storage: legacy (v1) vs V2
 
@@ -43,9 +43,9 @@
 |---|---|---|---|
 | Legacy primary (default) | unset V2 flags | `messages.db` | direct bridge + legacy rows |
 | V2 send/ingest (shadow) | `OPENMESSAGES_V2_SEND` / `_INGEST` | mostly legacy | durable outbox/inbox; projector → legacy |
-| V2 primary | `OPENMESSAGES_V2_PRIMARY=1` (+ migrated store) | `v2read` | outbox only; story/person/viz MCP tools **unavailable** |
+| V2 primary | default on after migrate (set `OPENMESSAGES_V2_PRIMARY=0` to stay on v1). Fresh empty data dirs create `v2/store.sqlite3`. A non-empty `messages.db` without a real v2 store still requires `om-tui migrate`. | `v2read` | outbox only. Requires Slack migrate + outbox so TUI send on PRIMARY uses `/api/v1/outbox`. `v2read` now scopes search by river (messages and conversation titles), derives unread from local-installation cursors, `/api/mark-read` writes those cursors natively, and contacts/people/stats/story plus person/story/viz MCP tools read through the same seam. Transcripts land in v2 `message_extras`; `import_messages` dual-writes v1 then `SyncInto` the requested platform. Favorite and mute persist on v2 conversations. MCP `react_to_message` on the daemon uses the v2 outbox when primary. MCP `send_media_to_conversation` submits native v2 conversation IDs; `send_message` / `send_group_message` fail closed rather than minting a v1 thread. `draft_message`, Google contact sync, legacy `/api/drafts`, tabs, and `/api/new-conversation` stay frozen-v1 and 409. |
 
-Cutover path: `openmessage backup` → `openmessage migrate` → set `OPENMESSAGES_V2_PRIMARY=1`. Details in [../migration-backup.md](../migration-backup.md).
+Cutover path: `om-tui backup` → `om-tui migrate` → restart (PRIMARY is the default; `OPENMESSAGES_V2_PRIMARY=0` keeps v1). Details in [../migration-backup.md](../migration-backup.md). Frozen `messages.db` is a rollback fossil only — PRIMARY does not project new rows back into it.
 
 ## Data flow
 
@@ -65,6 +65,8 @@ bridge supervisor → ingest.Sink (durable inbox)
   → v2wire notifier → UI invalidation
 ```
 
+Google live frames tee at the adapter. Startup/shallow/deep backfill (`FetchMessages`) tees the same way via `GoogleHistoryIngest` so PRIMARY readers see the offline gap. Legacy `storeMessage` still writes frozen `messages.db`.
+
 ### Send (legacy)
 
 ```
@@ -80,21 +82,36 @@ CLI / web / MCP → app send OR daemon /api/send|/api/send-media|/api/react
   → (if not primary) projector → legacy visibility
 ```
 
-### Send (Slack, current fork)
+### Send (Slack)
 
 ```
-API/TUI → app.SendSlackText(reply_to_id) → resolve river
-  → slacklive.Client.SendText → chat.postMessage [thread_ts]
+v1 serving store (default):
+  API/TUI → app.SendSlackText(reply_to_id) → slacklive.Client.SendText
+  → chat.postMessage [thread_ts]
 
-Slack ingest:
+V2 primary:
+  TUI SubmitText → SubmitTextV2 → outbox → slack adapter SendText
+  → reconstructs slack:TEAM:CHANNEL from account + remote channel id
+  → slacklive.Client.SendText
+  TUI SubmitMedia → SubmitMediaV2 → outbox → slack adapter SendMedia
+  → files.getUploadURLExternal + upload + files.completeUploadExternal
+  TUI Ctrl+E → SubmitReactionV2 → reactions.add/remove
+  TUI o/s → DownloadMedia → files.info + private URL
+
+Slack ingest (v1 serving store):
   users.list/users.info → durable per-river identity cache
   conversations.list → stream metadata
   conversations.history + per-channel cursors → legacy messages.db
   optional Socket Mode events → same ingest path
   conversations.replies → dedicated TUI reply-thread view
+
+Slack V2 (ingest on, or after migrate):
+  slacklive capture → slack.event frames → ingest.SlackDecoder
+  → v2 accounts keyed by river id (`slack-<team>`)
+  migrate maps slack:TEAM:CHANNEL → remote channel id, message SourceID → ts
 ```
 
-Not wired into V2 ingest/outbox yet.
+v1 is frozen except critical bugs. Slack Block Kit is interactive in the TUI: URL buttons open in the browser; app-owned controls (Approve, workflow, selects without a URL) open the Slack desktop deep link for that message, because Slack has no public “click this button as the user” API. Do not grow `messages.db` for it. Capture prefers Block Kit flatten over Slack's short `text` fallback, stores the JSON on v2 `message_extras`, and `v2read` re-renders layout plus `block_actions`. Slack reaction mutation, file download/send, and Block Kit/attachment text fallback run on live capture (v1 store + V2 ingress).
 
 ### MCP client mode (`serve --mcp-stdio`)
 
@@ -120,7 +137,7 @@ Loopback server (default `127.0.0.1:7007`, override `OPENMESSAGES_HOST` / `OPENM
 | Dependency | Purpose | Failure mode |
 |---|---|---|
 | Android phone + Google Messages | SMS/RCS linked device | zombie session / `needs_repair` |
-| Chrome (optional) | Pasted Gaia cookies for TUI/CLI pair; native self-heal when decryptable | Current Windows Chrome stores v20 app-bound cookies om-tui cannot unwrap; paste re-pair |
+| Chrome (optional) | Pasted Gaia cookies for TUI/CLI pair; native self-heal when decryptable | Current Windows Chrome stores v20 app-bound cookies om-tui cannot unwrap (Chrome elevation COM path-validates callers). Paste refreshes an existing session; Gaia re-pair only if reconnect fails |
 | WhatsApp account | companion device | logout if second process links |
 | `signal-cli` ≥ 0.14.5 + JRE 25 | Signal live | poison-message crash-loop on older signal-cli; class-file 69 on Java < 25 |
 | Slack user token (`xoxp-…`) | Slack river history/read/send + identity | DPAPI-bound vault on Windows |

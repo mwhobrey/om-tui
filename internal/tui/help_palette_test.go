@@ -42,6 +42,43 @@ func TestRenderContextHelpComposeSlack(t *testing.T) {
 	}
 }
 
+func TestPaletteSlackAttachHiddenUntilPrimary(t *testing.T) {
+	m := NewModel(nil)
+	m.focus = focusCompose
+	m.activeID = "slack:T1:C1"
+	m.activeRiverID = "slack-T1"
+	m.rivers = []localapi.River{{ID: "slack-T1", Provider: "slack"}}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	opened := next.(Model)
+	opened.palette.filter.SetValue(">attach")
+	opened.refreshPaletteMatches()
+	if containsActionID(opened.palette.matches, "attach") {
+		t.Fatalf("slack v1 palette should hide attach: %v", summarizeItems(opened.palette.matches))
+	}
+
+	opened.status.V2Primary = true
+	opened.refreshPaletteMatches()
+	if !containsActionID(opened.palette.matches, "attach") {
+		t.Fatalf("slack PRIMARY palette missing attach: %v", summarizeItems(opened.palette.matches))
+	}
+}
+
+func TestRenderContextHelpComposeSlackV2PrimaryShowsReact(t *testing.T) {
+	m := NewModel(nil)
+	m.focus = focusCompose
+	m.activeID = "hashed-slack-conv"
+	m.activeRiverID = "slack-T1"
+	m.rivers = []localapi.River{{ID: "slack-T1", Provider: "slack"}}
+	m.status.V2Primary = true
+	m.messages = []localapi.Message{{MessageID: "hashed-slack-msg", Body: "hi"}}
+	m.selectedMsg = 0
+	help := renderContextHelp(m)
+	if !strings.Contains(help, "ctrl+e react") {
+		t.Fatalf("slack PRIMARY compose help missing react: %q", help)
+	}
+}
+
 func TestRenderContextHelpStyledMatchesPlainContent(t *testing.T) {
 	m := NewModel(nil)
 	m.focus = focusList

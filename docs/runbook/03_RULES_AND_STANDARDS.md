@@ -4,6 +4,7 @@
 
 - Go is the source of truth for product behavior. Match existing package style: small focused packages under `internal/`, CLI thin wrappers in `cmd/`.
 - Prefer surgical diffs. Do not rewrite working legacy paths "for cleanliness" while V2 cutover is staged.
+- **v1 (`messages.db`) is frozen except critical bug fixes.** New Slack/archive work goes through V2 ingest (codec → decoder → inbox). Do not grow the legacy Slack schema, add Slack features on `messages.db`, or teach `web`/`tools` about raw Slack SDK types.
 - New platform work goes through `bridge` contracts + adapters; do not teach `web` or `tools` about raw SDK clients.
 - Tests live next to code (`*_test.go`). Characterization / contract tests exist for Google, WhatsApp, MCP parity, and serve shapes — keep them green when changing transport ownership.
 - No new dependencies without a clear need; state the install/`go get` explicitly.
@@ -23,7 +24,7 @@
 2. **One transport owner.** Daemon owns Google/WA/Signal/(Slack). MCP stdio is transportless by default.
 3. **`app.New` vs `app.NewClient`:** only store-owning processes run repair sweeps.
 4. **Do not sqlite3 the live DB** while the daemon holds WAL — use HTTP API.
-5. **V2 primary freezes legacy reads** for story/person/viz MCP tools; do not "fix" by reading stale `messages.db` after cutover.
+5. **V2 primary reads through `v2read`**, including contacts/people/stats/story. Do not "fix" empty PRIMARY surfaces by reading frozen `messages.db` after cutover. Transcripts and imports write v2 (`message_extras` / `SyncInto`). Favorite/mute persist on the v2 conversation row. Drafts, tabs, contact CRM metadata, `/api/new-conversation`, and PRIMARY `send_message` / `send_group_message` minting write v2. Remaining fail-closed writes are Google contact **sync** and scheduled-send — do not persist those into v1.
 6. **Windows vault is DPAPI-bound** to user/machine — backups of `credentials.enc` are useless on another box without re-pair.
 
 ## Environment variables (high-signal)
@@ -34,7 +35,7 @@
 | `OPENMESSAGES_LOG_LEVEL` | Zerolog level |
 | `OPENMESSAGES_HOST` / `OPENMESSAGES_PORT` | Loopback bind |
 | `OPENMESSAGES_DEMO` | Isolated fake-data store; no live transports |
-| `OPENMESSAGES_V2_SEND` / `_INGEST` / `_PRIMARY` | Staged V2 enablement |
+| `OPENMESSAGES_V2_SEND` / `_INGEST` / `_PRIMARY` | Staged V2 enablement. PRIMARY defaults **on**; set `OPENMESSAGES_V2_PRIMARY=0` to serve v1. PRIMARY implies send+ingest unless those are explicitly `0` (rejected). |
 | `OPENMESSAGES_SIGNAL_CLI` | signal-cli binary path |
 | `OPENMESSAGES_JAVA_HOME` | JDK 25+ for signal-cli (else auto-discovered) |
 | `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` / `OPENMESSAGE_CHROME_PROFILE` | Google self-heal |
@@ -120,16 +121,16 @@ Do not weaken these when "simplifying" serve.
 
 1. **WAL lock** — direct `sqlite3` → error 14 or missing recent rows. Use `/api/*`.
 2. **MCP + transports = fratricide** — WhatsApp logout / Signal deauth within seconds.
-3. **Pin MCP `OPENMESSAGES_DATA_DIR`** (and `OPENMESSAGES_V2_PRIMARY=1` post-cutover) in `~/.mcp.json`.
+3. **Pin MCP `OPENMESSAGES_DATA_DIR`** in `~/.mcp.json`. PRIMARY is the compiled default; set `OPENMESSAGES_V2_PRIMARY=0` only to keep MCP on frozen v1. After cutover, a missing `v2/store.sqlite3` next to a non-empty `messages.db` means you still need `om-tui migrate`.
 4. **Google QR is dead** for many accounts — cookie / Google Account pairing.
 5. **Clear `session.json` and `session.json.bak`** to force unpaired, or a stale one causes an immediate post-pair 401 (see agent-runbook.md).
 6. **Don't thrash Google reconnect/pair** — account throttling.
-7. **`instance.lock` is advisory** for backup/migrate only; daemon does not yet honor it.
+7. **`instance.lock` is exclusive** for store-owning `serve`, `backup`, `migrate`, and `repair --apply`. MCP-stdio clients and `--demo` do not take it (N sessions; demo uses a throwaway dir). Stale JSON in the file is diagnostic — the OS lock on the FD is authoritative.
 8. **`go.work` overrides** can make dependency bumps look ignored.
 9. **Keep PATH binary = daemon binary** — schema migrations from a newer CLI against an older running daemon are hostile.
 10. **Non-goals** (this fork): native GUI/tray, iMessage live sync (import-only), inline media previews, signed installers — see [../tui.md](../tui.md).
 11. **lipgloss `Height` vs `MaxHeight`:** `Height` is content-box (borders add outside). `MaxHeight` caps the final rendered block **including** borders. Setting both to the same value clips the bottom border and two content rows — the source of the first-contact preview ghost on Windows Terminal. Cap with `mainH + borderY`.
-12. **TUI Google pairing is paste-only for now.** Current Chrome on Windows stores Gaia cookies as v20 (app-bound). Native DPAPI cannot unwrap that, and CDP against a temp copy returns none, so `p` no longer auto-reads Chrome. Overlay instructions: `messages.google.com` → F12 → Network → Copy as cURL → `ctrl+v`. `POST /api/google/pair` requires a cookie blob. Silent cookie refresh (`googlecookies.Refresh`) still tries native decrypt for an already-paired session. Never launch Chrome with remote debugging against the live User Data dir. Kill and restart `om-tui` only when the overlay shows `failed` or has sat more than five minutes (`googlePairPhoneTimeout`); a shorter wait is still a live phone confirmation.
+12. **TUI Google pairing is paste-only for now.** Current Chrome on Windows stores Gaia cookies as v20 (app-bound). Native DPAPI cannot unwrap that, CDP against a temp copy returns none, and Chrome's elevation COM path-validates callers — silent v20 unwrap from om-tui.exe is not viable. Overlay: `messages.google.com` → F12 → Network → Copy as cURL → `ctrl+v`. If `session.json` already has paired auth, that paste rewrites cookies and reconnects (no phone tap). Gaia + emoji only when unpaired or reconnect fails. `POST /api/google/pair` is the same entry. Silent cookie refresh (`googlecookies.Refresh`) still tries native decrypt for v10. Never launch Chrome with remote debugging against the live User Data dir. Kill and restart `om-tui` only when the overlay shows `failed` or has sat more than five minutes (`googlePairPhoneTimeout`); a shorter wait is still a live phone confirmation.
 
 ## MCP tools (24)
 
@@ -137,4 +138,4 @@ Registered in `internal/tools/tools.go` → `RegisterWithOptions`:
 
 `get_messages`, `get_conversation`, `search_messages`, `send_message`, `send_to_conversation`, `send_media_to_conversation`, `react_to_message`, `set_message_transcript`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `get_status`, `draft_message`, `download_media`, `import_messages`, `get_person_messages`, `conversation_stats`, `generate_story`, `person_stats`, `generate_person_story`, `generate_viz`, `get_person_messages_range`, `render_story`, `send_group_message`
 
-Person/story/viz tools return unavailable while V2 is the serving store. Message-content results prepend an untrusted-content warning.
+Canonical read tools (`get_messages`, `get_conversation`, `search_messages`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `download_media`, person/story/viz) read through `v2read` when V2 is the serving store. `set_message_transcript` writes v2 `message_extras` when primary. `import_messages` still fills v1 then `SyncInto`s that platform into the opened v2 store. `send_media_to_conversation` submits native v2 IDs; `send_message` / `send_group_message` mint or reuse a v2 thread. `draft_message` writes the v2 `drafts` table when primary. Message-content results prepend an untrusted-content warning.

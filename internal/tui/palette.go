@@ -82,6 +82,7 @@ func (m Model) openPalette() (tea.Model, tea.Cmd) {
 	m.compose.Blur()
 	m.query.Blur()
 	m.reactPalette = false
+	m.blockPalette = false
 	focusCmd := m.palette.filter.Focus()
 	m.reloadCustomCommandsIfChanged()
 	m.refreshPaletteMatches()
