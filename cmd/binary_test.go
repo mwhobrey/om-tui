@@ -240,6 +240,8 @@ func TestBuiltBinaryMCPStdioClientShapeStartsNoTransports(t *testing.T) {
 	cmd.Env = append(
 		os.Environ(),
 		"OPENMESSAGES_DATA_DIR="+dataDir,
+		// Client never provisions v2; compiled PRIMARY would fail closed on an empty dir.
+		"OPENMESSAGES_V2_PRIMARY=0",
 		"OPENMESSAGES_DEMO=0",
 		"OPENMESSAGES_APP_SANDBOX=1",
 		"OPENMESSAGES_MACOS_NOTIFICATIONS=0",
