@@ -22,6 +22,39 @@ type Credentials struct {
 	TeamName string `json:"team_name"`
 }
 
+// IngressCodec is the durable Slack capture codec consumed by the v2 decoder.
+const IngressCodec = "slack.event"
+
+// IngressCodecVersion is the current version of IngressCodec envelopes.
+const IngressCodecVersion uint32 = 1
+
+// IngressReaction is one actor's reaction on a captured Slack message.
+type IngressReaction struct {
+	Name     string `json:"name"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name,omitempty"`
+	IsSelf   bool   `json:"is_self,omitempty"`
+}
+
+// IngressFrame is one capture-enriched Slack message. Encoding lives at the
+// slacklive boundary; the decoder must not consult the live Slack client.
+type IngressFrame struct {
+	Kind        string            `json:"kind"`
+	ChannelID   string            `json:"channel_id"`
+	ChannelName string            `json:"channel_name,omitempty"`
+	ChannelKind string            `json:"channel_kind,omitempty"`
+	TS          string            `json:"ts"`
+	ThreadTS    string            `json:"thread_ts,omitempty"`
+	UserID      string            `json:"user_id"`
+	UserName    string            `json:"user_name"`
+	Body        string            `json:"body"`
+	IsFromMe    bool              `json:"is_from_me"`
+	TimestampMS int64             `json:"timestamp_ms"`
+	Reactions   []IngressReaction `json:"reactions,omitempty"`
+	Files       []IngressFile     `json:"files,omitempty"`
+	BlocksJSON  json.RawMessage   `json:"blocks_json,omitempty"`
+}
+
 type Client struct {
 	api      slackAPI
 	store    *db.Store
@@ -42,6 +75,7 @@ type Client struct {
 	socketConnected bool
 	lastError       string
 	onChange        func(conversationID string)
+	ingress         func(IngressFrame)
 }
 
 func New(store *db.Store, riverID string, creds Credentials) (*Client, error) {
@@ -74,6 +108,29 @@ func New(store *db.Store, riverID string, creds Credentials) (*Client, error) {
 		}
 	}
 	return c, nil
+}
+
+func (c *Client) TeamName() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.teamName)
+}
+
+func (c *Client) SetIngress(handler func(IngressFrame)) {
+	c.mu.Lock()
+	c.ingress = handler
+	c.mu.Unlock()
+}
+
+func (c *Client) emitIngress(frame IngressFrame) {
+	c.mu.Lock()
+	handler := c.ingress
+	c.mu.Unlock()
+	if handler == nil {
+		return
+	}
+	handler(frame)
 }
 
 // AuthTest validates the token and fills team metadata.
@@ -387,16 +444,78 @@ func (c *Client) SendText(ctx context.Context, conversationID, body, replyToID s
 		SourcePlatform: "slack",
 		SourceID:       channelID + ":" + ts,
 	}
+	c.emitIngress(IngressFrame{
+		Kind:        "message",
+		ChannelID:   channelID,
+		ChannelName: c.channelTitle(channelID),
+		ChannelKind: slackChannelKind(channelID),
+		TS:          ts,
+		ThreadTS:    threadTS,
+		UserID:      c.userID,
+		UserName:    "you",
+		Body:        body,
+		IsFromMe:    true,
+		TimestampMS: msg.TimestampMS,
+	})
 	return msg, nil
+}
+
+// AddReaction posts reactions.add for a Slack stream message.
+func (c *Client) AddReaction(ctx context.Context, conversationID, messageID, emoji string) error {
+	return c.mutateReaction(ctx, conversationID, messageID, emoji, true)
+}
+
+// RemoveReaction posts reactions.remove for a Slack stream message.
+func (c *Client) RemoveReaction(ctx context.Context, conversationID, messageID, emoji string) error {
+	return c.mutateReaction(ctx, conversationID, messageID, emoji, false)
+}
+
+func (c *Client) mutateReaction(ctx context.Context, conversationID, messageID, emoji string, add bool) error {
+	if c == nil || c.api == nil {
+		return fmt.Errorf("slack client is not connected")
+	}
+	if ctx == nil {
+		return fmt.Errorf("slack reaction context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, channelID, ok := river.ParseSlackConversationID(conversationID)
+	if !ok {
+		return fmt.Errorf("not a slack conversation id")
+	}
+	ts := slackReactionTS(messageID)
+	if ts == "" {
+		return fmt.Errorf("not a slack message id")
+	}
+	name := ReactionName(emoji)
+	if name == "" {
+		return fmt.Errorf("empty reaction")
+	}
+	item := slack.ItemRef{Channel: channelID, Timestamp: ts}
+	var err error
+	if add {
+		err = c.api.AddReactionContext(ctx, name, item)
+	} else {
+		err = c.api.RemoveReactionContext(ctx, name, item)
+	}
+	if err != nil {
+		op := "reactions.remove"
+		if add {
+			op = "reactions.add"
+		}
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
 }
 
 func (c *Client) ingestMessages(ctx context.Context, conversationID, channelID string, messages []slack.Message, countUnread bool) (oldest, newest string, changed bool, err error) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		if strings.TrimSpace(msg.Text) == "" && len(msg.Files) == 0 {
+		rawBody := messageFallbackText(msg.Msg)
+		if rawBody == "" && len(msg.Files) == 0 {
 			continue
 		}
-		rawBody := strings.TrimSpace(msg.Text)
 		body := c.readableSlackText(ctx, rawBody)
 		if body == "" && len(msg.Files) > 0 {
 			body = "[file]"
@@ -406,8 +525,14 @@ func (c *Client) ingestMessages(ctx context.Context, conversationID, channelID s
 			senderID = strings.TrimSpace(msg.BotID)
 		}
 		senderName := c.userName(ctx, senderID)
-		if senderName == senderID && strings.TrimSpace(msg.Username) != "" {
-			senderName = strings.TrimSpace(msg.Username)
+		if senderName == senderID {
+			if name := strings.TrimSpace(msg.Username); name != "" {
+				senderName = name
+			} else if msg.BotProfile != nil {
+				if name := strings.TrimSpace(msg.BotProfile.Name); name != "" {
+					senderName = name
+				}
+			}
 		}
 		messageID := slackMessageID(channelID, msg.Timestamp)
 		replyToID := ""
@@ -455,6 +580,22 @@ func (c *Client) ingestMessages(ctx context.Context, conversationID, channelID s
 				return oldest, newest, changed, err
 			}
 		}
+		c.emitIngress(IngressFrame{
+			Kind:        "message",
+			ChannelID:   channelID,
+			ChannelName: c.channelTitle(channelID),
+			ChannelKind: slackChannelKind(channelID),
+			TS:          msg.Timestamp,
+			ThreadTS:    msg.ThreadTimestamp,
+			UserID:      senderID,
+			UserName:    senderName,
+			Body:        body,
+			IsFromMe:    dbMsg.IsFromMe,
+			TimestampMS: dbMsg.TimestampMS,
+			Reactions:   c.ingressReactions(ctx, msg),
+			Files:       ingressFiles(msg.Files),
+			BlocksJSON:  MarshalBlocksJSON(msg.Blocks),
+		})
 	}
 	return oldest, newest, changed, nil
 }
@@ -551,12 +692,67 @@ func slackMessageID(channelID, ts string) string {
 	return fmt.Sprintf("slack:%s:%s", channelID, ts)
 }
 
+func slackChannelKind(channelID string) string {
+	switch {
+	case strings.HasPrefix(channelID, "D"):
+		return "direct"
+	default:
+		return "group"
+	}
+}
+
+func (c *Client) channelTitle(channelID string) string {
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+	return strings.TrimSpace(c.channels[channelID])
+}
+
 func slackMessageTS(messageID string) string {
 	parts := strings.SplitN(messageID, ":", 3)
 	if len(parts) != 3 || parts[0] != "slack" {
 		return ""
 	}
 	return parts[2]
+}
+
+func slackReactionTS(messageID string) string {
+	if ts := slackMessageTS(messageID); ts != "" {
+		return ts
+	}
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" || strings.Contains(messageID, ":") {
+		return ""
+	}
+	return messageID
+}
+
+func (c *Client) ingressReactions(ctx context.Context, msg slack.Message) []IngressReaction {
+	if len(msg.Reactions) == 0 {
+		return nil
+	}
+	out := make([]IngressReaction, 0, len(msg.Reactions))
+	for _, reaction := range msg.Reactions {
+		name := strings.TrimSpace(reaction.Name)
+		if name == "" {
+			continue
+		}
+		for _, userID := range reaction.Users {
+			userID = strings.TrimSpace(userID)
+			if userID == "" {
+				continue
+			}
+			out = append(out, IngressReaction{
+				Name:     name,
+				UserID:   userID,
+				UserName: c.userName(ctx, userID),
+				IsSelf:   c.userID != "" && userID == c.userID,
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func slackTSToMS(ts string) int64 {

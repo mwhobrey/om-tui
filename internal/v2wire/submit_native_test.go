@@ -84,6 +84,52 @@ func TestSubmitTextV2ResolvesAccountFromV2ConversationAndForwardsCommand(t *test
 	}
 }
 
+func TestSubmitTextV2ResolvesReplyByRemoteID(t *testing.T) {
+	v2 := openV2TestStore(t)
+	seedNativeConversation(t, v2, "native-account", "v2-conversation")
+	projectV2TestMessage(t, v2, sqlite.Message{
+		MessageID:       "v2-parent",
+		ConversationID:  "v2-conversation",
+		AccountID:       "native-account",
+		RemoteMessageID: "123.456",
+		Direction:       sqlite.MessageDirectionIncoming,
+		Body:            "parent",
+		State:           sqlite.MessageStateActive,
+		OccurredAtMS:    1_900_000_000_000,
+	})
+	registry := submitTestRegistry{caps: map[string]bridge.CapabilitySet{
+		"native-account": {TextSend: true},
+	}}
+	service := newSubmitTestService(t, v2, registry, nil)
+
+	for _, replyToID := range []string{"123.456", "slack:C99:123.456"} {
+		t.Run(replyToID, func(t *testing.T) {
+			submission, err := SubmitTextV2(context.Background(), NativeDeps{
+				V2: v2, Service: service, Registry: registry,
+			}, TextInput{
+				ConversationID: "v2-conversation",
+				Body:           "native reply",
+				ReplyToID:      replyToID,
+				IdempotencyKey: "native-remote-reply-" + replyToID,
+			})
+			if err != nil {
+				t.Fatalf("SubmitTextV2(): %v", err)
+			}
+			repository, err := sqlite.NewMessageRepository(v2, time.Now)
+			if err != nil {
+				t.Fatalf("NewMessageRepository(): %v", err)
+			}
+			message, err := repository.GetMessage(context.Background(), submission.LocalMessageID)
+			if err != nil {
+				t.Fatalf("GetMessage(): %v", err)
+			}
+			if message.ReplyToRemoteID == nil || *message.ReplyToRemoteID != "123.456" {
+				t.Fatalf("optimistic message = %+v, want reply remote 123.456", message)
+			}
+		})
+	}
+}
+
 func TestSubmitMediaV2ResolvesAccountFromV2ConversationAndForwardsCommand(t *testing.T) {
 	v2 := openV2TestStore(t)
 	seedNativeConversation(t, v2, "native-media-account", "v2-media-conversation")
@@ -197,6 +243,18 @@ func TestSubmitV2RejectsMissingCapabilitiesBeforeEnqueue(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "reaction",
+			submit: func(ctx context.Context, deps NativeDeps) error {
+				_, err := SubmitReactionV2(ctx, deps, ReactionInput{
+					ConversationID:  "v2-conversation",
+					TargetMessageID: "v2-parent",
+					Emoji:           "👍",
+					IdempotencyKey:  "unsupported-reaction-key",
+				})
+				return err
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -280,6 +338,56 @@ func TestSubmitV2ValidatesDependenciesBeforeReadingConversation(t *testing.T) {
 				t.Fatal("SubmitTextV2() succeeded, want dependency error")
 			}
 		})
+	}
+}
+
+func TestSubmitReactionV2ResolvesTargetAndForwardsCommand(t *testing.T) {
+	v2 := openV2TestStore(t)
+	seedNativeConversation(t, v2, "native-account", "v2-conversation")
+	projectV2TestMessage(t, v2, sqlite.Message{
+		MessageID:       "v2-parent",
+		ConversationID:  "v2-conversation",
+		AccountID:       "native-account",
+		RemoteMessageID: "remote-parent",
+		Direction:       sqlite.MessageDirectionIncoming,
+		Body:            "parent",
+		State:           sqlite.MessageStateActive,
+		OccurredAtMS:    1_900_000_000_000,
+	})
+	registry := submitTestRegistry{caps: map[string]bridge.CapabilitySet{
+		"native-account": {Reactions: true},
+	}}
+	service := newSubmitTestService(t, v2, registry, nil)
+
+	submission, err := SubmitReactionV2(context.Background(), NativeDeps{
+		V2: v2, Service: service, Registry: registry,
+	}, ReactionInput{
+		ConversationID:  "v2-conversation",
+		TargetMessageID: "v2-parent",
+		Emoji:           "👍",
+		Action:          "add",
+		IdempotencyKey:  "native-reaction-key",
+	})
+	if err != nil {
+		t.Fatalf("SubmitReactionV2(): %v", err)
+	}
+	if submission.State != messaging.OutboxQueued {
+		t.Fatalf("submission = %+v, want queued", submission)
+	}
+	deduplicated, err := SubmitReactionV2(context.Background(), NativeDeps{
+		V2: v2, Service: service, Registry: registry,
+	}, ReactionInput{
+		ConversationID:  "v2-conversation",
+		TargetMessageID: "v2-parent",
+		Emoji:           "👍",
+		Action:          "add",
+		IdempotencyKey:  "native-reaction-key",
+	})
+	if err != nil {
+		t.Fatalf("SubmitReactionV2(deduplicate): %v", err)
+	}
+	if !deduplicated.Deduplicated || deduplicated.OutboxID != submission.OutboxID {
+		t.Fatalf("deduplicated = %+v, want identities from %+v", deduplicated, submission)
 	}
 }
 

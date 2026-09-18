@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -556,7 +557,15 @@ func syncMigrationDirectory(path string) error {
 	}
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
+	if isWindowsAccessDenied(syncErr) {
+		syncErr = nil
+	}
 	return errors.Join(syncErr, closeErr)
+}
+
+func isWindowsAccessDenied(err error) bool {
+	return err != nil && runtime.GOOS == "windows" &&
+		strings.Contains(strings.ToLower(err.Error()), "access is denied")
 }
 
 func writeHumanMigrationReport(writer io.Writer, report migration.Report) {

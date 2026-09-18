@@ -149,6 +149,8 @@ func platformForBridgeKey(bridgeKey string) bridge.Platform {
 		return bridge.PlatformWhatsApp
 	case "signal_cli":
 		return bridge.PlatformSignal
+	case "slack_web":
+		return bridge.PlatformSlack
 	default:
 		return bridge.Platform(strings.TrimSpace(bridgeKey))
 	}

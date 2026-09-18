@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ReadCursor is the latest device-scoped read position for one conversation.
@@ -128,4 +129,56 @@ func (s *Store) GetReadCursor(deviceID, conversationID string) (ReadCursor, erro
 		)
 	}
 	return cursor, nil
+}
+
+// IncomingUnreadCounts returns incoming messages newer than each conversation's
+// local-installation read cursor. Conversations with no unread incoming rows
+// are omitted (count 0).
+func (s *Store) IncomingUnreadCounts(conversationIDs []string) (map[string]int, error) {
+	counts := make(map[string]int, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return counts, nil
+	}
+	placeholders := strings.Repeat("?,", len(conversationIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(conversationIDs))
+	for _, id := range conversationIDs {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(context.Background(), `
+		SELECT m.conversation_id, COUNT(*)
+		FROM messages AS m
+		JOIN conversations AS c ON c.conversation_id = m.conversation_id
+		JOIN devices AS d ON d.device_id = (
+			SELECT d2.device_id
+			FROM devices AS d2
+			WHERE d2.account_id = c.account_id
+			  AND d2.kind = 'local_installation'
+			ORDER BY d2.is_current DESC, d2.device_id
+			LIMIT 1
+		)
+		LEFT JOIN read_cursors AS rc
+		  ON rc.device_id = d.device_id
+		 AND rc.conversation_id = m.conversation_id
+		WHERE m.direction = 'incoming'
+		  AND m.occurred_at_ms > COALESCE(rc.last_read_at_ms, 0)
+		  AND m.conversation_id IN (`+placeholders+`)
+		GROUP BY m.conversation_id
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("incoming unread counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var conversationID string
+		var count int
+		if err := rows.Scan(&conversationID, &count); err != nil {
+			return nil, fmt.Errorf("incoming unread counts: %w", err)
+		}
+		counts[conversationID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("incoming unread counts: %w", err)
+	}
+	return counts, nil
 }

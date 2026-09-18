@@ -101,6 +101,14 @@ func conversationKindForRemoteID(
 			return sqlite.ConversationKindDirect, true
 		}
 		return "", false
+	case bridge.PlatformSlack:
+		if strings.HasPrefix(value, "D") {
+			return sqlite.ConversationKindDirect, true
+		}
+		if strings.HasPrefix(value, "C") || strings.HasPrefix(value, "G") {
+			return sqlite.ConversationKindGroup, true
+		}
+		return "", false
 	default:
 		// Google Messages thread ids are opaque ("3031" is a group or a 1:1
 		// with equal likelihood); its decoder emits ConversationEvent frames

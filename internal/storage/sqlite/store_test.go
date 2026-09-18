@@ -441,3 +441,14 @@ func assertPragmaInt(t *testing.T, db *sql.DB, pragma string, want int) {
 		t.Errorf("%s pragma = %d, want %d", pragma, got, want)
 	}
 }
+
+func TestNewMigrationChecksumIgnoresCRLF(t *testing.T) {
+	lf := newMigration(1, "x", "CREATE TABLE t (id INTEGER);\n", nil)
+	crlf := newMigration(1, "x", "CREATE TABLE t (id INTEGER);\r\n", nil)
+	if lf.checksumSHA256 != crlf.checksumSHA256 {
+		t.Fatalf("lf checksum %q != crlf checksum %q", lf.checksumSHA256, crlf.checksumSHA256)
+	}
+	if strings.Contains(crlf.upSQL, "\r") {
+		t.Fatalf("normalized SQL still contains CR: %q", crlf.upSQL)
+	}
+}

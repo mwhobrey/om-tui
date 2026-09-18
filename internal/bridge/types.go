@@ -59,6 +59,7 @@ type MessageEvent struct {
 	Attachments          []Attachment
 	ReplyToRemoteID      string
 	OccurredAt           time.Time
+	LayoutJSON           string // V2-only structured payload (Slack Block Kit)
 }
 
 type MessageMutationEvent struct {

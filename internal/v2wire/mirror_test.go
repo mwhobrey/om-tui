@@ -22,6 +22,8 @@ func TestAccountForConversationUsesLegacyRoutingPredicates(t *testing.T) {
 		{ConversationID: "stored-google", SourcePlatform: "sms"},
 		{ConversationID: "stored-imessage", SourcePlatform: "imessage"},
 		{ConversationID: "stored-gchat", SourcePlatform: "gchat"},
+		{ConversationID: "slack:T1:C99", SourcePlatform: "slack", RiverID: "slack-T1"},
+		{ConversationID: "stored-extra-wa", SourcePlatform: "whatsapp", RiverID: "whatsapp-2"},
 	} {
 		if err := legacy.UpsertConversation(conversation); err != nil {
 			t.Fatalf("UpsertConversation(%q): %v", conversation.ConversationID, err)
@@ -41,6 +43,10 @@ func TestAccountForConversationUsesLegacyRoutingPredicates(t *testing.T) {
 		{conversationID: "stored-google", wantAccountID: googleAccountID},
 		{conversationID: "stored-imessage", wantErr: ErrPlatformNotSendable},
 		{conversationID: "stored-gchat", wantErr: ErrPlatformNotSendable},
+		{conversationID: "slack:T1:C99", wantAccountID: "slack-T1"},
+		{conversationID: "whatsapp/whatsapp-2/1555@s.whatsapp.net", wantAccountID: "whatsapp-2"},
+		{conversationID: "signal/signal-2/+15551230000", wantAccountID: "signal-2"},
+		{conversationID: "stored-extra-wa", wantAccountID: "whatsapp-2"},
 	}
 	for _, test := range tests {
 		t.Run(test.conversationID, func(t *testing.T) {
@@ -123,6 +129,34 @@ func TestMirrorConversationCreatesPerAccountDevicesAndCursors(t *testing.T) {
 	}
 }
 
+func TestMirrorConversationSlackUsesChannelRemote(t *testing.T) {
+	legacy := openLegacyTestStore(t)
+	v2 := openV2TestStore(t)
+	seedLegacyConversation(t, legacy, "slack:T1:C99", "slack", true)
+
+	accountID, conversationID, err := MirrorConversation(legacy, v2, "slack:T1:C99")
+	if err != nil {
+		t.Fatalf("MirrorConversation(): %v", err)
+	}
+	if accountID != "slack-T1" || conversationID != "slack:T1:C99" {
+		t.Fatalf("MirrorConversation() = (%q,%q)", accountID, conversationID)
+	}
+	conversation, err := v2.GetConversation("slack:T1:C99")
+	if err != nil {
+		t.Fatalf("GetConversation(): %v", err)
+	}
+	if conversation.RemoteConversationID != "C99" || conversation.AccountID != "slack-T1" {
+		t.Fatalf("mirrored slack conversation = %+v", conversation)
+	}
+	account, err := v2.GetAccount("slack-T1")
+	if err != nil {
+		t.Fatalf("GetAccount(): %v", err)
+	}
+	if account.BridgeKey != "slack_web" {
+		t.Fatalf("bridge key = %q", account.BridgeKey)
+	}
+}
+
 func TestMirrorReplyTargetDerivesRemoteIDsAndTypedErrors(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -166,6 +200,13 @@ func TestMirrorReplyTargetDerivesRemoteIDsAndTypedErrors(t *testing.T) {
 			platform:       "whatsapp",
 			message:        &db.Message{MessageID: "whatsapp:missing", Body: "wa body", TimestampMS: 1_900_000_000_004},
 			wantErr:        ErrReplyTargetUnavailable,
+		},
+		{
+			name:           "slack timestamp",
+			conversationID: "slack:T1:C1",
+			platform:       "slack",
+			message:        &db.Message{MessageID: "slack:C1:1700000000.000100", SourceID: "C1:1700000000.000100", Body: "slack body", TimestampMS: 1_700_000_000_100},
+			wantRemoteID:   "1700000000.000100",
 		},
 	}
 
@@ -231,6 +272,39 @@ func TestMirrorReplyTargetReturnsExistingNaturalKeyMessageID(t *testing.T) {
 	}
 	if got != existingLocalID {
 		t.Fatalf("MirrorReplyTarget() = %q, want existing %q", got, existingLocalID)
+	}
+}
+
+func TestMarkV2ConversationReadAdvancesLocalCursor(t *testing.T) {
+	v2 := openV2TestStore(t)
+	seedNativeConversation(t, v2, "slack-T1", "hashed-slack-conv")
+	projectV2TestMessage(t, v2, sqlite.Message{
+		MessageID:       "v2-latest",
+		ConversationID:  "hashed-slack-conv",
+		AccountID:       "slack-T1",
+		RemoteMessageID: "123.456",
+		Direction:       sqlite.MessageDirectionIncoming,
+		Body:            "hello",
+		State:           sqlite.MessageStateActive,
+		OccurredAtMS:    4_000,
+	})
+
+	if err := MarkV2ConversationRead(context.Background(), v2, "hashed-slack-conv", 5_000); err != nil {
+		t.Fatalf("MarkV2ConversationRead(): %v", err)
+	}
+	device, err := v2.GetLocalInstallationDevice(context.Background(), "slack-T1")
+	if err != nil {
+		t.Fatalf("GetLocalInstallationDevice(): %v", err)
+	}
+	cursor, err := v2.GetReadCursor(device.DeviceID, "hashed-slack-conv")
+	if err != nil {
+		t.Fatalf("GetReadCursor(): %v", err)
+	}
+	if cursor.AccountID != "slack-T1" ||
+		cursor.LastReadMessageID == nil ||
+		*cursor.LastReadMessageID != "v2-latest" ||
+		cursor.LastReadAtMS != 5_000 {
+		t.Fatalf("cursor = %+v", cursor)
 	}
 }
 

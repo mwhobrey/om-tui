@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	moderncsqlite "modernc.org/sqlite"
 )
@@ -699,6 +700,65 @@ func (s *Store) GetConversation(conversationID string) (Conversation, error) {
 	return conversation, nil
 }
 
+func (s *Store) SetConversationFavorite(conversationID string, favorite bool) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return notFound("conversation", conversationID)
+	}
+	result, err := s.db.ExecContext(
+		context.Background(),
+		`UPDATE conversations
+		 SET is_favorite = ?, updated_at_ms = ?
+		 WHERE conversation_id = ?`,
+		favorite,
+		time.Now().UnixMilli(),
+		conversationID,
+	)
+	if err != nil {
+		return fmt.Errorf("set conversation %q favorite: %w", conversationID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set conversation %q favorite: %w", conversationID, err)
+	}
+	if rows == 0 {
+		return notFound("conversation", conversationID)
+	}
+	return nil
+}
+
+func (s *Store) SetConversationNotificationMode(conversationID string, mode NotificationMode) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return notFound("conversation", conversationID)
+	}
+	switch mode {
+	case NotificationModeAll, NotificationModeMentions, NotificationModeMuted:
+	default:
+		return fmt.Errorf("invalid notification mode %q", mode)
+	}
+	result, err := s.db.ExecContext(
+		context.Background(),
+		`UPDATE conversations
+		 SET notification_mode = ?, updated_at_ms = ?
+		 WHERE conversation_id = ?`,
+		mode,
+		time.Now().UnixMilli(),
+		conversationID,
+	)
+	if err != nil {
+		return fmt.Errorf("set conversation %q notification mode: %w", conversationID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set conversation %q notification mode: %w", conversationID, err)
+	}
+	if rows == 0 {
+		return notFound("conversation", conversationID)
+	}
+	return nil
+}
+
 // GetConversationByRemote returns a conversation by the same account-scoped
 // natural key used by UpsertConversation.
 func (s *Store) GetConversationByRemote(
@@ -789,16 +849,24 @@ func (s *Store) ListConversationsByRecencyAllAccounts(limit int) ([]Conversation
 // case-insensitive substring — newest first, at most limit rows. It is the
 // bounded v2 counterpart of the legacy metadata search: the match runs in SQL
 // so callers map only the hits instead of every conversation.
-func (s *Store) SearchConversationsByName(query string, limit int) ([]Conversation, error) {
+func (s *Store) SearchConversationsByName(query, accountID string, limit int) ([]Conversation, error) {
 	if limit <= 0 || strings.TrimSpace(query) == "" {
 		return []Conversation{}, nil
 	}
 	pattern := "%" + escapeLikePattern(query) + "%"
+	accountID = strings.TrimSpace(accountID)
+	args := []any{pattern, pattern, pattern, pattern}
+	accountClause := ""
+	if accountID != "" {
+		accountClause = " AND account_id = ?"
+		args = append(args, accountID)
+	}
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(
 		context.Background(),
 		"SELECT "+conversationColumns+`
 		 FROM conversations
-		 WHERE title LIKE ? ESCAPE '\'
+		 WHERE (title LIKE ? ESCAPE '\'
 		    OR conversation_id IN (
 		        SELECT cp.conversation_id
 		        FROM conversation_participants cp
@@ -806,10 +874,10 @@ func (s *Store) SearchConversationsByName(query string, limit int) ([]Conversati
 		        WHERE cp.display_name LIKE ? ESCAPE '\'
 		           OR i.display_name LIKE ? ESCAPE '\'
 		           OR i.canonical_value LIKE ? ESCAPE '\'
-		    )
+		    ))`+accountClause+`
 		 ORDER BY last_message_at_ms DESC, conversation_id
 		 LIMIT ?`,
-		pattern, pattern, pattern, pattern, limit,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search conversations by name: %w", err)

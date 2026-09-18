@@ -97,6 +97,7 @@ type legacyDataset struct {
 	unreadRows               int64
 	mediaRows                int64
 	reactionsBearingMessages int64
+	transcriptRows           int64
 }
 
 var requiredLegacyColumns = map[string][]string{
@@ -295,7 +296,7 @@ func loadLegacyRows(ctx context.Context, database *sql.DB, dataset *legacyDatase
 		}
 		if strings.TrimSpace(row.Transcript) != "" || row.TranscribedAtMS != 0 ||
 			strings.TrimSpace(row.TranscriptModel) != "" {
-			dataset.dropped.TranscriptBearingMessages++
+			dataset.transcriptRows++
 		}
 		if strings.HasPrefix(row.ID, "signal:local:") {
 			dataset.signalLocalRows++
@@ -406,7 +407,7 @@ func validateLegacyRelationships(dataset *legacyDataset) error {
 			return fmt.Errorf("conversation has an empty primary key")
 		}
 		platform := normalizeLegacyPlatform(conversation.Platform)
-		if _, err := accountForPlatform(platform); err != nil {
+		if _, err := accountForLegacyConversation(platform, conversation.ID); err != nil {
 			return err
 		}
 		conversations[conversation.ID] = platform
@@ -435,7 +436,7 @@ func validateLegacyRelationships(dataset *legacyDataset) error {
 	kept := dataset.messages[:0:0]
 	for _, message := range dataset.messages {
 		platform := normalizeLegacyPlatform(message.Platform)
-		if _, err := accountForPlatform(platform); err != nil {
+		if _, err := accountForLegacyConversation(platform, message.ConversationID); err != nil {
 			return err
 		}
 		if strings.TrimSpace(message.ID) == "" {
@@ -588,9 +589,25 @@ func fileSHA256(path string) (string, error) {
 }
 
 func readOnlySQLiteDSN(path string) string {
+	normalizedPath := strings.ReplaceAll(path, "\\", "/")
+	if isWindowsAbsolutePath(normalizedPath) {
+		normalizedPath = "/" + normalizedPath
+	}
 	return (&url.URL{
-		Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro",
+		Scheme:   "file",
+		Path:     normalizedPath,
+		RawQuery: "mode=ro",
 	}).String()
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if len(path) < 3 {
+		return false
+	}
+	drive := path[0]
+	return ((drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')) &&
+		path[1] == ':' &&
+		path[2] == '/'
 }
 
 func stageLegacySourceSnapshot(

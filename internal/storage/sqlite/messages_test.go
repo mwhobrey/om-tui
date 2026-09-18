@@ -329,6 +329,60 @@ func TestListMessagesByConversationPaginationAndAround(t *testing.T) {
 	}
 }
 
+func TestListMessagesByConversationsLimitsRangeAndOrdersOldestFirst(t *testing.T) {
+	store, repository := openMessageTestRepository(
+		t,
+		func() time.Time { return time.UnixMilli(messageTestTimeMS) },
+	)
+	seedMessageAccount(t, store, "account-a", "google_messages")
+	seedMessageAccount(t, store, "account-b", "whatsmeow")
+	seedMessageConversation(t, store, "conversation-a", "account-a")
+	seedMessageConversation(t, store, "conversation-b", "account-b")
+	seedMessageConversation(t, store, "conversation-c", "account-a")
+
+	importMessage := func(id, conversationID, accountID string, occurredAtMS int64) {
+		t.Helper()
+		message := messageTestMessage(id, conversationID, accountID, "remote-"+id, nil)
+		message.OccurredAtMS = occurredAtMS
+		if err := repository.ImportMessage(context.Background(), MessageProjection{Message: message}); err != nil {
+			t.Fatalf("ImportMessage(%q): %v", id, err)
+		}
+	}
+	importMessage("a-old", "conversation-a", "account-a", 100)
+	importMessage("a-new", "conversation-a", "account-a", 400)
+	importMessage("b-mid", "conversation-b", "account-b", 200)
+	importMessage("c-skip", "conversation-c", "account-a", 300)
+
+	got, err := repository.ListMessagesByConversations(
+		context.Background(),
+		[]string{"conversation-a", "conversation-b"},
+		0, 0, 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].MessageID != "b-mid" || got[1].MessageID != "a-new" {
+		t.Fatalf("limit page = %+v, want b-mid then a-new", got)
+	}
+
+	ranged, err := repository.ListMessagesByConversations(
+		context.Background(),
+		[]string{"conversation-a", "conversation-b"},
+		150, 350, 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranged) != 1 || ranged[0].MessageID != "b-mid" {
+		t.Fatalf("range page = %+v, want b-mid", ranged)
+	}
+
+	empty, err := repository.ListMessagesByConversations(context.Background(), nil, 0, 0, 10)
+	if err != nil || empty != nil {
+		t.Fatalf("empty ids = %+v err=%v", empty, err)
+	}
+}
+
 func TestSearchMessagesLIKEFiltersAndOrdersDeterministically(t *testing.T) {
 	store, repository := openMessageTestRepository(
 		t,
@@ -1178,8 +1232,8 @@ func TestMessagesInboxMigrationIsChecksummedAndStrict(t *testing.T) {
 		t,
 		func() time.Time { return time.UnixMilli(messageTestTimeMS) },
 	)
-	if len(embeddedMigrations) != 10 {
-		t.Fatalf("embedded migrations = %d, want 10", len(embeddedMigrations))
+	if len(embeddedMigrations) != 12 {
+		t.Fatalf("embedded migrations = %d, want 12", len(embeddedMigrations))
 	}
 	assertPragmaInt(t, store.db, "user_version", len(embeddedMigrations))
 	ledger := readLedgerRow(t, store.db, 4)

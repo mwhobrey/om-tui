@@ -61,7 +61,10 @@ func v2IngestEnabled() bool {
 }
 
 func v2PrimaryEnabled() bool {
-	return v2FlagEnabled("OPENMESSAGES_V2_PRIMARY")
+	if v2FlagExplicitlyDisabled("OPENMESSAGES_V2_PRIMARY") {
+		return false
+	}
+	return true
 }
 
 func v2FlagEnabled(name string) bool {
@@ -80,6 +83,15 @@ type v2RuntimeMode struct {
 }
 
 func resolveV2RuntimeMode(isDemo bool, dataDir string) (v2RuntimeMode, error) {
+	if isDemo {
+		if v2FlagEnabled("OPENMESSAGES_V2_PRIMARY") {
+			return v2RuntimeMode{}, errors.New("OPENMESSAGES_V2_PRIMARY is not available in demo mode")
+		}
+		return v2RuntimeMode{
+			Send:   v2SendEnabled(),
+			Ingest: v2IngestEnabled(),
+		}, nil
+	}
 	mode := v2RuntimeMode{
 		Primary: v2PrimaryEnabled(),
 		Send:    v2SendEnabled(),
@@ -88,29 +100,46 @@ func resolveV2RuntimeMode(isDemo bool, dataDir string) (v2RuntimeMode, error) {
 	if !mode.Primary {
 		return mode, nil
 	}
-	if isDemo {
-		return v2RuntimeMode{}, errors.New("OPENMESSAGES_V2_PRIMARY is not available in demo mode")
-	}
 	if v2FlagExplicitlyDisabled("OPENMESSAGES_V2_SEND") ||
 		v2FlagExplicitlyDisabled("OPENMESSAGES_V2_INGEST") {
 		return v2RuntimeMode{}, errors.New("OPENMESSAGES_V2_PRIMARY requires v2 send and ingest; unset OPENMESSAGES_V2_SEND=0/OPENMESSAGES_V2_INGEST=0")
 	}
 
 	storePath := filepath.Join(dataDir, "v2", "store.sqlite3")
-	info, err := os.Stat(storePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return v2RuntimeMode{}, fmt.Errorf("v2-primary selected but no migrated store at %s; run: openmessage migrate", storePath)
-		}
-		return v2RuntimeMode{}, fmt.Errorf("v2-primary selected but cannot access migrated store at %s: %w", storePath, err)
-	}
-	if !info.Mode().IsRegular() {
-		return v2RuntimeMode{}, fmt.Errorf("v2-primary selected but no migrated store at %s; run: openmessage migrate", storePath)
+	if err := requireV2PrimaryStore(dataDir, storePath); err != nil {
+		return v2RuntimeMode{}, err
 	}
 
 	mode.Send = true
 	mode.Ingest = true
 	return mode, nil
+}
+
+// v2StubStoreBytes is one SQLite page. Shadow ingest/send can leave a
+// 4KiB store.sqlite3 that is not a migrated inbox; PRIMARY must not treat
+// that as cutover evidence when messages.db still holds history.
+const v2StubStoreBytes = 4096
+
+func requireV2PrimaryStore(dataDir, storePath string) error {
+	info, err := os.Stat(storePath)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return fmt.Errorf("v2-primary selected but no migrated store at %s; run: openmessage migrate", storePath)
+	case err == nil && info.Size() > v2StubStoreBytes:
+		return nil
+	case err != nil && !os.IsNotExist(err):
+		return fmt.Errorf("v2-primary selected but cannot access migrated store at %s: %w", storePath, err)
+	}
+	if legacyInboxNeedsMigration(dataDir) {
+		return fmt.Errorf("v2-primary selected but no migrated store at %s; run: openmessage migrate", storePath)
+	}
+	return nil
+}
+
+func legacyInboxNeedsMigration(dataDir string) bool {
+	path := filepath.Join(dataDir, "messages.db")
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 func v2FlagExplicitlyDisabled(name string) bool {
@@ -149,6 +178,8 @@ func liveAccountSpec(platform bridge.Platform) (v2LiveAccountSpec, error) {
 		return v2LiveAccountSpec{bridgeKey: "whatsmeow", displayName: "WhatsApp"}, nil
 	case bridge.PlatformSignal:
 		return v2LiveAccountSpec{bridgeKey: "signal_cli", displayName: "Signal"}, nil
+	case bridge.PlatformSlack:
+		return v2LiveAccountSpec{bridgeKey: "slack_web", displayName: "Slack"}, nil
 	default:
 		return v2LiveAccountSpec{}, fmt.Errorf("unsupported live account platform %q", platform)
 	}
@@ -178,6 +209,11 @@ func (s *v2Stack) RegisterAdapter(adapter bridge.Adapter) error {
 	spec, err := liveAccountSpec(platform)
 	if err != nil {
 		return fmt.Errorf("register v2 adapter %q: %w", accountID, err)
+	}
+	if namer, ok := adapter.(interface{ AccountDisplayName() string }); ok {
+		if name := strings.TrimSpace(namer.AccountDisplayName()); name != "" {
+			spec.displayName = name
+		}
 	}
 
 	if _, err := s.Store.GetAccount(accountID); err != nil {
@@ -287,6 +323,7 @@ func newV2Stack(deps v2StackDeps) (_ *v2Stack, resultErr error) {
 				Decoder:  ingest.NewGoogleDecoder(counters),
 			},
 			ingest.NewWhatsAppDecoderRegistration(),
+			ingest.NewSlackDecoderRegistration(),
 			{
 				Codec:    ingest.SignalJSONRPCCodec,
 				Platform: bridge.PlatformSignal,

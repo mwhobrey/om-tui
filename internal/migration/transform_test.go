@@ -76,6 +76,40 @@ func TestTransformLegacyFixtureToMergedV2(t *testing.T) {
 	assertFixtureReadCursors(t, target)
 }
 
+func TestSyncIntoExistingCopiesOnePlatform(t *testing.T) {
+	root := t.TempDir()
+	fixture := buildMigrationFixture(t, root)
+	path := filepath.Join(root, "existing.sqlite3")
+	store, err := sqlite.Open(path)
+	mustNoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	mustNoError(t, SyncInto(context.Background(), fixture.sourcePath, store, "gchat"))
+
+	accounts, err := store.ListAccounts()
+	mustNoError(t, err)
+	if len(accounts) != 1 || accounts[0].BridgeKey != "gchat" {
+		t.Fatalf("accounts = %+v, want gchat only", accounts)
+	}
+	conversations, err := store.ListConversationsByRecency(accounts[0].AccountID)
+	mustNoError(t, err)
+	messages, err := sqlite.NewMessageRepository(store, func() time.Time { return time.UnixMilli(fixtureBaseMS) })
+	mustNoError(t, err)
+	var messageCount int
+	for _, conversation := range conversations {
+		page, err := messages.ListMessagesByConversation(context.Background(), conversation.ConversationID, 0, "", 50)
+		mustNoError(t, err)
+		messageCount += len(page)
+	}
+	if messageCount != 2 {
+		t.Fatalf("gchat messages = %d, want 2", messageCount)
+	}
+	people, err := store.ListPeople()
+	mustNoError(t, err)
+	if len(people) != 0 {
+		t.Fatalf("people = %d, want 0 (incremental sync skips CreatePerson)", len(people))
+	}
+}
+
 func TestTransformReadsHotWALWithoutMutatingSourceFamily(t *testing.T) {
 	t.Parallel()
 
@@ -522,14 +556,15 @@ func assertFixtureReport(t *testing.T, report Report, sourceHash string) {
 			t.Errorf("source file evidence did not reconcile: %+v", file)
 		}
 	}
-	if report.Target.SchemaVersion != 10 || len(report.Target.MigrationChecksums) != 10 {
-		t.Fatalf("target schema = version %d with %d checksums, want version 10 with 10 checksums", report.Target.SchemaVersion, len(report.Target.MigrationChecksums))
+	if report.Target.SchemaVersion != 11 || len(report.Target.MigrationChecksums) != 11 {
+		t.Fatalf("target schema = version %d with %d checksums, want version 11 with 11 checksums", report.Target.SchemaVersion, len(report.Target.MigrationChecksums))
 	}
 	wantTargetCounts := map[string]int64{
 		"accounts": 5, "devices": 5, "people": 1, "person_identities": 2,
 		"conversations": 6, "inbox": 0, "messages": 14,
 		"message_attachments": 3, "outbox": 2, "outbox_attachments": 1,
 		"read_cursors": 6, "reactions": 1, "reaction_snapshot_fences": 0,
+		"message_extras": 1,
 	}
 	for table, want := range wantTargetCounts {
 		if got := report.Target.Counts[table]; got != want {
@@ -571,8 +606,7 @@ func assertFixtureReport(t *testing.T, report Report, sourceHash string) {
 		t.Errorf("read state report = %+v", report.ReadState)
 	}
 	wantDropped := DroppedDimensions{
-		TranscriptBearingMessages: 1,
-		ContactAvatars:            1, Drafts: 1, ContactMetaCRM: 1,
+		ContactAvatars: 1, Drafts: 1, ContactMetaCRM: 1,
 		OutgoingSendKeys: 1, Tabs: 1,
 	}
 	if !reflect.DeepEqual(report.Dropped, wantDropped) {
@@ -604,7 +638,7 @@ func assertFixtureReport(t *testing.T, report Report, sourceHash string) {
 		t.Errorf("validation report = %+v", report.Validation)
 	}
 	for _, required := range []string{
-		"legacy read state was lossy", "transcripts", "contact avatars",
+		"legacy read state was lossy", "contact avatars",
 		"drafts", "IMPORTANT: 1 contact_meta CRM", "outgoing_send_keys", "custom tabs",
 		"ambiguous in-flight scheduled sends",
 	} {

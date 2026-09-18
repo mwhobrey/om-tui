@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rs/zerolog"
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/importer"
+	"github.com/maxghenis/openmessage/internal/migration"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
 // RunImport handles the "openmessage import <source> [path]" command.
@@ -31,7 +35,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 			return fmt.Errorf("import gchat: %w", err)
 		}
 		printResult("Google Chat", result)
-		return nil
+		return maybeSyncImportIntoV2(a, "gchat")
 
 	case "gchat-conversation":
 		if len(args) < 1 {
@@ -50,7 +54,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 			return fmt.Errorf("import gchat conversation: %w", err)
 		}
 		printResult("Google Chat conversation", result)
-		return nil
+		return maybeSyncImportIntoV2(a, "gchat")
 
 	case "imessage":
 		dbPath := ""
@@ -67,7 +71,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 			return fmt.Errorf("import imessage: %w", err)
 		}
 		printResult("iMessage", result)
-		return nil
+		return maybeSyncImportIntoV2(a, "imessage")
 
 	case "whatsapp":
 		// Check if first arg looks like a file path (text export) or if no path given (native DB)
@@ -86,7 +90,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 				return fmt.Errorf("import whatsapp: %w", err)
 			}
 			printResult("WhatsApp (text export)", result)
-			return nil
+			return maybeSyncImportIntoV2(a, "whatsapp")
 		}
 		// Native DB mode (reads WhatsApp Desktop's ChatStorage.sqlite)
 		dbPath := flagValue(args, "--db")
@@ -104,7 +108,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 			return fmt.Errorf("import whatsapp native: %w", err)
 		}
 		printResult("WhatsApp (native)", result)
-		return nil
+		return maybeSyncImportIntoV2(a, "whatsapp")
 
 	case "signal":
 		supportDir := ""
@@ -129,7 +133,7 @@ func RunImport(logger zerolog.Logger, source string, args []string) error {
 			return fmt.Errorf("import signal desktop: %w", err)
 		}
 		printResult("Signal Desktop", result)
-		return nil
+		return maybeSyncImportIntoV2(a, "signal")
 
 	default:
 		return fmt.Errorf("unknown import source: %s\nSupported: gchat, gchat-conversation, imessage, whatsapp, signal", source)
@@ -147,6 +151,27 @@ func printResult(source string, result *importer.ImportResult) {
 			fmt.Printf("    - %s\n", e)
 		}
 	}
+}
+
+func maybeSyncImportIntoV2(a *app.App, platform string) error {
+	storePath := filepath.Join(a.DataDir, "v2", "store.sqlite3")
+	if _, err := os.Stat(storePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat v2 store: %w", err)
+	}
+	store, err := sqlite.Open(storePath)
+	if err != nil {
+		return fmt.Errorf("open v2 store for import sync: %w", err)
+	}
+	defer store.Close()
+	sourcePath := filepath.Join(a.DataDir, "messages.db")
+	if err := migration.SyncInto(context.Background(), sourcePath, store, platform); err != nil {
+		return fmt.Errorf("sync import into v2: %w", err)
+	}
+	fmt.Println("  Synced into v2 store")
+	return nil
 }
 
 // hasFlag checks if a boolean flag is present in args.

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
+	"github.com/maxghenis/openmessage/internal/v2keys"
 )
 
 const (
@@ -39,12 +41,18 @@ func AccountForConversation(legacy *db.Store, legacyConversationID string) (stri
 	if legacyConversationID == "" {
 		return "", errors.New("route conversation: conversation id is empty")
 	}
+	if extra := river.RiverIDFromScoped(legacyConversationID); extra != "" {
+		return extra, nil
+	}
 	if strings.HasPrefix(legacyConversationID, "whatsapp:") {
 		return whatsappAccountID, nil
 	}
 	if strings.HasPrefix(legacyConversationID, "signal:") ||
 		strings.HasPrefix(legacyConversationID, "signal-group:") {
 		return signalAccountID, nil
+	}
+	if teamID, _, ok := river.ParseSlackConversationID(legacyConversationID); ok {
+		return river.SlackRiverID(teamID), nil
 	}
 
 	conversation, err := legacy.GetConversation(legacyConversationID)
@@ -53,9 +61,28 @@ func AccountForConversation(legacy *db.Store, legacyConversationID string) (stri
 	}
 	switch conversation.SourcePlatform {
 	case "whatsapp":
+		if extra := extraAccountID(conversation); extra != "" {
+			return extra, nil
+		}
 		return whatsappAccountID, nil
 	case "signal":
+		if extra := extraAccountID(conversation); extra != "" {
+			return extra, nil
+		}
 		return signalAccountID, nil
+	case "slack":
+		if teamID, _, ok := river.ParseSlackConversationID(conversation.ConversationID); ok {
+			return river.SlackRiverID(teamID), nil
+		}
+		if strings.HasPrefix(conversation.RiverID, "slack-") {
+			return conversation.RiverID, nil
+		}
+		return "", fmt.Errorf(
+			"%w: conversation %q uses platform %q",
+			ErrPlatformNotSendable,
+			legacyConversationID,
+			conversation.SourcePlatform,
+		)
 	case "", "sms":
 		return googleAccountID, nil
 	default:
@@ -66,6 +93,19 @@ func AccountForConversation(legacy *db.Store, legacyConversationID string) (stri
 			conversation.SourcePlatform,
 		)
 	}
+}
+
+func extraAccountID(conversation *db.Conversation) string {
+	if conversation == nil {
+		return ""
+	}
+	if extra := river.RiverIDFromScoped(conversation.ConversationID); extra != "" {
+		return extra
+	}
+	if river.SafeLiveRiverID(conversation.RiverID) {
+		return strings.TrimSpace(conversation.RiverID)
+	}
+	return ""
 }
 
 // MirrorConversation idempotently creates the v2 account, local device, and
@@ -111,10 +151,21 @@ func MirrorConversation(
 	if conversation.IsGroup {
 		kind = sqlite.ConversationKindGroup
 	}
+	remoteID := legacyConversationID
+	if strings.HasPrefix(accountID, "slack-") {
+		remoteID = v2keys.NormalizeRemoteConversationID("slack", legacyConversationID)
+		existing, err := v2.GetConversationByRemote(accountID, remoteID)
+		if err == nil {
+			return accountID, existing.ConversationID, nil
+		}
+		if !errors.Is(err, sqlite.ErrNotFound) {
+			return "", "", fmt.Errorf("load slack conversation %q: %w", legacyConversationID, err)
+		}
+	}
 	if err := v2.UpsertConversation(sqlite.Conversation{
 		ConversationID:       legacyConversationID,
 		AccountID:            accountID,
-		RemoteConversationID: legacyConversationID,
+		RemoteConversationID: remoteID,
 		Kind:                 kind,
 		Title:                conversation.Name,
 		NotificationMode:     sqlite.NotificationModeAll,
@@ -127,7 +178,7 @@ func MirrorConversation(
 		return "", "", fmt.Errorf("mirror conversation %q: %w", legacyConversationID, err)
 	}
 
-	mirrored, err := v2.GetConversationByRemote(accountID, legacyConversationID)
+	mirrored, err := v2.GetConversationByRemote(accountID, remoteID)
 	if err != nil {
 		return "", "", fmt.Errorf("load mirrored conversation %q: %w", legacyConversationID, err)
 	}
@@ -276,17 +327,85 @@ func MirrorReadCursor(
 	return nil
 }
 
+// MarkV2ConversationRead advances the local-installation cursor for a v2
+// conversation without dispatching a transport read receipt.
+func MarkV2ConversationRead(
+	ctx context.Context,
+	v2 *sqlite.Store,
+	conversationID string,
+	atMS int64,
+) error {
+	if ctx == nil {
+		return errors.New("mark v2 conversation read: context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("mark v2 conversation read: %w", err)
+	}
+	if v2 == nil {
+		return errors.New("mark v2 conversation read: v2 store is nil")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return errors.New("mark v2 conversation read: conversation id is empty")
+	}
+	if atMS <= 0 {
+		atMS = time.Now().UnixMilli()
+	}
+	conversation, err := v2.GetConversation(conversationID)
+	if err != nil {
+		return fmt.Errorf("mark v2 conversation read %q: %w", conversationID, err)
+	}
+	device, err := v2.GetLocalInstallationDevice(ctx, conversation.AccountID)
+	if errors.Is(err, sqlite.ErrNotFound) {
+		if err := ensureLocalDevice(v2, conversation.AccountID, atMS); err != nil {
+			return err
+		}
+		device, err = v2.GetLocalInstallationDevice(ctx, conversation.AccountID)
+	}
+	if err != nil {
+		return fmt.Errorf("mark v2 conversation read %q: %w", conversationID, err)
+	}
+	repository, err := sqlite.NewMessageRepository(v2, time.Now)
+	if err != nil {
+		return fmt.Errorf("mark v2 conversation read %q: %w", conversationID, err)
+	}
+	latest, err := repository.ListMessagesByConversation(ctx, conversationID, 0, "", 1)
+	if err != nil {
+		return fmt.Errorf("mark v2 conversation read %q: %w", conversationID, err)
+	}
+	var lastReadID *string
+	lastReadAt := atMS
+	if len(latest) > 0 {
+		id := latest[0].MessageID
+		lastReadID = &id
+		if latest[0].OccurredAtMS > lastReadAt {
+			lastReadAt = latest[0].OccurredAtMS
+		}
+	}
+	if err := v2.UpsertReadCursor(sqlite.ReadCursor{
+		AccountID:         conversation.AccountID,
+		DeviceID:          device.DeviceID,
+		ConversationID:    conversationID,
+		LastReadMessageID: lastReadID,
+		LastReadAtMS:      lastReadAt,
+		UpdatedAtMS:       atMS,
+	}); err != nil {
+		return fmt.Errorf("mark v2 conversation read %q: %w", conversationID, err)
+	}
+	return nil
+}
+
 func replyRemoteID(accountID string, target *db.Message) (string, error) {
-	switch accountID {
-	case googleAccountID:
+	switch {
+	case accountID == googleAccountID:
 		if remoteID := strings.TrimSpace(target.MessageID); remoteID != "" {
 			return remoteID, nil
 		}
-	case whatsappAccountID:
+	case strings.HasPrefix(accountID, "whatsapp-"):
 		if remoteID := strings.TrimSpace(target.SourceID); remoteID != "" {
 			return remoteID, nil
 		}
-	case signalAccountID:
+	case strings.HasPrefix(accountID, "signal-"):
 		legacyID := strings.TrimSpace(target.MessageID)
 		if strings.HasPrefix(legacyID, "signal:local:") {
 			break
@@ -302,6 +421,10 @@ func replyRemoteID(accountID string, target *db.Message) (string, error) {
 				return legacyID, nil
 			}
 		}
+	case strings.HasPrefix(accountID, "slack-"):
+		if ts := slackReplyRemoteID(target); ts != "" {
+			return ts, nil
+		}
 	}
 	return "", fmt.Errorf(
 		"%w: legacy message %q has no stable remote id",
@@ -310,12 +433,30 @@ func replyRemoteID(accountID string, target *db.Message) (string, error) {
 	)
 }
 
+func slackReplyRemoteID(target *db.Message) string {
+	parts := strings.Split(strings.TrimSpace(target.MessageID), ":")
+	if len(parts) == 3 && parts[0] == "slack" && parts[2] != "" {
+		return parts[2]
+	}
+	source := strings.TrimSpace(target.SourceID)
+	if _, ts, ok := strings.Cut(source, ":"); ok && ts != "" {
+		return ts
+	}
+	return source
+}
+
 func accountBridgeKey(accountID string) string {
-	switch accountID {
-	case whatsappAccountID:
+	switch {
+	case accountID == whatsappAccountID:
 		return "whatsapp"
-	case signalAccountID:
+	case accountID == signalAccountID:
 		return "signal"
+	case strings.HasPrefix(accountID, "whatsapp-"):
+		return "whatsmeow"
+	case strings.HasPrefix(accountID, "signal-"):
+		return "signal_cli"
+	case strings.HasPrefix(accountID, "slack-"):
+		return "slack_web"
 	default:
 		return "google"
 	}

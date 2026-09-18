@@ -26,7 +26,14 @@ func DeriveID(entity, accountID, naturalKey string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
+// MessageID is the v2 primary key for a stored message. Ingest, migrate, and
+// PRIMARY DTO mapping must share this natural key.
+func MessageID(accountID, remoteConversationID, remoteMessageID string) string {
+	return DeriveID("message", accountID, remoteConversationID+"\x1f"+remoteMessageID)
+}
+
 var signalACI = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var slackUserID = regexp.MustCompile(`^[UBW][A-Z0-9]+$`)
 
 // IdentityKey classifies and canonicalizes a platform identity.
 func IdentityKey(accountID, platform, raw string) (Identity, error) {
@@ -55,6 +62,9 @@ func IdentityKey(accountID, platform, raw string) (Identity, error) {
 	case strings.Contains(value, "@") && platform == "whatsapp":
 		kind = "jid"
 		canonical = strings.ToLower(value)
+	case platform == "slack" && slackUserID.MatchString(value):
+		kind = "slack_user"
+		canonical = value
 	case strings.Contains(value, "@"):
 		kind = "email"
 		canonical = strings.ToLower(value)
@@ -68,6 +78,13 @@ func IdentityKey(accountID, platform, raw string) (Identity, error) {
 // while removing whitespace around Signal address payloads.
 func NormalizeRemoteConversationID(platform, legacyID string) string {
 	value := strings.TrimSpace(legacyID)
+	if platform == "slack" {
+		parts := strings.Split(value, ":")
+		if len(parts) == 3 && parts[0] == "slack" && parts[1] != "" && parts[2] != "" {
+			return parts[2]
+		}
+		return value
+	}
 	if platform != "signal" {
 		return value
 	}

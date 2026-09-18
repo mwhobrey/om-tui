@@ -74,6 +74,9 @@ func (a *App) StartSlackRiver(ctx context.Context, riverID string) (*slacklive.C
 	if err != nil {
 		return nil, err
 	}
+	if a.OnSlackClientReady != nil {
+		a.OnSlackClientReady(riverID, client)
+	}
 	client.SetOnChange(func(conversationID string) {
 		a.emitMessagesChange(conversationID)
 		a.emitConversationsChange()
