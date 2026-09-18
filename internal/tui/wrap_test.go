@@ -40,6 +40,13 @@ func TestWrapTextNewline(t *testing.T) {
 	}
 }
 
+func TestWrapTextBlockKitLayout(t *testing.T) {
+	got := wrapText("PR opened\n────────\n│ quoted", 40)
+	if len(got) != 3 || got[0] != "PR opened" || got[1] != "────────" || got[2] != "│ quoted" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestWrapTextEmpty(t *testing.T) {
 	got := wrapText("", 10)
 	if len(got) != 1 || got[0] != "" {

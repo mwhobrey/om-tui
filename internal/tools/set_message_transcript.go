@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
 func setMessageTranscriptTool() mcp.Tool {
@@ -34,7 +36,8 @@ func setMessageTranscriptTool() mcp.Tool {
 	)
 }
 
-func setMessageTranscriptHandler(a *app.App) server.ToolHandlerFunc {
+func setMessageTranscriptHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		messageID := strArg(args, "message_id")
@@ -60,12 +63,32 @@ func setMessageTranscriptHandler(a *app.App) server.ToolHandlerFunc {
 		if err := db.ValidateMessageTranscript(transcript, model); err != nil {
 			return errorResult(fmt.Sprintf("set_message_transcript: %v", err)), nil
 		}
-		if err := a.Store.SetMessageTranscript(messageID, transcript, model); err != nil {
-			return errorResult(fmt.Sprintf("set_message_transcript: %v", err)), nil
-		}
-		msg, err := a.Store.GetMessageByID(messageID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("set_message_transcript: reload message: %v", err)), nil
+		var msg *db.Message
+		if options.V2Primary {
+			store := v2WriteStore(options)
+			if store == nil {
+				return errorResult("set_message_transcript: v2 store is unavailable"), nil
+			}
+			if err := store.SetMessageTranscript(ctx, messageID, transcript, model); err != nil {
+				if errors.Is(err, sqlite.ErrNotFound) {
+					return errorResult("set_message_transcript: message not found"), nil
+				}
+				return errorResult(fmt.Sprintf("set_message_transcript: %v", err)), nil
+			}
+			reloaded, err := options.Reads.GetMessageByID(messageID)
+			if err != nil {
+				return errorResult(fmt.Sprintf("set_message_transcript: reload message: %v", err)), nil
+			}
+			msg = reloaded
+		} else {
+			if err := a.Store.SetMessageTranscript(messageID, transcript, model); err != nil {
+				return errorResult(fmt.Sprintf("set_message_transcript: %v", err)), nil
+			}
+			reloaded, err := a.Store.GetMessageByID(messageID)
+			if err != nil {
+				return errorResult(fmt.Sprintf("set_message_transcript: reload message: %v", err)), nil
+			}
+			msg = reloaded
 		}
 		if msg != nil && a.OnMessagesChange != nil {
 			a.OnMessagesChange(msg.ConversationID)

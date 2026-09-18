@@ -15,6 +15,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/bridge"
 	googleadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/google"
 	signaladapter "github.com/maxghenis/openmessage/internal/bridgeadapters/signal"
+	slackadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/slack"
 	whatsappadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/whatsapp"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/ingest"
@@ -98,11 +99,16 @@ func TestV2PrimaryEnabled(t *testing.T) {
 	tests := []struct {
 		name  string
 		value string
+		unset bool
 		want  bool
 	}{
-		{name: "empty", value: "", want: false},
+		{name: "unset defaults on", unset: true, want: true},
+		{name: "empty", value: "", want: true},
 		{name: "zero", value: "0", want: false},
-		{name: "unknown", value: "enabled", want: false},
+		{name: "false", value: "false", want: false},
+		{name: "no", value: "no", want: false},
+		{name: "off", value: "off", want: false},
+		{name: "unknown stays default on", value: "enabled", want: true},
 		{name: "one", value: "1", want: true},
 		{name: "true", value: "true", want: true},
 		{name: "yes", value: "yes", want: true},
@@ -113,6 +119,11 @@ func TestV2PrimaryEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("OPENMESSAGES_V2_PRIMARY", tt.value)
+			if tt.unset {
+				if err := os.Unsetenv("OPENMESSAGES_V2_PRIMARY"); err != nil {
+					t.Fatalf("unset OPENMESSAGES_V2_PRIMARY: %v", err)
+				}
+			}
 			if got := v2PrimaryEnabled(); got != tt.want {
 				t.Fatalf("v2PrimaryEnabled() = %t, want %t for %q", got, tt.want, tt.value)
 			}
@@ -128,22 +139,31 @@ func TestResolveV2RuntimeMode(t *testing.T) {
 		send          string
 		ingest        string
 		createStore   bool
+		legacyInbox   bool
 		want          v2RuntimeMode
 		errorContains string
 	}{
 		{
-			name: "legacy primary defaults unchanged",
+			name:    "legacy primary defaults unchanged",
+			primary: "0",
+			want:    v2RuntimeMode{},
+		},
+		{
+			name:    "legacy primary preserves independent send",
+			primary: "0",
+			send:    "1",
+			want:    v2RuntimeMode{Send: true},
+		},
+		{
+			name:    "legacy primary preserves independent ingest",
+			primary: "0",
+			ingest:  "1",
+			want:    v2RuntimeMode{Ingest: true},
+		},
+		{
+			name: "demo ignores default primary",
+			demo: true,
 			want: v2RuntimeMode{},
-		},
-		{
-			name: "legacy primary preserves independent send",
-			send: "1",
-			want: v2RuntimeMode{Send: true},
-		},
-		{
-			name:   "legacy primary preserves independent ingest",
-			ingest: "1",
-			want:   v2RuntimeMode{Ingest: true},
 		},
 		{
 			name:          "primary rejects demo",
@@ -164,9 +184,19 @@ func TestResolveV2RuntimeMode(t *testing.T) {
 			errorContains: "OPENMESSAGES_V2_PRIMARY requires v2 send and ingest; unset OPENMESSAGES_V2_SEND=0/OPENMESSAGES_V2_INGEST=0",
 		},
 		{
-			name:          "primary refuses an absent migrated store",
+			name:          "primary refuses an absent migrated store when legacy history exists",
 			primary:       "1",
+			legacyInbox:   true,
 			errorContains: "v2-primary selected but no migrated store at ",
+		},
+		{
+			name: "default primary bootstraps a fresh empty data dir",
+			want: v2RuntimeMode{Primary: true, Send: true, Ingest: true},
+		},
+		{
+			name:    "primary bootstraps a fresh empty data dir",
+			primary: "1",
+			want:    v2RuntimeMode{Primary: true, Send: true, Ingest: true},
 		},
 		{
 			name:        "primary implies send and ingest",
@@ -182,6 +212,11 @@ func TestResolveV2RuntimeMode(t *testing.T) {
 			t.Setenv("OPENMESSAGES_V2_PRIMARY", tt.primary)
 			t.Setenv("OPENMESSAGES_V2_SEND", tt.send)
 			t.Setenv("OPENMESSAGES_V2_INGEST", tt.ingest)
+			if tt.legacyInbox {
+				if err := os.WriteFile(filepath.Join(dataDir, "messages.db"), []byte("legacy-inbox"), 0o600); err != nil {
+					t.Fatalf("seed legacy inbox: %v", err)
+				}
+			}
 			if tt.createStore {
 				v2Dir := filepath.Join(dataDir, "v2")
 				if err := os.MkdirAll(v2Dir, 0o700); err != nil {
@@ -219,6 +254,28 @@ func TestResolveV2RuntimeMode(t *testing.T) {
 				t.Fatalf("resolveV2RuntimeMode() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveV2RuntimeModeRejectsShadowStubWhenLegacyInboxExists(t *testing.T) {
+	dataDir := t.TempDir()
+	v2Dir := filepath.Join(dataDir, "v2")
+	if err := os.MkdirAll(v2Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v2Dir, "store.sqlite3"), make([]byte, v2StubStoreBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "messages.db"), []byte("legacy-inbox"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENMESSAGES_V2_PRIMARY", "1")
+	t.Setenv("OPENMESSAGES_V2_SEND", "")
+	t.Setenv("OPENMESSAGES_V2_INGEST", "")
+
+	_, err := resolveV2RuntimeMode(false, dataDir)
+	if err == nil || !strings.Contains(err.Error(), "run: openmessage migrate") {
+		t.Fatalf("resolveV2RuntimeMode() error = %v, want migrate", err)
 	}
 }
 
@@ -422,6 +479,32 @@ func TestNewV2StackRegistersConcreteLifecycleAdapters(t *testing.T) {
 			account.Mode != sqlite.AccountModeLive || !account.Enabled || account.ConfigJSON != "{}" {
 			t.Errorf("bootstrapped account %q = %+v", want.accountID, account)
 		}
+	}
+}
+
+func TestV2StackRegisterSlackAdapter(t *testing.T) {
+	stack, err := newV2Stack(v2StackDeps{
+		Logger:  zerolog.Nop(),
+		DataDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("newV2Stack(): %v", err)
+	}
+	defer stack.Store.Close()
+
+	const riverID = "slack-T1"
+	if err := stack.RegisterAdapter(slackadapter.New(riverID, nil)); err != nil {
+		t.Fatalf("RegisterAdapter(slack): %v", err)
+	}
+	account, err := stack.Store.GetAccount(riverID)
+	if err != nil {
+		t.Fatalf("GetAccount(): %v", err)
+	}
+	if account.BridgeKey != "slack_web" || account.DisplayName != "Slack" || account.Mode != sqlite.AccountModeLive {
+		t.Fatalf("slack account = %+v", account)
+	}
+	if err := stack.RegisterAdapter(slackadapter.New(riverID, nil)); err == nil {
+		t.Fatal("expected duplicate Slack river registration to fail")
 	}
 }
 

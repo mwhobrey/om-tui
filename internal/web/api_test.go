@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,8 +21,11 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
 	"github.com/maxghenis/openmessage/internal/app"
+	"github.com/maxghenis/openmessage/internal/bridge"
 	"github.com/maxghenis/openmessage/internal/client"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/messaging"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -1370,6 +1374,132 @@ func TestReactUsesWhatsAppBridgeForWhatsAppConversation(t *testing.T) {
 	if gotConversationID != "whatsapp:15551234567@s.whatsapp.net" || gotMessageID != "whatsapp:target-msg" || gotEmoji != "😂" || gotAction != "add" {
 		t.Fatalf("unexpected callback args: conv=%q msg=%q emoji=%q action=%q", gotConversationID, gotMessageID, gotEmoji, gotAction)
 	}
+}
+
+func TestReactSlackWithoutPrimaryIsNotImplemented(t *testing.T) {
+	ts := newTestServer(t)
+	if err := ts.store.UpsertConversation(&db.Conversation{
+		ConversationID: "slack:T1:C1",
+		Name:           "#general",
+		SourcePlatform: "slack",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"conversation_id":"slack:T1:C1","message_id":"slack:C1:1.0","emoji":"👍","action":"add"}`
+	resp, err := http.Post(ts.server.URL+"/api/react", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("got status %d, want 501: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestReactV2PrimaryEnqueuesNativeOutbox(t *testing.T) {
+	v2Store, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2Store.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "slack-T1",
+		BridgeKey:   "slack_web",
+		DisplayName: "Acme",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "hashed-slack-conv",
+		AccountID:            "slack-T1",
+		RemoteConversationID: "C99",
+		Kind:                 sqlite.ConversationKindGroup,
+		Title:                "#general",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := sqlite.NewMessageRepository(v2Store, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AppendInbox(context.Background(), sqlite.InboxRecord{
+		InboxID: "inbox-target", AccountID: "slack-T1", Generation: 1,
+		DedupeKey: "inbox-target", Codec: "test", CodecVersion: 1, Payload: []byte("test"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ProjectMessage(context.Background(), sqlite.MessageProjection{
+		InboxID: "inbox-target",
+		Message: sqlite.Message{
+			MessageID:       "hashed-slack-msg",
+			ConversationID:  "hashed-slack-conv",
+			AccountID:       "slack-T1",
+			RemoteMessageID: "1700000001.000001",
+			Direction:       sqlite.MessageDirectionIncoming,
+			Body:            "hello",
+			State:           sqlite.MessageStateActive,
+			OccurredAtMS:    nowMS,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := reactTestRegistry{caps: map[string]bridge.CapabilitySet{
+		"slack-T1": {Reactions: true},
+	}}
+	service, err := messaging.NewMessageService(v2Store, registry, nil, messaging.SystemClock{}, messaging.CryptoIDSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestServerWithOptions(t, APIOptions{
+		V2Primary: true,
+		V2: &V2Options{
+			Service:  service,
+			V2Store:  v2Store,
+			Registry: registry,
+		},
+	})
+	body := `{"conversation_id":"hashed-slack-conv","message_id":"hashed-slack-msg","emoji":"👍","action":"add"}`
+	resp, err := http.Post(ts.server.URL+"/api/react", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("got status %d, want 200: %s", resp.StatusCode, raw)
+	}
+	pending, err := service.ListPending(context.Background(), messaging.ListPendingQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].State != messaging.OutboxQueued {
+		t.Fatalf("pending = %+v, want one queued reaction", pending)
+	}
+}
+
+type reactTestRegistry struct {
+	caps map[string]bridge.CapabilitySet
+}
+
+func (r reactTestRegistry) Snapshot(string) (bridge.Snapshot, bool) { return bridge.Snapshot{}, false }
+
+func (r reactTestRegistry) Acquire(context.Context, string, bridge.Capability) (*bridge.DispatchLease, error) {
+	return nil, bridge.ErrCapabilityUnavailable
+}
+
+func (r reactTestRegistry) Capabilities(accountID string) bridge.CapabilitySet {
+	return r.caps[accountID]
 }
 
 func TestSendMediaUsesWhatsAppSender(t *testing.T) {

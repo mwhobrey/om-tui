@@ -74,12 +74,15 @@ func TestOpenInitializesBlankDatabase(t *testing.T) {
 	wantTables := []string{
 		"accounts",
 		"attachments",
+		"contact_meta",
 		"conversation_participants",
 		"conversations",
 		"devices",
+		"drafts",
 		"identities",
 		"inbox",
 		"message_attachments",
+		"message_extras",
 		"messages",
 		"outbox",
 		"outbox_attachments",
@@ -92,6 +95,7 @@ func TestOpenInitializesBlankDatabase(t *testing.T) {
 		"read_cursors",
 		"schema_migrations",
 		"store_metadata",
+		"tabs",
 	}
 	if !slices.Equal(tables, wantTables) {
 		t.Fatalf("user tables = %v, want %v", tables, wantTables)
@@ -439,5 +443,16 @@ func assertPragmaInt(t *testing.T, db *sql.DB, pragma string, want int) {
 	}
 	if got != want {
 		t.Errorf("%s pragma = %d, want %d", pragma, got, want)
+	}
+}
+
+func TestNewMigrationChecksumIgnoresCRLF(t *testing.T) {
+	lf := newMigration(1, "x", "CREATE TABLE t (id INTEGER);\n", nil)
+	crlf := newMigration(1, "x", "CREATE TABLE t (id INTEGER);\r\n", nil)
+	if lf.checksumSHA256 != crlf.checksumSHA256 {
+		t.Fatalf("lf checksum %q != crlf checksum %q", lf.checksumSHA256, crlf.checksumSHA256)
+	}
+	if strings.Contains(crlf.upSQL, "\r") {
+		t.Fatalf("normalized SQL still contains CR: %q", crlf.upSQL)
 	}
 }

@@ -39,7 +39,8 @@ func RunPairSlack(logger zerolog.Logger, args ...string) error {
 		case "-h", "--help":
 			fmt.Println(`Usage: openmessage pair slack [--token xoxp-...] [--app-token xapp-...] [--name "Workspace"]
 
-Paste a Slack user token with scopes for channels/groups/im history and chat:write.
+Paste a Slack user token with scopes for channels/groups/im history, chat:write,
+reactions:write, files:read, and files:write.
 An optional app-level token enables Socket Mode; polling remains the fallback.
 Credentials are stored encrypted in the river vault (DPAPI on Windows).`)
 			return nil

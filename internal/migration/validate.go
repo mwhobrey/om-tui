@@ -20,10 +20,12 @@ var targetCountTables = []string{
 	"accounts", "devices", "identities", "people", "person_identities",
 	"conversations", "conversation_participants", "inbox", "messages",
 	"message_attachments", "outbox", "outbox_attachments", "reactions", "reaction_snapshot_fences",
-	"read_cursors",
+	"read_cursors", "message_extras",
 }
 
 const migration0010Checksum = "dfab4551335d92045cb895e5b2c781f4f57216bbc428a705fc26bbdd474db0b1"
+const migration0011Checksum = "4618fb5df370d62491bf709f4b79442e07cab7e345d4a08e7b606fbdc875e721"
+const migration0012Checksum = "8d0e550c9797b8c201b2fdcc1f9fe5a789899c9c8ecc270c91376c12ee526205"
 
 func checkpointAndSyncSQLite(ctx context.Context, path string) error {
 	database, err := sql.Open("sqlite", path)
@@ -56,7 +58,9 @@ func checkpointAndSyncSQLite(ctx context.Context, path string) error {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
-	file, err := os.Open(path)
+	// Windows FlushFileBuffers requires GENERIC_WRITE; os.Open is read-only
+	// and returns "Access is denied" on Sync.
+	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -151,8 +155,10 @@ func validateTarget(
 	countsMatched := countsMatch(dataset, state, report, actualHistory, actualScheduled, actualHistoryByPlatform)
 	report.Validation.CountsMatched = countsMatched
 	report.Validation.Passed = quick == "ok" &&
-		report.Target.SchemaVersion == 10 && len(report.Target.MigrationChecksums) == 10 &&
+		report.Target.SchemaVersion == 12 && len(report.Target.MigrationChecksums) == 12 &&
 		report.Target.MigrationChecksums[9] == migration0010Checksum &&
+		report.Target.MigrationChecksums[10] == migration0011Checksum &&
+		report.Target.MigrationChecksums[11] == migration0012Checksum &&
 		len(fkViolations) == 0 && orphanTotal(orphans) == 0 &&
 		countsMatched && report.Validation.SampledHashesMatched &&
 		report.Validation.BlobReferencesValid && report.Validation.SourceUnchanged &&
@@ -186,6 +192,7 @@ func fillTableReconciliations(
 	add("conversations", int64(len(dataset.conversations)), report.Target.Counts["conversations"], report.Target.Counts["conversations"], "migrated")
 	add("conversation_participants", state.expectedParticipants, report.Target.Counts["conversation_participants"], report.Target.Counts["conversation_participants"], "derived")
 	add("messages", int64(len(dataset.messages)), actualHistory, actualHistory, "migrated_history")
+	add("message_extras", dataset.transcriptRows, report.Target.Counts["message_extras"], report.Target.Counts["message_extras"], "migrated_transcripts")
 	add("message_attachments", dataset.mediaRows, report.Target.Counts["message_attachments"], report.Target.Counts["message_attachments"], "pending_remote_ref")
 	add("contacts", int64(len(dataset.contacts)), int64(len(state.contactIdentityKeys)), state.contactRowsMapped, "address_book_identities")
 	add("unified_contacts", int64(len(dataset.unified)), report.Target.Counts["people"], report.Target.Counts["people"], "people")
@@ -198,7 +205,6 @@ func fillTableReconciliations(
 		name  string
 		count int64
 	}{
-		{"transcripts", dataset.dropped.TranscriptBearingMessages},
 		{"contact_avatars", dataset.dropped.ContactAvatars},
 		{"drafts", dataset.dropped.Drafts},
 		{"contact_meta", dataset.dropped.ContactMetaCRM},
@@ -235,7 +241,7 @@ func fillPlatformReconciliations(
 	}
 	for platform := range platforms {
 		legacy := dataset.platformMessages[platform]
-		account := state.accounts[platform]
+		account := accountSpecForPlatform(state.accounts, platform)
 		report.PlatformCounts[platform] = PlatformReconciliation{
 			AccountID: account.AccountID, Legacy: legacy, V2: actual[platform],
 			ReconciliationRatio: reconciliationRatio(actual[platform], legacy),
@@ -278,14 +284,23 @@ func fillIdentityReport(ctx context.Context, database *sql.DB, report *Report) e
 	`).Scan(&report.Identities.UnunifiedIdentities)
 }
 
+func accountSpecForPlatform(accounts map[string]accountSpec, platform string) accountSpec {
+	for _, account := range accounts {
+		if account.Platform == platform {
+			return account
+		}
+	}
+	return accountSpec{}
+}
+
 func classifyTargetMessages(
 	ctx context.Context,
 	database *sql.DB,
 	state *transformState,
 ) (map[string]int64, int64, int64, error) {
 	accountPlatforms := map[string]string{}
-	for platform, account := range state.accounts {
-		accountPlatforms[account.AccountID] = platform
+	for _, account := range state.accounts {
+		accountPlatforms[account.AccountID] = account.Platform
 	}
 	actualByPlatform := map[string]int64{}
 	var actualHistory, actualScheduled int64
@@ -337,6 +352,7 @@ func countsMatch(
 		report.Target.Counts["outbox_attachments"] != state.expectedPendingMedia ||
 		report.Target.Counts["read_cursors"] != state.expectedCursors ||
 		report.Target.Counts["reactions"] != report.Reactions.RowsSeeded ||
+		report.Target.Counts["message_extras"] != dataset.transcriptRows ||
 		report.Reactions.MessagesWithReactions != report.Reactions.MessagesSeeded+
 			report.Dropped.MalformedReactions+
 			report.Dropped.UnmappableReactions+report.Dropped.ReactionMessagesDroppedWithParent ||

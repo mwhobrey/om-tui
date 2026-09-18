@@ -520,6 +520,61 @@ func (r *MessageRepository) SearchMessages(
 	return messages, nil
 }
 
+// ListMessagesByConversations returns a newest-limited page across the given
+// conversations, then reorders that page oldest-first. Used by person-history
+// MCP tools. Empty conversationIDs returns nil.
+func (r *MessageRepository) ListMessagesByConversations(
+	ctx context.Context,
+	conversationIDs []string,
+	sinceMS, untilMS int64,
+	limit int,
+) ([]Message, error) {
+	if len(conversationIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		return []Message{}, nil
+	}
+	if sinceMS > 0 && untilMS > 0 && untilMS < sinceMS {
+		sinceMS, untilMS = untilMS, sinceMS
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(conversationIDs)), ",")
+	args := make([]any, 0, len(conversationIDs)+3)
+	for _, id := range conversationIDs {
+		args = append(args, id)
+	}
+	conditions := "conversation_id IN (" + placeholders + ")"
+	if sinceMS > 0 {
+		conditions += " AND occurred_at_ms >= ?"
+		args = append(args, sinceMS)
+	}
+	if untilMS > 0 {
+		conditions += " AND occurred_at_ms <= ?"
+		args = append(args, untilMS)
+	}
+	args = append(args, limit)
+	query := `
+		SELECT ` + messageColumns + `
+		FROM (
+			SELECT ` + messageColumns + `
+			FROM messages
+			WHERE ` + conditions + `
+			ORDER BY occurred_at_ms DESC, message_id DESC
+			LIMIT ?
+		)
+		ORDER BY occurred_at_ms ASC, message_id ASC
+	`
+	rows, err := r.store.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by conversations: %w", err)
+	}
+	messages, err := collectRows(rows, scanMessage)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by conversations: %w", err)
+	}
+	return messages, nil
+}
+
 // ImportMessage atomically upserts a historical normalized message by remote
 // ID and records its attachments without requiring or modifying an inbox row.
 func (r *MessageRepository) ImportMessage(

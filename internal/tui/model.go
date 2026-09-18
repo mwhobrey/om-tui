@@ -142,6 +142,7 @@ type Model struct {
 	threadRootID        string            // non-empty while a dedicated Slack thread is open
 	channelMessages     []localapi.Message
 	reactPalette        bool   // thread-focus emoji picker open
+	blockPalette        bool   // Slack Block Kit action picker open
 	convRefreshGen      uint64 // debounce token for conversation list reloads
 	pendingConvs        []localapi.Conversation
 	pendingConvsSet     bool // hold list Apply while jump-filter is open
@@ -617,12 +618,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "a", "ctrl+a":
 			if m.activeID != "" {
-				if !m.canSend() {
-					m.err = m.sendBlockedReason()
-					return m, nil
-				}
-				m.info = "Attach file…"
-				return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+				return m.beginAttach(false)
 			}
 		case "ctrl+t":
 			return m.openSelectedSlackThread()
@@ -630,12 +626,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.openReactPalette()
 		case "ctrl+v":
 			if m.activeID != "" {
-				if !m.canSend() {
-					m.err = m.sendBlockedReason()
-					return m, nil
-				}
-				m.info = "Checking clipboard…"
-				return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+				return m.beginAttach(true)
 			}
 		case "tab":
 			return m, m.cycleFocus(1)
@@ -719,6 +710,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.focus = focusList
 			m.reactPalette = false
+			m.blockPalette = false
 			m.compose.Blur()
 			m.err = ""
 			m.info = ""
@@ -741,10 +733,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.blockPalette {
+		switch key {
+		case "esc":
+			m.blockPalette = false
+			m.info = ""
+			return m, nil
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			idx := int(key[0] - '1')
+			target, ok := selectedMessage(m.messages, m.selectedMsg)
+			if !ok {
+				m.blockPalette = false
+				m.err = "no message selected"
+				return m, nil
+			}
+			actions := selectedBlockActions(target)
+			if idx < 0 || idx >= len(actions) {
+				return m, nil
+			}
+			return m.activateBlockAction(actions[idx])
+		}
+		return m, nil
+	}
 	if m.reactPalette {
 		switch key {
 		case "esc":
 			m.reactPalette = false
+			m.blockPalette = false
 			m.info = ""
 			return m, nil
 		case "ctrl+c", "q":
@@ -758,6 +775,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !ok || strings.TrimSpace(target.MessageID) == "" || m.activeID == "" {
 				m.err = "no message selected"
 				m.reactPalette = false
+				m.blockPalette = false
 				return m, nil
 			}
 			if !m.canSend() {
@@ -767,6 +785,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			emoji := reactPaletteEmojis[idx]
 			action := reactionAction(target.Reactions, emoji)
 			m.reactPalette = false
+			m.blockPalette = false
 			m.info = "Sending reaction…"
 			return m, m.reactCmd(m.activeID, target.MessageID, emoji, action)
 		}
@@ -821,6 +840,8 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+e", "e":
 		// Ctrl+E works from compose too; bare e is only reachable in thread focus.
 		return m.openReactPalette()
+	case "b", "ctrl+b":
+		return m.openBlockPalette()
 	case "o", "ctrl+o":
 		if m.activeID != "" {
 			m.info = "Opening media…"
@@ -833,21 +854,11 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a", "ctrl+a":
 		if m.activeID != "" {
-			if !m.canSend() {
-				m.err = m.sendBlockedReason()
-				return m, nil
-			}
-			m.info = "Attach file…"
-			return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+			return m.beginAttach(false)
 		}
 	case "ctrl+v":
 		if m.activeID != "" {
-			if !m.canSend() {
-				m.err = m.sendBlockedReason()
-				return m, nil
-			}
-			m.info = "Checking clipboard…"
-			return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+			return m.beginAttach(true)
 		}
 	case "r", "ctrl+r":
 		m.info = "Reconnecting…"
@@ -904,14 +915,11 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeID == "" {
 			return m, nil
 		}
-		if !m.canSend() {
-			m.err = m.sendBlockedReason()
-			return m, nil
-		}
-		m.info = "Attach file…"
-		return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+		return m.beginAttach(false)
 	case "ctrl+t":
 		return m.openSelectedSlackThread()
+	case "ctrl+b":
+		return m.openBlockPalette()
 	case "ctrl+e":
 		return m.openReactPalette()
 	case "ctrl+f":
@@ -932,12 +940,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeID == "" {
 			break
 		}
-		if !m.canSend() {
-			m.err = m.sendBlockedReason()
-			return m, nil
-		}
-		m.info = "Checking clipboard…"
-		return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+		return m.beginAttach(true)
 	case "enter":
 		if m.sending {
 			return m, nil
@@ -1023,6 +1026,7 @@ func (m Model) startJumpFilter() (tea.Model, tea.Cmd) {
 	m.compose.Blur()
 	m.query.Blur()
 	m.reactPalette = false
+	m.blockPalette = false
 	m.err = ""
 	m.info = "Type to jump — Enter opens, Esc clears"
 	m.list.startFilter()
@@ -1119,6 +1123,7 @@ func (m *Model) cycleFocus(dir int) tea.Cmd {
 	idx = (idx + dir + len(order)) % len(order)
 	m.focus = order[idx]
 	m.reactPalette = false
+	m.blockPalette = false
 	m.compose.Blur()
 	if m.focus == focusCompose {
 		return m.compose.Focus()
@@ -1183,6 +1188,7 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	m.channelMessages = nil
 	m.selectedMsg = -1
 	m.reactPalette = false
+	m.blockPalette = false
 	m.focus = focusCompose
 	m.compose.SetValue(m.drafts[id])
 	if m.viewportWidth > 0 {
@@ -1488,6 +1494,30 @@ func (m Model) canSend() bool {
 	}
 }
 
+func (m Model) slackFileSendBlocked() bool {
+	return m.activeRiverProvider() == "slack" && !m.status.V2Primary
+}
+
+func (m Model) beginAttach(clipboard bool) (Model, tea.Cmd) {
+	if m.activeID == "" {
+		return m, nil
+	}
+	if !m.canSend() {
+		m.err = m.sendBlockedReason()
+		return m, nil
+	}
+	if m.slackFileSendBlocked() {
+		m.err = "Slack file send requires V2 primary"
+		return m, nil
+	}
+	if clipboard {
+		m.info = "Checking clipboard…"
+		return m, m.attachClipboardCmd(m.activeID, captionForAttach(m.compose.Value()))
+	}
+	m.info = "Attach file…"
+	return m, m.attachPickerCmd(m.activeID, captionForAttach(m.compose.Value()))
+}
+
 func (m Model) sendBlockedReason() string {
 	switch m.activeRiverProvider() {
 	case river.ProviderWhatsApp:
@@ -1673,6 +1703,7 @@ func (m Model) openReactPalette() (tea.Model, tea.Cmd) {
 	}
 	m.focus = focusThread
 	m.compose.Blur()
+	m.blockPalette = false
 	m.reactPalette = true
 	m.err = ""
 	m.info = "React: " + reactPaletteHelp()
@@ -1799,7 +1830,7 @@ func (m Model) sendCmd(conversationID, body, replyToID string) tea.Cmd {
 		if err != nil {
 			return sendFailedMsg{conversationID: conversationID, body: body, err: err}
 		}
-		if (status.V2Send || status.V2Primary) && !slackRiver {
+		if status.V2Primary || (status.V2Send && !slackRiver) {
 			if _, err := m.session.Client.SubmitText(ctx, localapi.TextSubmission{
 				ConversationID: conversationID,
 				Body:           body,

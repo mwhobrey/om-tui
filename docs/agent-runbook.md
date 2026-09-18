@@ -60,8 +60,11 @@ device login and kills the session — a fresh pairing at 20:40:41 was dead with
 `401: logged out from another device` by 20:41:07, seconds after two Claude
 MCP processes spawned. Concurrent signal-cli pollers likewise corrupt/deauth
 Signal (the 2026-07-13 WhatsApp logout and Signal's `needs_reauth` death were
-this same fratricide). `instance.lock` never protected against this — only
-`backup` and `migrate` honor it.
+this same fratricide). `instance.lock` does not replace client-mode: MCP-stdio
+clients skip the lock so N sessions can attach. Store-owning `serve` does hold
+it, which is what stops `backup` / `migrate` / `repair --apply` / a second
+daemon while the app is up. `--mcp-stdio --transports` also takes the lock, so
+that opt-in fratricide shape fails closed against a running daemon.
 
 **The fix: MCP client mode.** `serve --mcp-stdio` with no other transport
 (the exact shape MCP hosts spawn) is now a **transportless client** of the
@@ -110,19 +113,19 @@ running daemon:
   "command": "/usr/local/bin/om-tui",
   "args": ["serve", "--mcp-stdio"],
   "env": {
-    "OPENMESSAGES_DATA_DIR": "/Users/<user>/.local/share/openmessage",
-    "OPENMESSAGES_V2_PRIMARY": "1"
+    "OPENMESSAGES_DATA_DIR": "/Users/<user>/.local/share/openmessage"
   }
 }
 ```
 
-Pin `OPENMESSAGES_DATA_DIR` to the same directory the daemon/TUI use. On a
-migrated (v2-primary) install, also set `OPENMESSAGES_V2_PRIMARY=1` — the
-legacy `messages.db` froze at cutover, and this keeps MCP reads on the v2
-store even when the daemon isn't running (drop the line on a non-migrated
-install). Keep the PATH binary in lockstep with whatever's running the
-daemon/TUI — both open the same SQLite stores and a version-skewed binary
-can migrate the schema under the older one.
+Pin `OPENMESSAGES_DATA_DIR` to the same directory the daemon/TUI use. PRIMARY
+is the compiled default: MCP reads `v2/store.sqlite3` when that file is a
+real migrated store. Set `OPENMESSAGES_V2_PRIMARY=0` only to keep MCP on
+frozen `messages.db`. A non-empty `messages.db` next to a missing or 4KiB
+shadow stub still needs `om-tui migrate` before PRIMARY can boot. Keep the
+PATH binary in lockstep with whatever's running the daemon/TUI — both open
+the same SQLite stores and a version-skewed binary can migrate the schema
+under the older one.
 
 **Never** configure MCP to run `serve --web`, `serve --mcp-sse`, or
 `serve ... --transports` alongside a running daemon/TUI: those are daemon
@@ -147,9 +150,18 @@ Key facts:
 - **QR pairing is dead** — Google disabled device-pairing QR for many accounts.
   Use **Google Account pairing**.
 
-### Re-pair recipe (the one that works)
+### Cookie refresh (try this before a full re-pair)
 
-**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone. `Esc` cancels pairing; `q` closes the overlay without cancelling. `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
+On Windows, Chrome v20 cookies expire after hours and silent self-heal cannot decrypt them. That is **not** the same as the phone unlinking the device. If `/api/status` still shows `google.paired=true` (even with `needs_repair` / `auth_expired`):
+
+1. Keep the daemon up. Do **not** delete `session.json`.
+2. Press `p`. Overlay title is **Refresh Google Messages**.
+3. Paste a `messages.google.com` cURL (`Ctrl+V`). The daemon rewrites `auth_data.cookies` and reconnects. No emoji, no new linked device.
+4. If reconnect fails (device actually unlinked), the overlay falls through to Gaia pairing and then you tap the phone.
+
+### Re-pair recipe (only when cookie refresh cannot revive the link)
+
+**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone only if the overlay asks for it (unpaired, or cookie reconnect already failed). `Esc` cancels pairing; `q` closes the overlay without cancelling. `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
 
 **CLI (daemon down):**
 
@@ -473,6 +485,13 @@ enabled stack reports `enabled: true`; under `per_account`, `appended` grows as
 receive frames arrive, message-bearing frames advance `projected`, and
 `quarantined` remains `0`. An idle WhatsApp or Signal account can legitimately
 stay at zero until a new inbound/history frame arrives.
+
+Google live frames tee into v2 on their own. Startup/shallow/deep backfill
+(`FetchMessages`) tees through the Google adapter so PRIMARY TUI sees the
+offline gap after reconnect. Restart TUI once after a reconnect so shallow
+backfill runs (20 messages per inbox thread). Do not re-pair to replay
+history. Deep backfill (`POST /api/backfill` or
+`OPENMESSAGES_STARTUP_BACKFILL=deep`) throttles Google — only with permission.
 
 The manual receive-only check is:
 

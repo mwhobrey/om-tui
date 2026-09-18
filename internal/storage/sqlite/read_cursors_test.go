@@ -166,6 +166,85 @@ func TestReadCursorForeignKeysAndChecksMapConstraintErrors(t *testing.T) {
 	}
 }
 
+func TestIncomingUnreadCountsFollowsLocalCursor(t *testing.T) {
+	store, _ := openOutboxTestRepository(t, func() time.Time {
+		return time.UnixMilli(outboxTestTimeMS)
+	})
+	seedMessageConversation(t, store, "conversation-a", "account-a")
+	seedMessageConversation(t, store, "conversation-b", "account-a")
+	seedOutboxTestDevice(t, store, "device-a", "account-a")
+	insertUnreadTestMessage(t, store, "msg-in-a", "account-a", "conversation-a", "incoming", 200)
+	insertUnreadTestMessage(t, store, "msg-out-a", "account-a", "conversation-a", "outgoing", 250)
+	insertUnreadTestMessage(t, store, "msg-in-b", "account-a", "conversation-b", "incoming", 300)
+
+	empty, err := store.IncomingUnreadCounts(nil)
+	if err != nil {
+		t.Fatalf("IncomingUnreadCounts(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("IncomingUnreadCounts(nil) = %+v, want empty", empty)
+	}
+
+	counts, err := store.IncomingUnreadCounts([]string{"conversation-a", "conversation-b", "missing"})
+	if err != nil {
+		t.Fatalf("IncomingUnreadCounts(): %v", err)
+	}
+	if counts["conversation-a"] != 1 || counts["conversation-b"] != 1 || counts["missing"] != 0 {
+		t.Fatalf("unread before cursor = %+v", counts)
+	}
+
+	if err := store.UpsertReadCursor(ReadCursor{
+		AccountID:      "account-a",
+		DeviceID:       "device-a",
+		ConversationID: "conversation-a",
+		LastReadAtMS:   200,
+		UpdatedAtMS:    outboxTestTimeMS,
+	}); err != nil {
+		t.Fatalf("UpsertReadCursor(): %v", err)
+	}
+	counts, err = store.IncomingUnreadCounts([]string{"conversation-a", "conversation-b"})
+	if err != nil {
+		t.Fatalf("IncomingUnreadCounts(after cursor): %v", err)
+	}
+	if counts["conversation-a"] != 0 || counts["conversation-b"] != 1 {
+		t.Fatalf("unread after cursor = %+v", counts)
+	}
+}
+
+func insertUnreadTestMessage(
+	t *testing.T,
+	store *Store,
+	messageID, accountID, conversationID, direction string,
+	occurredAtMS int64,
+) {
+	t.Helper()
+	mustExec(t, store.db, `
+		INSERT INTO messages (
+			message_id,
+			conversation_id,
+			account_id,
+			remote_message_id,
+			sender_identity_id,
+			direction,
+			body,
+			reply_to_remote_id,
+			state,
+			occurred_at_ms,
+			created_at_ms,
+			updated_at_ms
+		) VALUES (?, ?, ?, ?, NULL, ?, '', NULL, 'active', ?, ?, ?)
+	`,
+		messageID,
+		conversationID,
+		accountID,
+		"remote-"+messageID,
+		direction,
+		occurredAtMS,
+		outboxTestTimeMS,
+		outboxTestTimeMS,
+	)
+}
+
 func TestGetReadCursorMissingReturnsNotFound(t *testing.T) {
 	store, _ := openOutboxTestRepository(t, func() time.Time {
 		return time.UnixMilli(outboxTestTimeMS)

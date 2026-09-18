@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -114,7 +115,7 @@ func NewWorker(config WorkerConfig) (*Worker, error) {
 			return nil, fmt.Errorf("create ingest worker: decoder for codec %q is nil", codec)
 		}
 		switch registration.Platform {
-		case bridge.PlatformGoogle, bridge.PlatformWhatsApp, bridge.PlatformSignal:
+		case bridge.PlatformGoogle, bridge.PlatformWhatsApp, bridge.PlatformSignal, bridge.PlatformSlack:
 		default:
 			return nil, fmt.Errorf(
 				"create ingest worker: decoder for codec %q has invalid platform %q",
@@ -467,7 +468,7 @@ func (w *Worker) applyEvents(
 			// A re-delivery under a re-keyed remote ID: the message already
 			// exists in its thread under the old ID. Do not project a second
 			// row, but let the frame's reaction snapshot refresh the original.
-			if platform == bridge.PlatformGoogle {
+			if usesEmbeddedReactionSnapshot(platform) {
 				key := reactionRemoteTargetKey(
 					platform,
 					event.Message.RemoteConversationID,
@@ -496,7 +497,7 @@ func (w *Worker) applyEvents(
 			}
 			w.counters.account(accountID).imported.Add(1)
 		}
-		if platform == bridge.PlatformGoogle {
+		if usesEmbeddedReactionSnapshot(platform) {
 			// Message upserts preserve the first local primary key on a remote-key
 			// conflict (including an optimistic outgoing row repointed by the echo
 			// observer). Recover that effective parent before binding the embedded
@@ -521,7 +522,7 @@ func (w *Worker) applyEvents(
 		); err != nil {
 			return false, err
 		}
-		if platform == bridge.PlatformGoogle {
+		if usesEmbeddedReactionSnapshot(platform) {
 			key := reactionRemoteTargetKey(
 				platform,
 				event.Message.RemoteConversationID,
@@ -537,6 +538,13 @@ func (w *Worker) applyEvents(
 			}
 		}
 		messageCount++
+		if layout := strings.TrimSpace(event.Message.LayoutJSON); layout != "" {
+			if err := w.store.MergeMessagePayload(ctx, projection.Message.MessageID, sqlite.MessagePayload{
+				Blocks: json.RawMessage(layout),
+			}); err != nil {
+				return false, err
+			}
+		}
 	}
 
 	for _, event := range events {
@@ -585,7 +593,7 @@ func (w *Worker) applyEvents(
 		}
 	}
 
-	if platform == bridge.PlatformGoogle {
+	if usesEmbeddedReactionSnapshot(platform) {
 		for _, event := range events {
 			if event.Kind != bridge.EventReaction {
 				continue
@@ -1136,6 +1144,10 @@ func (w *Worker) countOrphanReaction(
 		Msg("Ignored reaction for missing message")
 }
 
+func usesEmbeddedReactionSnapshot(platform bridge.Platform) bool {
+	return platform == bridge.PlatformGoogle || platform == bridge.PlatformSlack
+}
+
 func reactionRemoteTargetKey(
 	platform bridge.Platform,
 	remoteConversationID string,
@@ -1314,7 +1326,7 @@ func (w *Worker) messageProjection(
 	return sqlite.MessageProjection{
 		InboxID: inboxID,
 		Message: sqlite.Message{
-			MessageID:        v2keys.DeriveID("message", accountID, remoteConversationID+"\x1f"+remoteMessageID),
+			MessageID:        v2keys.MessageID(accountID, remoteConversationID, remoteMessageID),
 			ConversationID:   conversation.ConversationID,
 			AccountID:        accountID,
 			RemoteMessageID:  remoteMessageID,

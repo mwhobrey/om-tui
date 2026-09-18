@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/readsource"
 )
 
 type resolvedRoute struct {
@@ -60,7 +62,8 @@ func resolveContactRoutesTool() mcp.Tool {
 	)
 }
 
-func resolveContactRoutesHandler(a *app.App) server.ToolHandlerFunc {
+func resolveContactRoutesHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		query := strings.TrimSpace(strArg(args, "query"))
@@ -73,14 +76,19 @@ func resolveContactRoutesHandler(a *app.App) server.ToolHandlerFunc {
 			limit = 10
 		}
 
-		contacts, err := a.Store.ListContacts("", 1)
-		if err == nil && len(contacts) == 0 && a.GetClient() != nil {
-			if err := fetchAndCacheContacts(a); err != nil {
-				a.Logger.Warn().Err(err).Msg("Failed to fetch contacts from phone")
+		var convos []*db.Conversation
+		var err error
+		if options.V2Primary {
+			convos, err = findRouteConversationsFromReads(options.Reads, query, limit*8)
+		} else {
+			contacts, listErr := a.Store.ListContacts("", 1)
+			if listErr == nil && len(contacts) == 0 && a.GetClient() != nil {
+				if fetchErr := fetchAndCacheContacts(a); fetchErr != nil {
+					a.Logger.Warn().Err(fetchErr).Msg("Failed to fetch contacts from phone")
+				}
 			}
+			convos, err = findRouteConversations(a, query, limit*8)
 		}
-
-		convos, err := findRouteConversations(a, query, limit*8)
 		if err != nil {
 			return errorResult(fmt.Sprintf("resolve routes: %v", err)), nil
 		}
@@ -180,6 +188,55 @@ func findRouteConversations(a *app.App, query string, limit int) ([]*db.Conversa
 		}
 	}
 
+	results := make([]*db.Conversation, 0, len(seen))
+	for _, conv := range seen {
+		results = append(results, conv)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].LastMessageTS != results[j].LastMessageTS {
+			return results[i].LastMessageTS > results[j].LastMessageTS
+		}
+		return results[i].ConversationID < results[j].ConversationID
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func findRouteConversationsFromReads(reads readsource.ReadSource, query string, limit int) ([]*db.Conversation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	seen := make(map[string]*db.Conversation)
+	addConversation := func(conv *db.Conversation) {
+		if conv == nil {
+			return
+		}
+		seen[conv.ConversationID] = conv
+	}
+	if conv, err := reads.GetConversation(query); err == nil && conv != nil {
+		addConversation(conv)
+	}
+	if searcher, ok := reads.(interface {
+		SearchConversationsByName(query, riverID string, limit int) ([]*db.Conversation, error)
+	}); ok {
+		convs, err := searcher.SearchConversationsByName(query, "", limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, conv := range convs {
+			addConversation(conv)
+		}
+	} else {
+		convs, err := reads.ListConversations(math.MaxInt)
+		if err != nil {
+			return nil, err
+		}
+		for _, conv := range db.ConversationsMatchingQuery(convs, query, 0) {
+			addConversation(conv)
+		}
+	}
 	results := make([]*db.Conversation, 0, len(seen))
 	for _, conv := range seen {
 		results = append(results, conv)

@@ -391,3 +391,10 @@ type migrateRoundTripperFunc func(*http.Request) (*http.Response, error)
 func (function migrateRoundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
+
+func TestSyncMigrationDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := syncMigrationDirectory(dir); err != nil {
+		t.Fatalf("syncMigrationDirectory(): %v", err)
+	}
+}

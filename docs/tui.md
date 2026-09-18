@@ -52,9 +52,9 @@ CLI pairing still works: `Get-Clipboard | ./om-tui pair --google` (Windows) or `
 ```
 
 Use a Slack **user token** with scopes sufficient to list channels/DMs, read
-history, and `chat:write` (e.g. `channels:history`, `channels:read`,
+history, send text, add/remove reactions, and upload/download files (e.g. `channels:history`, `channels:read`,
 `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`,
-`mpim:read`, `chat:write`, `users:read`). Tokens are stored only in the vault.
+`mpim:read`, `chat:write`, `reactions:write`, `files:read`, `files:write`, `users:read`). Tokens are stored only in the vault.
 
 om-tui caches Slack profiles locally so DMs, senders, `<@mentions>`, and
 channel references render as names instead of IDs. The cache refreshes from
@@ -154,6 +154,7 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `Ctrl+T` | Open the selected Slack message's dedicated reply thread |
 | `PgUp` / `Ctrl+U` | Fetch an older page for the active Slack channel (composer or thread focus) |
 | `Ctrl+E` | React: open emoji palette on the selected message, then `1`–`9` to add/remove (composer or thread; bare `e` only in thread focus) |
+| `Ctrl+B` | Slack Block Kit: open URL buttons in the browser, or the Slack desktop deep link for app-owned controls (composer or thread; bare `b` only in thread focus). Footer shows `ctrl+b blocks` when the selected message has actions. |
 | `Ctrl+A` | Attach file (OS file picker on Windows; drop a path elsewhere). Composer text becomes the caption. Bare `a` works from list/thread only. |
 | `p` | Pair the active river when unpaired (Messages: paste a `messages.google.com` curl; WhatsApp/Signal: scan the overlay QR). `Esc` closes, `q` closes the overlay |
 | `Ctrl+V` | Pair overlay: paste cookies. Otherwise paste media from the OS clipboard and send; falls back to pasting text into the composer |
@@ -244,8 +245,19 @@ From the **composer** (default after opening a chat) or **thread** focus:
 - **`Esc`** — close the palette
 
 Existing reactions render inline with reactor names when known (e.g. `👍 Alice ❤️ you`); otherwise they keep the compact count form (`👍2`).
-Reaction mutation and media transfer are currently Google Messages features;
-Slack remains text-first.
+Reaction mutation works on Google / WhatsApp / Signal today, and on Slack
+when the daemon is on PRIMARY after `migrate` (`Ctrl+E` is hidden on Slack
+until then). Slack inbound files download via `o`/`s` on PRIMARY, and
+Slack file send uses `Ctrl+A` / `Ctrl+V` on PRIMARY (`files.getUploadURLExternal`).
+`Ctrl+A` is hidden on Slack until then. Block Kit and classic attachments flatten
+to message text at capture (Block Kit wins over Slack's short `text` fallback);
+v2 stores the JSON on `message_extras` and the TUI keeps layout newlines.
+`b` / `Ctrl+B` on a Slack message with Block Kit controls: URL buttons open in
+the browser; app-owned buttons (Approve, workflows, selects) open that message
+in the Slack desktop app (`slack://`). Slack has no public API to click those
+as the user from a third-party client. Buttons only appear once the JSON is
+on `message_extras` (live ingest or `PgUp` older history) — migrated v1 rows
+that only have flattened body text have nothing to activate.
 
 ## Slack daily-driver behavior
 
@@ -253,8 +265,8 @@ Slack remains text-first.
 - Unread counts increment only for newly ingested inbound messages; repeated polls do not inflate them. Opening a stream clears the local unread count.
 - Channel history sync is cursor-based. The background poll fetches only newer messages; `PgUp` / `Ctrl+U` fetches older history for the active stream.
 - Press `Ctrl+T` on a Slack message to fetch `conversations.replies` into a dedicated view. Messages sent there use Slack's `thread_ts`; `Esc` returns to the channel.
-- `Ctrl+F` searches only the active river's locally synced corpus.
-- Slack files, reaction mutation, Block Kit rendering, and V2 ingest/outbox remain deferred.
+- `Ctrl+F` searches only the active river's locally synced corpus (message bodies and conversation titles).
+- Slack Block Kit: `b` / `Ctrl+B` activates URL buttons in-browser and app-owned controls via Slack desktop (`slack://`). Slack reaction mutation, inbound file download, file send, and Block Kit layout (capture flatten + v2 `message_extras` re-render) are on the V2 PRIMARY path (`Ctrl+E` → outbox; `o`/`s` → `/api/media` → `files.info`; `Ctrl+A`/`Ctrl+V` → `/api/v1/outbox/media` → `files.getUploadURLExternal`). Contacts/people/stats/story HTTP + MCP (`list_contacts`, `resolve_contact_routes`, `download_media`, person/story/viz) read `v2read` when primary. Transcripts write `message_extras`; `import_messages` dual-writes then SyncInto. Favorite/mute persist on v2 conversations; MCP `react_to_message` on the daemon uses the v2 outbox. MCP `send_media_to_conversation` submits native v2 conversation IDs. PRIMARY is the compiled default after `om-tui migrate` (or a fresh empty install); `OPENMESSAGES_V2_PRIMARY=0` keeps frozen v1. Frozen `messages.db` is a rollback fossil only — PRIMARY does not project new rows into it.
 
 ## Smoke checklist
 
@@ -268,7 +280,7 @@ Slack remains text-first.
 8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
 9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes
-11. Slack: `Ctrl+T` opens a reply thread; `PgUp` / `Ctrl+U` from the composer loads older history
+11. Slack: `Ctrl+T` opens a reply thread; `PgUp` / `Ctrl+U` from the composer loads older history; `b` / `Ctrl+B` activates Block Kit controls
 12. From the composer (default after open): `Ctrl+F` search, `Ctrl+R` reconnect, `Ctrl+A` attach — bare letters stay typable
 13. `Ctrl+K` opens the palette: bare text jumps across rivers; `>react` / `>msg name::hi` run commands; Esc closes without changing the draft; footer stays context-aware
 14. Optional `commands.json` custom send/open shortcuts appear under `>`
@@ -285,7 +297,7 @@ Unread badges in the conversation list come from `unread_count`. Fresh inbound G
 ## Known cross-platform gaps
 
 - **Vault**: Keychain (macOS) and Secret Service (Linux) backends are shipped but not yet runtime-verified on real hardware (see "Data directory" above). Windows DPAPI is the daily-driver path today.
-- **Google pairing**: current Chrome on Windows encrypts Gaia cookies (v20 / app-bound). The TUI does not auto-read Chrome; paste a `messages.google.com` curl. Those cookies go `SESSION_COOKIE_INVALID` after hours (and on TUI-owned daemon restart); self-heal cannot decrypt v20, so Google needs a fresh paste. Leave `serve --api --no-web` running as a standalone daemon if you want the TUI to attach without killing the long-poll, but that does not stop Google rotating the cookies.
+- **Google pairing**: current Chrome on Windows encrypts Gaia cookies (v20 / app-bound). The TUI does not auto-read Chrome; paste a `messages.google.com` curl. Cookies go `SESSION_COOKIE_INVALID` after hours. If this PC is still linked, that paste refreshes `session.json` and reconnects — no phone tap. Full Gaia pairing (emoji) only when unpaired or the cookie reconnect fails. Leave `serve --api --no-web` running as a standalone daemon if you want the TUI to attach without killing the long-poll; that still does not stop Google rotating the cookies.
 - **Signal QR on Windows**: pairing used to wrap `signal-cli` in Unix `script` (PTY). That binary does not exist on Windows, so the overlay spun with no QR. Direct `signal-cli link` now. Install `signal-cli` ≥ 0.14.5 **and JRE 25** (`scoop install signal-cli temurin25-jdk`). Stale `JAVA_HOME` (Java 8/21) is ignored; om-tui points the child at a discovered JDK 25+ or `OPENMESSAGES_JAVA_HOME`.
 - **Notifications**: Windows toast notifications only; no native macOS/Linux equivalent yet.
 - **File picker**: `Ctrl+A` opens a native picker on Windows; macOS/Linux currently require typing/pasting a path.

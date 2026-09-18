@@ -447,6 +447,7 @@ func newV2ToolHarness(t *testing.T, steps ...v2ToolSendStep) *v2ToolHarness {
 		accountID: "google-primary",
 		text:      sender,
 		media:     mediaSender,
+		reaction:  &v2ToolReactionSender{},
 	}
 	clock := messaging.SystemClock{}
 	ids := &v2ToolIDs{}
@@ -572,6 +573,15 @@ func (s *v2ToolTextSender) snapshotRequests() []bridge.TextRequest {
 	return append([]bridge.TextRequest(nil), s.requests...)
 }
 
+type v2ToolReactionSender struct{}
+
+func (s *v2ToolReactionSender) SendReaction(
+	_ context.Context,
+	request bridge.ReactionRequest,
+) (bridge.SendResult, error) {
+	return bridge.SendResult{RemoteMessageID: "remote-" + request.RequestID}, nil
+}
+
 type v2ToolMediaRequest struct {
 	AccountID      string
 	ConversationID string
@@ -626,6 +636,7 @@ type v2ToolRegistry struct {
 	accountID string
 	text      bridge.TextSender
 	media     bridge.MediaSender
+	reaction  bridge.ReactionSender
 }
 
 func (r *v2ToolRegistry) Snapshot(accountID string) (bridge.Snapshot, bool) {
@@ -661,6 +672,8 @@ func (r *v2ToolRegistry) Acquire(
 		lease.Text = r.text
 	case bridge.CapabilityMediaSend:
 		lease.Media = r.media
+	case bridge.CapabilityReactions:
+		lease.Reaction = r.reaction
 	default:
 		return nil, bridge.ErrCapabilityUnavailable
 	}
@@ -674,6 +687,7 @@ func (r *v2ToolRegistry) Capabilities(accountID string) bridge.CapabilitySet {
 	return bridge.CapabilitySet{
 		TextSend:  r.text != nil,
 		MediaSend: r.media != nil,
+		Reactions: r.reaction != nil,
 	}
 }
 

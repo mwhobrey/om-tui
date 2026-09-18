@@ -18,7 +18,7 @@ func listConversationsTool() mcp.Tool {
 	return mcp.NewTool("list_conversations",
 		mcp.WithDescription("List recent conversations, sorted by most recent message. Includes conversations from all synced platforms such as SMS/RCS, Google Chat, iMessage, WhatsApp, and Signal."),
 		mcp.WithNumber("limit", mcp.Description("Maximum conversations to return (default 20)")),
-		mcp.WithString("source_platform", mcp.Description("Filter by platform: sms, gchat, imessage, whatsapp, signal, telegram")),
+		mcp.WithString("source_platform", mcp.Description("Filter by platform: sms, gchat, imessage, whatsapp, signal, telegram, slack")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
@@ -33,30 +33,36 @@ func listConversationsHandler(a *app.App, configured ...Options) server.ToolHand
 
 		var convs []*db.Conversation
 		var err error
-		if !options.V2Primary && platform != "" {
-			convs, err = a.Store.ListConversationsByPlatform(platform, limit)
-		} else if !options.V2Primary {
-			convs, err = a.Store.ListConversations(limit)
-		} else if platform == "" {
-			convs, err = options.Reads.ListConversations(limit)
-		} else if limit <= 0 {
-			convs = []*db.Conversation{}
-		} else {
-			// ReadSource intentionally mirrors only the canonical legacy methods;
-			// filter the v2 cross-account recency result here rather than widening
-			// the cutover seam with a platform-specific convenience query.
-			var candidates []*db.Conversation
-			candidates, err = options.Reads.ListConversations(math.MaxInt)
-			if err == nil {
-				for _, conversation := range candidates {
-					if conversation != nil && normalizedPlatform(conversation.SourcePlatform) == normalizedPlatform(platform) {
-						convs = append(convs, conversation)
-						if len(convs) >= limit {
-							break
+		if platform != "" {
+			if lister, ok := options.Reads.(interface {
+				ListConversationsByPlatform(string, int) ([]*db.Conversation, error)
+			}); ok {
+				convs, err = lister.ListConversationsByPlatform(platform, limit)
+			} else if options.V2Primary {
+				// ReadSource intentionally mirrors only the canonical legacy methods;
+				// test stubs and other non-v2read sources filter the recency result
+				// rather than widening the cutover seam.
+				if limit <= 0 {
+					convs = []*db.Conversation{}
+				} else {
+					var candidates []*db.Conversation
+					candidates, err = options.Reads.ListConversations(math.MaxInt)
+					if err == nil {
+						for _, conversation := range candidates {
+							if conversation != nil && normalizedPlatform(conversation.SourcePlatform) == normalizedPlatform(platform) {
+								convs = append(convs, conversation)
+								if len(convs) >= limit {
+									break
+								}
+							}
 						}
 					}
 				}
+			} else {
+				convs, err = a.Store.ListConversationsByPlatform(platform, limit)
 			}
+		} else {
+			convs, err = options.Reads.ListConversations(limit)
 		}
 		if err != nil {
 			return errorResult(fmt.Sprintf("query failed: %v", err)), nil

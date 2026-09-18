@@ -65,8 +65,8 @@ func TestReactionsMigrationAppliesToBlankAndExistingV9Database(t *testing.T) {
 			}
 		})
 		after := readLedgerRows(t, store.db)
-		if len(after) != 10 {
-			t.Fatalf("migrated ledger rows = %d, want 10", len(after))
+		if len(after) != len(embeddedMigrations) {
+			t.Fatalf("migrated ledger rows = %d, want %d", len(after), len(embeddedMigrations))
 		}
 		if !slices.Equal(after[:9], before) {
 			t.Fatalf("migrations 0001-0009 changed:\nbefore: %+v\nafter:  %+v", before, after[:9])
@@ -77,10 +77,10 @@ func TestReactionsMigrationAppliesToBlankAndExistingV9Database(t *testing.T) {
 
 func assertReactionsMigration(t *testing.T, store *Store) {
 	t.Helper()
-	if len(embeddedMigrations) != 10 {
-		t.Fatalf("embedded migrations = %d, want 10", len(embeddedMigrations))
+	if len(embeddedMigrations) != 12 {
+		t.Fatalf("embedded migrations = %d, want 12", len(embeddedMigrations))
 	}
-	assertPragmaInt(t, store.db, "user_version", 10)
+	assertPragmaInt(t, store.db, "user_version", len(embeddedMigrations))
 	ledger := readLedgerRow(t, store.db, 10)
 	if ledger.name != "reactions" {
 		t.Fatalf("migration 0010 name = %q, want reactions", ledger.name)

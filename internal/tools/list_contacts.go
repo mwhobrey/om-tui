@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/readsource"
 )
 
 func listContactsTool() mcp.Tool {
@@ -22,30 +24,40 @@ func listContactsTool() mcp.Tool {
 	)
 }
 
-func listContactsHandler(a *app.App) server.ToolHandlerFunc {
+func listContactsHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		query := strArg(args, "query")
 		limit := intArg(args, "limit", 50)
 
-		// If no contacts in DB yet, try fetching from phone
-		contacts, err := a.Store.ListContacts("", 1)
-		if err == nil && len(contacts) == 0 && a.GetClient() != nil {
-			if err := fetchAndCacheContacts(a); err != nil {
-				a.Logger.Warn().Err(err).Msg("Failed to fetch contacts from phone")
-			}
-		}
-
-		contacts, err = a.Store.ListContacts(query, limit)
-		if err != nil {
-			return errorResult(fmt.Sprintf("query failed: %v", err)), nil
-		}
-
-		// Fall back to conversation participants if contacts table is empty
-		if len(contacts) == 0 {
-			contacts, err = a.Store.ListContactsFromConversations(query, limit)
+		var contacts []*db.Contact
+		var err error
+		if options.V2Primary {
+			contacts, err = conversationContacts(options.Reads, query, limit)
 			if err != nil {
 				return errorResult(fmt.Sprintf("query failed: %v", err)), nil
+			}
+		} else {
+			// If no contacts in DB yet, try fetching from phone
+			contacts, err = a.Store.ListContacts("", 1)
+			if err == nil && len(contacts) == 0 && a.GetClient() != nil {
+				if err := fetchAndCacheContacts(a); err != nil {
+					a.Logger.Warn().Err(err).Msg("Failed to fetch contacts from phone")
+				}
+			}
+
+			contacts, err = a.Store.ListContacts(query, limit)
+			if err != nil {
+				return errorResult(fmt.Sprintf("query failed: %v", err)), nil
+			}
+
+			// Fall back to conversation participants if contacts table is empty
+			if len(contacts) == 0 {
+				contacts, err = a.Store.ListContactsFromConversations(query, limit)
+				if err != nil {
+					return errorResult(fmt.Sprintf("query failed: %v", err)), nil
+				}
 			}
 		}
 
@@ -100,4 +112,15 @@ func fetchAndCacheContacts(a *app.App) error {
 		}
 	}
 	return nil
+}
+
+func conversationContacts(reads readsource.ReadSource, query string, limit int) ([]*db.Contact, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	convs, err := reads.ListConversations(math.MaxInt)
+	if err != nil {
+		return nil, err
+	}
+	return db.ContactsFromConversations(convs, query, limit), nil
 }

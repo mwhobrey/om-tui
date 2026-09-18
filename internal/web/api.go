@@ -3,12 +3,14 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,6 +35,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/story"
+	"github.com/maxghenis/openmessage/internal/v2wire"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -68,6 +71,16 @@ func normalizeSendIdempotencyKey(raw string) (string, error) {
 		}
 	}
 	return key, nil
+}
+
+func reactionIdempotencyKey(conversationID, messageID, emoji, action string) string {
+	sum := sha256.Sum256([]byte(
+		strings.TrimSpace(conversationID) + "\x1f" +
+			strings.TrimSpace(messageID) + "\x1f" +
+			strings.TrimSpace(emoji) + "\x1f" +
+			strings.TrimSpace(strings.ToLower(action)),
+	))
+	return "react:" + hex.EncodeToString(sum[:16])
 }
 
 // APIHandler creates the HTTP handler with JSON API routes and static file serving.
@@ -861,8 +874,26 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		var err error
 		switch {
 		case riverID != "":
+			if opts.V2Primary {
+				if lister, ok := reads.(interface {
+					ListConversationsByRiver(string, int) ([]*db.Conversation, error)
+				}); ok {
+					convos, err = lister.ListConversationsByRiver(riverID, limit)
+					break
+				}
+			}
 			convos, err = store.ListConversationsByRiver(riverID, limit)
 		case platform != "":
+			if lister, ok := reads.(interface {
+				ListConversationsByPlatform(string, int) ([]*db.Conversation, error)
+			}); ok {
+				convos, err = lister.ListConversationsByPlatform(platform, limit)
+				break
+			}
+			if opts.V2Primary {
+				convos, err = filterReadConversationsByPlatform(reads, platform, limit)
+				break
+			}
 			convos, err = store.ListConversationsByPlatform(platform, limit)
 		default:
 			convos, err = reads.ListConversations(limit)
@@ -925,7 +956,25 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		path := strings.TrimPrefix(r.URL.Path, "/api/conversations/")
 		parts := strings.Split(path, "/")
 		if len(parts) < 2 {
-			httpError(w, "not found", 404)
+			if r.Method != http.MethodGet {
+				httpError(w, "not found", 404)
+				return
+			}
+			convID := strings.Trim(path, "/")
+			if convID == "" {
+				httpError(w, "not found", 404)
+				return
+			}
+			convo, err := reads.GetConversation(convID)
+			if errors.Is(err, sql.ErrNoRows) {
+				httpError(w, "conversation not found", 404)
+				return
+			}
+			if err != nil {
+				httpError(w, "get conversation: "+err.Error(), 500)
+				return
+			}
+			writeJSON(w, convo)
 			return
 		}
 		action := parts[len(parts)-1]
@@ -940,6 +989,33 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 conversation writes not available", http.StatusServiceUnavailable)
+					return
+				}
+				mode, err := parseV2NotificationMode(req.NotificationMode)
+				if err != nil {
+					httpError(w, err.Error(), 400)
+					return
+				}
+				if err := opts.V2.V2Store.SetConversationNotificationMode(convID, mode); err != nil {
+					if errors.Is(err, sqlite.ErrNotFound) {
+						httpError(w, "conversation not found", 404)
+						return
+					}
+					httpError(w, "set notification mode: "+err.Error(), 400)
+					return
+				}
+				convo, err := reads.GetConversation(convID)
+				if err != nil {
+					httpError(w, "get conversation: "+err.Error(), 500)
+					return
+				}
+				publishConversations()
+				writeJSON(w, convo)
 				return
 			}
 			if err := store.SetConversationNotificationMode(convID, req.NotificationMode); err != nil {
@@ -969,6 +1045,32 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			if req.Favorite == nil {
 				httpError(w, "favorite is required", 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 conversation writes not available", http.StatusServiceUnavailable)
+					return
+				}
+				if err := opts.V2.V2Store.SetConversationFavorite(convID, *req.Favorite); err != nil {
+					if errors.Is(err, sqlite.ErrNotFound) {
+						httpError(w, "conversation not found", 404)
+						return
+					}
+					httpError(w, "set favorite: "+err.Error(), 500)
+					return
+				}
+				convo, err := reads.GetConversation(convID)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						httpError(w, "conversation not found", 404)
+						return
+					}
+					httpError(w, "get conversation: "+err.Error(), 500)
+					return
+				}
+				publishConversations()
+				writeJSON(w, convo)
 				return
 			}
 			if err := store.SetConversationFavorite(convID, *req.Favorite); err != nil {
@@ -1002,6 +1104,28 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				if err := opts.V2.V2Store.SetConversationTab(r.Context(), convID, req.Tab); err != nil {
+					if errors.Is(err, sqlite.ErrNotFound) {
+						httpError(w, "conversation not found", 404)
+						return
+					}
+					httpError(w, "set tab: "+err.Error(), 400)
+					return
+				}
+				convo, err := reads.GetConversation(convID)
+				if err != nil {
+					httpError(w, "get conversation: "+err.Error(), 500)
+					return
+				}
+				publishConversations()
+				writeJSON(w, convo)
 				return
 			}
 			if err := store.SetConversationTab(convID, req.Tab); err != nil {
@@ -1056,12 +1180,13 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "root_id is required", 400)
 				return
 			}
-			msgs, err := opts.FetchSlackThread(convID, rootID)
+			liveConvID, liveRootID := resolveSlackLiveIDs(opts, convID, rootID)
+			msgs, err := opts.FetchSlackThread(liveConvID, liveRootID)
 			if err != nil {
 				httpError(w, "fetch Slack thread: "+err.Error(), 502)
 				return
 			}
-			writeJSON(w, msgs)
+			writeJSON(w, mapSlackLiveMessagesToV2(opts, convID, msgs))
 			return
 		}
 		if action == "older" {
@@ -1073,12 +1198,13 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "Slack history unavailable", 501)
 				return
 			}
-			msgs, err := opts.FetchOlderSlackHistory(convID, queryIntClamped(r, "limit", 100, 500))
+			liveConvID, _ := resolveSlackLiveIDs(opts, convID, "")
+			msgs, err := opts.FetchOlderSlackHistory(liveConvID, queryIntClamped(r, "limit", 100, 500))
 			if err != nil {
 				httpError(w, "fetch older Slack history: "+err.Error(), 502)
 				return
 			}
-			writeJSON(w, msgs)
+			writeJSON(w, mapSlackLiveMessagesToV2(opts, convID, msgs))
 			return
 		}
 		if action == "messages-around" {
@@ -1164,6 +1290,21 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "ids is required", 400)
 			return
 		}
+		if opts.V2Primary {
+			if opts.V2 == nil || opts.V2.V2Store == nil {
+				httpError(w, "v2 store is not configured", 500)
+				return
+			}
+			for _, id := range req.IDs {
+				if err := opts.V2.V2Store.SetConversationTab(r.Context(), id, req.Tab); err != nil {
+					httpError(w, "move conversations: "+err.Error(), 400)
+					return
+				}
+			}
+			publishConversations()
+			writeJSON(w, map[string]any{"moved": len(req.IDs), "tab": strings.TrimSpace(req.Tab)})
+			return
+		}
 		if err := store.SetConversationsTab(req.IDs, req.Tab); err != nil {
 			httpError(w, "move conversations: "+err.Error(), 400)
 			return
@@ -1176,6 +1317,23 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	mux.HandleFunc("/api/tabs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				tabs, err := opts.V2.V2Store.ListTabs(r.Context())
+				if err != nil {
+					httpError(w, "list tabs: "+err.Error(), 500)
+					return
+				}
+				out := make([]*db.Tab, 0, len(tabs))
+				for _, tab := range tabs {
+					out = append(out, sqlite.TabDTO(tab))
+				}
+				writeJSON(w, out)
+				return
+			}
 			tabs, err := store.ListTabs()
 			if err != nil {
 				httpError(w, "list tabs: "+err.Error(), 500)
@@ -1191,6 +1349,20 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				tab, err := opts.V2.V2Store.CreateTab(r.Context(), req.Name)
+				if err != nil {
+					httpError(w, "create tab: "+err.Error(), 400)
+					return
+				}
+				publishConversations()
+				writeJSON(w, sqlite.TabDTO(tab))
 				return
 			}
 			tab, err := store.CreateTab(req.Name)
@@ -1221,6 +1393,19 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "invalid JSON: "+err.Error(), 400)
 				return
 			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				if err := opts.V2.V2Store.RenameTab(r.Context(), tabID, req.Name); err != nil {
+					httpError(w, "rename tab: "+err.Error(), 400)
+					return
+				}
+				publishConversations()
+				writeJSON(w, map[string]any{"tab_id": tabID, "name": strings.TrimSpace(req.Name)})
+				return
+			}
 			if err := store.RenameTab(tabID, req.Name); err != nil {
 				httpError(w, "rename tab: "+err.Error(), 400)
 				return
@@ -1228,6 +1413,19 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			publishConversations()
 			writeJSON(w, map[string]any{"tab_id": tabID, "name": strings.TrimSpace(req.Name)})
 		case http.MethodDelete:
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				if err := opts.V2.V2Store.DeleteTab(r.Context(), tabID); err != nil {
+					httpError(w, "delete tab: "+err.Error(), 400)
+					return
+				}
+				publishConversations()
+				writeJSON(w, map[string]any{"deleted": tabID})
+				return
+			}
 			if err := store.DeleteTab(tabID); err != nil {
 				httpError(w, "delete tab: "+err.Error(), 400)
 				return
@@ -1245,31 +1443,41 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		if limit <= 0 || limit > 100 {
 			limit = 20
 		}
-		// First try the explicit contacts table.
-		contacts, err := store.ListContacts(q, limit)
-		if err != nil {
-			httpError(w, "contacts: "+err.Error(), 500)
-			return
-		}
-		// Always merge in participants we've messaged before — these are the
-		// people the user actually wants to autocomplete by name. The contacts
-		// table is mostly empty for most users since the macOS Contacts.app
-		// integration is avatar-only.
-		seen := map[string]bool{}
-		for _, c := range contacts {
-			seen[normalizeContactKey(c.Name, c.Number)] = true
-		}
-		fromConvos, err := store.ListContactsFromConversations(q, limit*4)
-		if err == nil {
-			for _, c := range fromConvos {
-				key := normalizeContactKey(c.Name, c.Number)
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				contacts = append(contacts, c)
-				if len(contacts) >= limit {
-					break
+		var contacts []*db.Contact
+		if opts.V2Primary {
+			fromConvos, err := conversationContactsFromReads(reads, q, limit)
+			if err != nil {
+				httpError(w, "contacts: "+err.Error(), 500)
+				return
+			}
+			contacts = fromConvos
+		} else {
+			listed, err := store.ListContacts(q, limit)
+			if err != nil {
+				httpError(w, "contacts: "+err.Error(), 500)
+				return
+			}
+			contacts = listed
+			// Always merge in participants we've messaged before — these are the
+			// people the user actually wants to autocomplete by name. The contacts
+			// table is mostly empty for most users since the macOS Contacts.app
+			// integration is avatar-only.
+			seen := map[string]bool{}
+			for _, c := range contacts {
+				seen[normalizeContactKey(c.Name, c.Number)] = true
+			}
+			fromConvos, err := store.ListContactsFromConversations(q, limit*4)
+			if err == nil {
+				for _, c := range fromConvos {
+					key := normalizeContactKey(c.Name, c.Number)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					contacts = append(contacts, c)
+					if len(contacts) >= limit {
+						break
+					}
 				}
 			}
 		}
@@ -1285,6 +1493,10 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "method not allowed", 405)
 			return
 		}
+		if opts.V2Primary {
+			httpError(w, "google contact sync is unavailable in v2-primary mode", http.StatusConflict)
+			return
+		}
 		if opts.SyncGoogleContacts == nil {
 			httpError(w, "google contact sync unavailable", 501)
 			return
@@ -1298,12 +1510,25 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	})
 
 	mux.HandleFunc("/api/people", func(w http.ResponseWriter, r *http.Request) {
-		people, err := store.ListMessagedPeople()
+		people, err := listMessagedPeople(reads, store, opts.V2Primary)
 		if err != nil {
 			httpError(w, "list people: "+err.Error(), 500)
 			return
 		}
-		metaMap, _ := store.GetContactMetaMap()
+		var metaMap map[string]*db.ContactMeta
+		if opts.V2Primary {
+			if opts.V2 != nil && opts.V2.V2Store != nil {
+				loaded, err := opts.V2.V2Store.GetContactMetaMap(r.Context())
+				if err == nil {
+					metaMap = map[string]*db.ContactMeta{}
+					for key, meta := range loaded {
+						metaMap[key] = sqlite.ContactMetaDTO(meta)
+					}
+				}
+			}
+		} else {
+			metaMap, _ = store.GetContactMetaMap()
+		}
 		now := time.Now().UnixMilli()
 		q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 		out := make([]*personPayload, 0, len(people))
@@ -1342,7 +1567,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			action = parts[1]
 		}
 
-		person, err := store.PersonByKey(key)
+		person, err := lookupMessagedPerson(reads, store, opts.V2Primary, key)
 		if err != nil {
 			httpError(w, "lookup person: "+err.Error(), 500)
 			return
@@ -1359,6 +1584,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "method not allowed", 405)
 			return
 		}
+		if opts.V2Primary && action != "" {
+			if opts.V2 == nil || opts.V2.V2Store == nil {
+				httpError(w, "v2 store is not configured", 500)
+				return
+			}
+		}
 
 		switch action {
 		case "tags":
@@ -1369,7 +1600,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "invalid JSON: "+err.Error(), 400)
 				return
 			}
-			if err := store.SetContactTags(key, displayName, req.Tags); err != nil {
+			if opts.V2Primary {
+				if err := opts.V2.V2Store.SetContactTags(r.Context(), key, displayName, req.Tags); err != nil {
+					httpError(w, "set tags: "+err.Error(), 500)
+					return
+				}
+			} else if err := store.SetContactTags(key, displayName, req.Tags); err != nil {
 				httpError(w, "set tags: "+err.Error(), 500)
 				return
 			}
@@ -1381,19 +1617,39 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "invalid JSON: "+err.Error(), 400)
 				return
 			}
-			if err := store.SetContactReachOut(key, displayName, req.Days); err != nil {
+			if opts.V2Primary {
+				if err := opts.V2.V2Store.SetContactReachOut(r.Context(), key, displayName, req.Days); err != nil {
+					httpError(w, "set reach-out: "+err.Error(), 500)
+					return
+				}
+			} else if err := store.SetContactReachOut(key, displayName, req.Days); err != nil {
 				httpError(w, "set reach-out: "+err.Error(), 500)
 				return
 			}
 		case "summary":
-			// Regenerate the relationship summary from message history.
-			msgs, err := store.PersonMessages(person.ConversationIDs)
-			if err != nil {
-				httpError(w, "load messages: "+err.Error(), 500)
-				return
+			var msgs []*db.Message
+			var err error
+			if opts.V2Primary {
+				loaded, loadErr := reads.GetMessagesByConversations(person.ConversationIDs, 500000)
+				if loadErr != nil {
+					httpError(w, "load messages: "+loadErr.Error(), 500)
+					return
+				}
+				msgs = db.DedupePersonMessages(loaded)
+			} else {
+				msgs, err = store.PersonMessages(person.ConversationIDs)
+				if err != nil {
+					httpError(w, "load messages: "+err.Error(), 500)
+					return
+				}
 			}
 			summary := story.RelationshipSummary(msgs, displayName, time.Local)
-			if err := store.SetContactSummary(key, displayName, summary, time.Now().UnixMilli()); err != nil {
+			if opts.V2Primary {
+				if err := opts.V2.V2Store.SetContactSummary(r.Context(), key, displayName, summary, time.Now().UnixMilli()); err != nil {
+					httpError(w, "save summary: "+err.Error(), 500)
+					return
+				}
+			} else if err := store.SetContactSummary(key, displayName, summary, time.Now().UnixMilli()); err != nil {
 				httpError(w, "save summary: "+err.Error(), 500)
 				return
 			}
@@ -1405,13 +1661,31 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 
 		// Build the (possibly updated) detail payload.
-		meta, _ := store.GetContactMeta(key)
-		msgs, _ := store.PersonMessages(person.ConversationIDs)
-		// Generate a summary on first view if none cached yet.
-		if meta != nil && meta.Summary == "" && len(msgs) > 0 {
-			meta.Summary = story.RelationshipSummary(msgs, displayName, time.Local)
-			meta.SummaryAt = time.Now().UnixMilli()
-			_ = store.SetContactSummary(key, displayName, meta.Summary, meta.SummaryAt)
+		var meta *db.ContactMeta
+		var msgs []*db.Message
+		if opts.V2Primary {
+			loaded, err := reads.GetMessagesByConversations(person.ConversationIDs, 500000)
+			if err != nil {
+				httpError(w, "load messages: "+err.Error(), 500)
+				return
+			}
+			msgs = db.DedupePersonMessages(loaded)
+			if stored, err := opts.V2.V2Store.GetContactMeta(r.Context(), key); err == nil {
+				meta = sqlite.ContactMetaDTO(stored)
+			}
+			if meta != nil && meta.Summary == "" && len(msgs) > 0 {
+				meta.Summary = story.RelationshipSummary(msgs, displayName, time.Local)
+				meta.SummaryAt = time.Now().UnixMilli()
+				_ = opts.V2.V2Store.SetContactSummary(r.Context(), key, displayName, meta.Summary, meta.SummaryAt)
+			}
+		} else {
+			meta, _ = store.GetContactMeta(key)
+			msgs, _ = store.PersonMessages(person.ConversationIDs)
+			if meta != nil && meta.Summary == "" && len(msgs) > 0 {
+				meta.Summary = story.RelationshipSummary(msgs, displayName, time.Local)
+				meta.SummaryAt = time.Now().UnixMilli()
+				_ = store.SetContactSummary(key, displayName, meta.Summary, meta.SummaryAt)
+			}
 		}
 		payload := buildPersonPayload(person, meta, time.Now().UnixMilli())
 		payload.MessageCount = len(story.FilterRealMessages(msgs))
@@ -1618,6 +1892,14 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				return
 			}
 			identityStore = store
+		} else if searcher, ok := reads.(interface {
+			SearchConversationsByName(query, riverID string, limit int) ([]*db.Conversation, error)
+		}); ok {
+			convos, err = searcher.SearchConversationsByName(q, riverID, limit)
+			if err != nil {
+				httpError(w, "search: "+err.Error(), 500)
+				return
+			}
 		}
 		results := mergeSearchResults(reads, identityStore, msgs, convos, limit)
 		writeJSON(w, results)
@@ -2181,6 +2463,38 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "message_id and emoji are required", 400)
 			return
 		}
+		if opts.V2Primary {
+			if opts.V2 == nil || opts.V2.V2Store == nil || opts.V2.Service == nil || opts.V2.Registry == nil {
+				httpError(w, "v2 reactions not available", http.StatusServiceUnavailable)
+				return
+			}
+			if strings.TrimSpace(req.ConversationID) == "" {
+				httpError(w, "conversation_id is required", 400)
+				return
+			}
+			submission, err := v2wire.SubmitReactionV2(r.Context(), v2wire.NativeDeps{
+				V2:       opts.V2.V2Store,
+				Service:  opts.V2.Service,
+				Registry: opts.V2.Registry,
+			}, v2wire.ReactionInput{
+				ConversationID:  req.ConversationID,
+				TargetMessageID: req.MessageID,
+				Emoji:           req.Emoji,
+				Action:          req.Action,
+				IdempotencyKey:  reactionIdempotencyKey(req.ConversationID, req.MessageID, req.Emoji, req.Action),
+			})
+			if err != nil {
+				code, message := v1ErrorResponse(err)
+				httpError(w, message, code)
+				return
+			}
+			publishMessages(req.ConversationID)
+			writeJSON(w, map[string]any{
+				"success":   true,
+				"outbox_id": submission.OutboxID,
+			})
+			return
+		}
 		if isWhatsAppConversation(req.ConversationID) {
 			if opts.SendWhatsAppReaction == nil {
 				httpError(w, "whatsapp reactions are not available", 501)
@@ -2205,6 +2519,10 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 			publishMessages(req.ConversationID)
 			writeJSON(w, map[string]any{"success": true})
+			return
+		}
+		if isSlackConversation(req.ConversationID) {
+			httpError(w, "slack reactions require v2 primary", http.StatusNotImplemented)
 			return
 		}
 
@@ -2269,6 +2587,34 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
+		if opts.V2Primary {
+			if opts.V2 == nil || opts.V2.V2Store == nil {
+				httpError(w, "v2 store is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := opts.V2.V2Store.SetMessageTranscript(r.Context(), req.MessageID, *req.Transcript, req.Model); err != nil {
+				if errors.Is(err, sqlite.ErrNotFound) {
+					httpError(w, "message not found", 404)
+					return
+				}
+				httpError(w, err.Error(), 500)
+				return
+			}
+			msg, err := reads.GetMessageByID(req.MessageID)
+			if err != nil {
+				httpError(w, "load message: "+err.Error(), 500)
+				return
+			}
+			if msg != nil {
+				publishMessages(msg.ConversationID)
+			}
+			writeJSON(w, map[string]any{
+				"success":           true,
+				"message_id":        req.MessageID,
+				"transcript_length": utf8.RuneCountInString(*req.Transcript),
+			})
+			return
+		}
 		if err := store.SetMessageTranscript(req.MessageID, *req.Transcript, req.Model); err != nil {
 			if errors.Is(err, db.ErrMessageNotFound) {
 				httpError(w, "message not found", 404)
@@ -2314,10 +2660,6 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			platform = "sms"
 		}
 
-		// WhatsApp and Signal route by explicit identifier (JID / E.164
-		// account), so the thread can be created locally without the platform
-		// being connected; the first send resolves the recipient. SMS goes
-		// through Google Messages, which owns conversation creation.
 		if platform == "whatsapp" || platform == "signal" {
 			number, err := normalizeInternationalNumber(req.PhoneNumber)
 			if err != nil {
@@ -2328,16 +2670,29 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			if platform == "whatsapp" {
 				convoID = "whatsapp:" + strings.TrimPrefix(number, "+") + "@s.whatsapp.net"
 			}
+			name := contactNameForNumber(store, number)
+			if name == "" {
+				name = number
+			}
+			if opts.V2Primary {
+				minted, err := mintV2Conversation(opts, platform, convoID, name, false)
+				if err != nil {
+					httpError(w, "create conversation: "+err.Error(), 500)
+					return
+				}
+				publishConversations()
+				writeJSON(w, map[string]any{
+					"conversation_id": minted.ConversationID,
+					"name":            firstNonEmpty(minted.Title, name),
+				})
+				return
+			}
 			if existing, err := store.GetConversation(convoID); err == nil && existing != nil {
 				writeJSON(w, map[string]any{
 					"conversation_id": existing.ConversationID,
 					"name":            existing.Name,
 				})
 				return
-			}
-			name := contactNameForNumber(store, number)
-			if name == "" {
-				name = number
 			}
 			participants, err := json.Marshal([]map[string]any{{"name": name, "number": number}})
 			if err != nil {
@@ -2390,7 +2745,6 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 
 		convoID := conv.GetConversationID()
 		name := req.PhoneNumber
-		// Try to get a name from participants
 		for _, p := range conv.GetParticipants() {
 			if !p.GetIsMe() {
 				if fn := p.GetFormattedNumber(); fn != "" {
@@ -2402,7 +2756,20 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			}
 		}
 
-		// Upsert into local DB so it shows in the sidebar
+		if opts.V2Primary {
+			minted, err := mintV2Conversation(opts, "sms", convoID, name, conv.GetIsGroupChat())
+			if err != nil {
+				httpError(w, "create conversation: "+err.Error(), 500)
+				return
+			}
+			publishConversations()
+			writeJSON(w, map[string]any{
+				"conversation_id": minted.ConversationID,
+				"name":            firstNonEmpty(minted.Title, name),
+			})
+			return
+		}
+
 		store.UpsertConversation(&db.Conversation{
 			ConversationID: convoID,
 			Name:           name,
@@ -2432,6 +2799,19 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "conversation_id is required", 400)
 			return
 		}
+		if opts.V2Primary {
+			if opts.V2 == nil || opts.V2.V2Store == nil {
+				httpError(w, "v2 store is not configured", 500)
+				return
+			}
+			if err := v2wire.MarkV2ConversationRead(r.Context(), opts.V2.V2Store, req.ConversationID, time.Now().UnixMilli()); err != nil {
+				httpError(w, "mark read: "+err.Error(), 500)
+				return
+			}
+			publishConversations()
+			writeJSON(w, map[string]string{"status": "ok"})
+			return
+		}
 		if err := store.MarkConversationRead(req.ConversationID); err != nil {
 			httpError(w, "mark read: "+err.Error(), 500)
 			return
@@ -2450,20 +2830,91 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	})
 
 	mux.HandleFunc("/api/drafts", func(w http.ResponseWriter, r *http.Request) {
-		conversationID := r.URL.Query().Get("conversation_id")
-		if conversationID == "" {
-			httpError(w, "conversation_id is required", 400)
-			return
+		switch r.Method {
+		case http.MethodGet:
+			conversationID := r.URL.Query().Get("conversation_id")
+			if conversationID == "" {
+				httpError(w, "conversation_id is required", 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				listed, err := opts.V2.V2Store.ListDrafts(r.Context(), conversationID)
+				if err != nil {
+					httpError(w, "list drafts: "+err.Error(), 500)
+					return
+				}
+				out := make([]*db.Draft, 0, len(listed))
+				for _, draft := range listed {
+					out = append(out, sqlite.DraftDTO(draft))
+				}
+				writeJSON(w, out)
+				return
+			}
+			drafts, err := store.ListDrafts(conversationID)
+			if err != nil {
+				httpError(w, "list drafts: "+err.Error(), 500)
+				return
+			}
+			if drafts == nil {
+				drafts = []*db.Draft{}
+			}
+			writeJSON(w, drafts)
+		case http.MethodPost:
+			var req struct {
+				DraftID        string `json:"draft_id"`
+				ConversationID string `json:"conversation_id"`
+				Body           string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			if strings.TrimSpace(req.ConversationID) == "" || strings.TrimSpace(req.Body) == "" {
+				httpError(w, "conversation_id and body are required", 400)
+				return
+			}
+			if opts.V2Primary {
+				if opts.V2 == nil || opts.V2.V2Store == nil {
+					httpError(w, "v2 store is not configured", 500)
+					return
+				}
+				draft, err := opts.V2.V2Store.UpsertDraft(r.Context(), sqlite.Draft{
+					DraftID:        req.DraftID,
+					ConversationID: req.ConversationID,
+					Body:           req.Body,
+				})
+				if err != nil {
+					httpError(w, "create draft: "+err.Error(), 400)
+					return
+				}
+				publishDrafts(draft.ConversationID)
+				writeJSON(w, sqlite.DraftDTO(draft))
+				return
+			}
+			now := time.Now().UnixMilli()
+			draftID := strings.TrimSpace(req.DraftID)
+			if draftID == "" {
+				draftID = fmt.Sprintf("draft_%d", now)
+			}
+			draft := &db.Draft{
+				DraftID:        draftID,
+				ConversationID: req.ConversationID,
+				Body:           req.Body,
+				CreatedAt:      now,
+			}
+			if err := store.UpsertDraft(draft); err != nil {
+				httpError(w, "create draft: "+err.Error(), 500)
+				return
+			}
+			publishDrafts(draft.ConversationID)
+			writeJSON(w, draft)
+		default:
+			httpError(w, "method not allowed", 405)
 		}
-		drafts, err := store.ListDrafts(conversationID)
-		if err != nil {
-			httpError(w, "list drafts: "+err.Error(), 500)
-			return
-		}
-		if drafts == nil {
-			drafts = []*db.Draft{}
-		}
-		writeJSON(w, drafts)
 	})
 
 	mux.HandleFunc("/api/drafts/send", func(w http.ResponseWriter, r *http.Request) {
@@ -2472,7 +2923,52 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		if opts.V2Primary {
-			httpError(w, "v2 primary: use /api/v1/outbox", http.StatusConflict)
+			if opts.V2 == nil || opts.V2.V2Store == nil || opts.V2.Service == nil {
+				httpError(w, "v2 outbox is not configured", 503)
+				return
+			}
+			var req struct {
+				DraftID string `json:"draft_id"`
+				Body    string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpError(w, "invalid JSON: "+err.Error(), 400)
+				return
+			}
+			if req.DraftID == "" || req.Body == "" {
+				httpError(w, "draft_id and body are required", 400)
+				return
+			}
+			draft, err := opts.V2.V2Store.GetDraft(r.Context(), req.DraftID)
+			if errors.Is(err, sqlite.ErrNotFound) {
+				httpError(w, "draft not found", 404)
+				return
+			}
+			if err != nil {
+				httpError(w, "get draft: "+err.Error(), 500)
+				return
+			}
+			submission, err := v2wire.SubmitTextV2(r.Context(), v2wire.NativeDeps{
+				V2:       opts.V2.V2Store,
+				Service:  opts.V2.Service,
+				Registry: opts.V2.Registry,
+			}, v2wire.TextInput{
+				ConversationID: draft.ConversationID,
+				Body:           req.Body,
+				IdempotencyKey: "draft-" + draft.DraftID,
+			})
+			if err != nil {
+				httpError(w, "send draft: "+err.Error(), 400)
+				return
+			}
+			_ = opts.V2.V2Store.DeleteDraft(r.Context(), draft.DraftID)
+			publishMessages(draft.ConversationID)
+			publishDrafts(draft.ConversationID)
+			publishConversations()
+			writeJSON(w, map[string]any{
+				"outbox_id": submission.OutboxID,
+				"success":   true,
+			})
 			return
 		}
 		var req struct {
@@ -2628,6 +3124,26 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "draft_id required", 400)
 			return
 		}
+		if opts.V2Primary {
+			if opts.V2 == nil || opts.V2.V2Store == nil {
+				httpError(w, "v2 store is not configured", 500)
+				return
+			}
+			draft, err := opts.V2.V2Store.GetDraft(r.Context(), draftID)
+			if err != nil && !errors.Is(err, sqlite.ErrNotFound) {
+				httpError(w, "get draft: "+err.Error(), 500)
+				return
+			}
+			if err := opts.V2.V2Store.DeleteDraft(r.Context(), draftID); err != nil {
+				httpError(w, "delete draft: "+err.Error(), 500)
+				return
+			}
+			if err == nil {
+				publishDrafts(draft.ConversationID)
+			}
+			writeJSON(w, map[string]any{"deleted": draftID})
+			return
+		}
 		draft, err := store.GetDraft(draftID)
 		if err != nil {
 			httpError(w, "get draft: "+err.Error(), 500)
@@ -2645,16 +3161,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	})
 
 	mux.HandleFunc("/api/stats/", func(w http.ResponseWriter, r *http.Request) {
-		if opts.V2Primary {
-			httpError(w, "stats are unavailable in v2-primary mode", 409)
-			return
-		}
 		convID := strings.TrimPrefix(r.URL.Path, "/api/stats/")
 		if convID == "" {
 			httpError(w, "conversation_id required", 400)
 			return
 		}
-		msgs, err := store.GetMessagesByConversation(convID, 100000)
+		msgs, err := reads.GetMessagesByConversation(convID, 100000)
 		if err != nil {
 			httpError(w, "get messages: "+err.Error(), 500)
 			return
@@ -2668,16 +3180,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	})
 
 	mux.HandleFunc("/api/story/", func(w http.ResponseWriter, r *http.Request) {
-		if opts.V2Primary {
-			httpError(w, "story generation is unavailable in v2-primary mode", 409)
-			return
-		}
 		convID := strings.TrimPrefix(r.URL.Path, "/api/story/")
 		if convID == "" {
 			httpError(w, "conversation_id required", 400)
 			return
 		}
-		msgs, err := store.GetMessagesByConversation(convID, 100000)
+		msgs, err := reads.GetMessagesByConversation(convID, 100000)
 		if err != nil {
 			httpError(w, "get messages: "+err.Error(), 500)
 			return
@@ -3360,6 +3868,48 @@ type conversationParticipant struct {
 	IsMeCamel bool   `json:"isMe"`
 }
 
+func filterReadConversationsByPlatform(reads readsource.ReadSource, platform string, limit int) ([]*db.Conversation, error) {
+	listed, err := reads.ListConversations(math.MaxInt)
+	if err != nil {
+		return nil, err
+	}
+	want := strings.ToLower(strings.TrimSpace(platform))
+	if want == "" {
+		want = "sms"
+	}
+	var convos []*db.Conversation
+	for _, conversation := range listed {
+		if conversation == nil {
+			continue
+		}
+		got := strings.ToLower(strings.TrimSpace(conversation.SourcePlatform))
+		if got == "" {
+			got = "sms"
+		}
+		if got != want {
+			continue
+		}
+		convos = append(convos, conversation)
+		if limit > 0 && len(convos) >= limit {
+			break
+		}
+	}
+	return convos, nil
+}
+
+func parseV2NotificationMode(mode string) (sqlite.NotificationMode, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case string(sqlite.NotificationModeAll):
+		return sqlite.NotificationModeAll, nil
+	case string(sqlite.NotificationModeMentions):
+		return sqlite.NotificationModeMentions, nil
+	case string(sqlite.NotificationModeMuted):
+		return sqlite.NotificationModeMuted, nil
+	default:
+		return "", fmt.Errorf("invalid notification mode %q", mode)
+	}
+}
+
 func enrichConversationPreviews(reads readsource.ReadSource, convos []*db.Conversation) error {
 	ids := make([]string, 0, len(convos))
 	for _, conv := range convos {
@@ -3863,6 +4413,36 @@ func isGoogleNetworkError(err error) bool {
 	return false
 }
 
+func conversationContactsFromReads(reads readsource.ReadSource, query string, limit int) ([]*db.Contact, error) {
+	convs, err := reads.ListConversations(math.MaxInt)
+	if err != nil {
+		return nil, err
+	}
+	return db.ContactsFromConversations(convs, query, limit), nil
+}
+
+func listMessagedPeople(reads readsource.ReadSource, store *db.Store, v2Primary bool) ([]*db.Person, error) {
+	if !v2Primary {
+		return store.ListMessagedPeople()
+	}
+	convs, err := reads.ListConversations(5000)
+	if err != nil {
+		return nil, err
+	}
+	return db.MessagedPeopleFromConversations(convs), nil
+}
+
+func lookupMessagedPerson(reads readsource.ReadSource, store *db.Store, v2Primary bool, key string) (*db.Person, error) {
+	if !v2Primary {
+		return store.PersonByKey(key)
+	}
+	people, err := listMessagedPeople(reads, store, true)
+	if err != nil {
+		return nil, err
+	}
+	return db.PersonByKeyFrom(people, key), nil
+}
+
 // normalizeContactKey returns a stable dedup key for a contact entry. We
 // fold names case-insensitively and reduce phone numbers to digits-only so
 // that "+1 (650) 555-1234", "16505551234", and "650-555-1234" all collide.
@@ -3926,4 +4506,24 @@ func daysBehind(older, newer int64) int {
 		return 0
 	}
 	return int(time.UnixMilli(newer).Sub(time.UnixMilli(older)).Hours() / 24)
+}
+
+func mintV2Conversation(opts APIOptions, platform, remoteID, title string, group bool) (sqlite.Conversation, error) {
+	if opts.V2 == nil || opts.V2.V2Store == nil {
+		return sqlite.Conversation{}, errors.New("v2 store is not configured")
+	}
+	accountID := "google-primary"
+	switch platform {
+	case "whatsapp":
+		accountID = "whatsapp-primary"
+	case "signal":
+		accountID = "signal-primary"
+	}
+	return v2wire.EnsureConversation(opts.V2.V2Store, v2wire.ConversationSpec{
+		AccountID:            accountID,
+		Platform:             platform,
+		RemoteConversationID: remoteID,
+		Title:                title,
+		Group:                group,
+	})
 }

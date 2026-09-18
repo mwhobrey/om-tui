@@ -21,6 +21,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/messaging"
 	"github.com/maxghenis/openmessage/internal/storage/blob"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
+	"github.com/maxghenis/openmessage/internal/v2keys"
 	"github.com/maxghenis/openmessage/internal/v2wire"
 )
 
@@ -369,6 +370,267 @@ func TestMarkReadBestEffortWritesV2Cursor(t *testing.T) {
 	}
 	if cursor.LastReadAtMS <= 0 || cursor.UpdatedAtMS <= 0 {
 		t.Fatalf("cursor timestamps = %+v, want positive", cursor)
+	}
+}
+
+func TestMarkReadV2PrimaryWritesNativeCursor(t *testing.T) {
+	v2Store, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2Store.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "slack-T1",
+		BridgeKey:   "slack_web",
+		DisplayName: "Acme",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "hashed-slack-conv",
+		AccountID:            "slack-T1",
+		RemoteConversationID: "C99",
+		Kind:                 sqlite.ConversationKindGroup,
+		Title:                "#general",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := newV1RecorderHarness(t, APIOptions{
+		V2Primary: true,
+		V2:        &V2Options{V2Store: v2Store},
+	})
+	if err := ts.store.UpsertConversation(&db.Conversation{
+		ConversationID: "legacy-should-stay-unread",
+		Name:           "Alice",
+		SourcePlatform: "sms",
+		UnreadCount:    3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/mark-read", bytes.NewBufferString(`{"conversation_id":"hashed-slack-conv"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := ts.do(t, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+
+	legacy, err := ts.store.GetConversation("legacy-should-stay-unread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.UnreadCount != 3 {
+		t.Fatalf("legacy unread count = %d, want 3", legacy.UnreadCount)
+	}
+	cursor, err := v2Store.GetReadCursor("local-primary:slack-T1", "hashed-slack-conv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.AccountID != "slack-T1" {
+		t.Fatalf("cursor = %+v, want slack-T1", cursor)
+	}
+}
+
+func TestResolveSlackLiveIDsMapsHashedV2Rows(t *testing.T) {
+	v2Store, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2Store.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "slack-T1",
+		BridgeKey:   "slack_web",
+		DisplayName: "Acme",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "hashed-slack-conv",
+		AccountID:            "slack-T1",
+		RemoteConversationID: "C99",
+		Kind:                 sqlite.ConversationKindGroup,
+		Title:                "#general",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := sqlite.NewMessageRepository(v2Store, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ImportMessage(context.Background(), sqlite.MessageProjection{
+		Message: sqlite.Message{
+			MessageID:       "v2-root",
+			ConversationID:  "hashed-slack-conv",
+			AccountID:       "slack-T1",
+			RemoteMessageID: "123.456",
+			Direction:       sqlite.MessageDirectionIncoming,
+			Body:            "root",
+			State:           sqlite.MessageStateActive,
+			OccurredAtMS:    nowMS,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	primary := APIOptions{V2Primary: true, V2: &V2Options{V2Store: v2Store}}
+	legacy := APIOptions{}
+	tests := []struct {
+		name           string
+		opts           APIOptions
+		conversationID string
+		rootID         string
+		wantConv       string
+		wantRoot       string
+	}{
+		{
+			name:           "passthrough without primary",
+			opts:           legacy,
+			conversationID: "hashed-slack-conv",
+			rootID:         "v2-root",
+			wantConv:       "hashed-slack-conv",
+			wantRoot:       "v2-root",
+		},
+		{
+			name:           "passthrough legacy slack ids",
+			opts:           primary,
+			conversationID: "slack:T1:C99",
+			rootID:         "slack:C99:123.456",
+			wantConv:       "slack:T1:C99",
+			wantRoot:       "slack:C99:123.456",
+		},
+		{
+			name:           "hashed conversation only",
+			opts:           primary,
+			conversationID: "hashed-slack-conv",
+			wantConv:       "slack:T1:C99",
+		},
+		{
+			name:           "legacy root on hashed conversation",
+			opts:           primary,
+			conversationID: "hashed-slack-conv",
+			rootID:         "slack:C99:123.456",
+			wantConv:       "slack:T1:C99",
+			wantRoot:       "slack:C99:123.456",
+		},
+		{
+			name:           "v2 message id",
+			opts:           primary,
+			conversationID: "hashed-slack-conv",
+			rootID:         "v2-root",
+			wantConv:       "slack:T1:C99",
+			wantRoot:       "slack:C99:123.456",
+		},
+		{
+			name:           "raw ts fallback",
+			opts:           primary,
+			conversationID: "hashed-slack-conv",
+			rootID:         "123.456",
+			wantConv:       "slack:T1:C99",
+			wantRoot:       "slack:C99:123.456",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotConv, gotRoot := resolveSlackLiveIDs(test.opts, test.conversationID, test.rootID)
+			if gotConv != test.wantConv || gotRoot != test.wantRoot {
+				t.Fatalf("resolveSlackLiveIDs() = (%q, %q), want (%q, %q)", gotConv, gotRoot, test.wantConv, test.wantRoot)
+			}
+		})
+	}
+}
+
+func TestMapSlackLiveMessagesToV2RewritesHashedIDs(t *testing.T) {
+	v2Store, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2Store.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "slack-T1",
+		BridgeKey:   "slack_web",
+		DisplayName: "Acme",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "hashed-slack-conv",
+		AccountID:            "slack-T1",
+		RemoteConversationID: "C99",
+		Kind:                 sqlite.ConversationKindGroup,
+		Title:                "#general",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	live := []*db.Message{
+		{
+			MessageID:      "slack:C99:111.111",
+			ConversationID: "slack:T1:C99",
+			Body:           "root",
+			SourcePlatform: "slack",
+			SourceID:       "C99:111.111",
+		},
+		{
+			MessageID:      "slack:C99:222.222",
+			ConversationID: "slack:T1:C99",
+			ReplyToID:      "slack:C99:111.111",
+			Body:           "reply",
+			SourcePlatform: "slack",
+			SourceID:       "C99:222.222",
+		},
+	}
+	primary := APIOptions{V2Primary: true, V2: &V2Options{V2Store: v2Store}}
+	mapped := mapSlackLiveMessagesToV2(primary, "hashed-slack-conv", live)
+	wantRoot := v2keys.MessageID("slack-T1", "C99", "111.111")
+	wantReply := v2keys.MessageID("slack-T1", "C99", "222.222")
+	if mapped[0].ConversationID != "hashed-slack-conv" || mapped[0].MessageID != wantRoot {
+		t.Fatalf("root = %+v, want conv hashed-slack-conv id %s", mapped[0], wantRoot)
+	}
+	if mapped[1].ConversationID != "hashed-slack-conv" ||
+		mapped[1].MessageID != wantReply ||
+		mapped[1].ReplyToID != wantRoot {
+		t.Fatalf("reply = %+v, want id %s reply %s", mapped[1], wantReply, wantRoot)
+	}
+
+	passthrough := mapSlackLiveMessagesToV2(APIOptions{}, "hashed-slack-conv", []*db.Message{{
+		MessageID:      "slack:C99:111.111",
+		ConversationID: "slack:T1:C99",
+	}})
+	if passthrough[0].MessageID != "slack:C99:111.111" || passthrough[0].ConversationID != "slack:T1:C99" {
+		t.Fatalf("non-primary passthrough = %+v", passthrough[0])
 	}
 }
 

@@ -190,6 +190,7 @@ func TestPlatformForBridgeKeyMapsStoredAccounts(t *testing.T) {
 		{"whatsmeow", bridge.PlatformWhatsApp},
 		{"google_messages", bridge.PlatformGoogle},
 		{"gchat", bridge.Platform("gchat")},
+		{"slack_web", bridge.PlatformSlack},
 	} {
 		t.Run(test.bridgeKey, func(t *testing.T) {
 			if got := platformForBridgeKey(test.bridgeKey); got != test.want {

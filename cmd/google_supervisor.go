@@ -204,6 +204,7 @@ func (r *googleCredentialRepairer) RepairCredentials(
 	repairCtx, cancel := context.WithTimeout(ctx, googleCookieRefreshTimeout)
 	defer cancel()
 	if err := r.refresh(repairCtx, r.sessionPath); err != nil {
+		r.logger.Warn().Err(err).Msg("Google cookie refresh failed")
 		if r.flagRepair != nil {
 			r.flagRepair()
 		}

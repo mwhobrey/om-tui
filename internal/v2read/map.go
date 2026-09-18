@@ -10,7 +10,10 @@ import (
 	"strings"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/river"
+	"github.com/maxghenis/openmessage/internal/slacklive"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
+	"github.com/maxghenis/openmessage/internal/v2keys"
 )
 
 type participantDTO struct {
@@ -24,6 +27,14 @@ type reactionDTO struct {
 	Actors []string `json:"actors,omitempty"`
 }
 
+func slackTeamID(accountID string) string {
+	const prefix = "slack-"
+	if strings.HasPrefix(accountID, prefix) && len(accountID) > len(prefix) {
+		return accountID[len(prefix):]
+	}
+	return ""
+}
+
 func platformForBridgeKey(bridgeKey string) string {
 	bridgeKey = strings.TrimSpace(bridgeKey)
 	switch bridgeKey {
@@ -33,6 +44,8 @@ func platformForBridgeKey(bridgeKey string) string {
 		return "whatsapp"
 	case "signal_cli":
 		return "signal"
+	case "slack_web":
+		return "slack"
 	case "gchat", "imessage":
 		return bridgeKey
 	default:
@@ -78,7 +91,46 @@ func (s *Source) mapConversation(
 		SourcePlatform:   platformForBridgeKey(account.BridgeKey),
 		IsFavorite:       conversation.IsFavorite,
 		NotificationMode: string(conversation.NotificationMode),
+		Tab:              sqlite.ConversationTab(conversation),
+		RiverID:          riverIDForAccount(account),
 	}, nil
+}
+
+func riverIDForAccount(account sqlite.Account) string {
+	switch platformForBridgeKey(account.BridgeKey) {
+	case "sms":
+		return river.DefaultMessagesRiverID
+	case "whatsapp":
+		if account.AccountID != "" && account.AccountID != "whatsapp-primary" {
+			return account.AccountID
+		}
+		return river.DefaultWhatsAppRiverID
+	case "signal":
+		if account.AccountID != "" && account.AccountID != "signal-primary" {
+			return account.AccountID
+		}
+		return river.DefaultSignalRiverID
+	case "slack":
+		return account.AccountID
+	default:
+		return ""
+	}
+}
+
+func accountIDForRiver(riverID string, accounts map[string]sqlite.Account) string {
+	riverID = strings.TrimSpace(riverID)
+	if riverID == "" {
+		return ""
+	}
+	if _, ok := accounts[riverID]; ok {
+		return riverID
+	}
+	for accountID, account := range accounts {
+		if riverIDForAccount(account) == riverID {
+			return accountID
+		}
+	}
+	return ""
 }
 
 func (s *Source) participantsJSON(conversationID string) (string, error) {
@@ -128,9 +180,23 @@ func (s *Source) mapMessages(
 	if err != nil {
 		return nil, fmt.Errorf("map messages: load reactions: %w", err)
 	}
+	extras, err := s.store.MessageExtrasFor(context.Background(), messageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("map messages: load extras: %w", err)
+	}
+	remoteByConversation := make(map[string]string)
 	mapped := make([]*db.Message, 0, len(messages))
 	for _, message := range messages {
-		dto, err := s.mapMessage(message, accounts, reactions[message.MessageID])
+		remoteConversationID, ok := remoteByConversation[message.ConversationID]
+		if !ok {
+			conversation, err := s.store.GetConversation(message.ConversationID)
+			if err != nil {
+				return nil, fmt.Errorf("map messages: load conversation %q: %w", message.ConversationID, err)
+			}
+			remoteConversationID = conversation.RemoteConversationID
+			remoteByConversation[message.ConversationID] = remoteConversationID
+		}
+		dto, err := s.mapMessage(message, accounts, reactions[message.MessageID], extras[message.MessageID], remoteConversationID)
 		if err != nil {
 			return nil, err
 		}
@@ -143,6 +209,8 @@ func (s *Source) mapMessage(
 	message sqlite.Message,
 	accounts map[string]sqlite.Account,
 	reactionRows []sqlite.ReactionRow,
+	extra sqlite.MessageExtras,
+	remoteConversationID string,
 ) (*db.Message, error) {
 	account, ok := accounts[message.AccountID]
 	if !ok {
@@ -180,7 +248,9 @@ func (s *Source) mapMessage(
 		dto.SenderName = identity.DisplayName
 	}
 	if message.ReplyToRemoteID != nil {
-		dto.ReplyToID = *message.ReplyToRemoteID
+		if reply := strings.TrimSpace(*message.ReplyToRemoteID); reply != "" {
+			dto.ReplyToID = v2keys.MessageID(message.AccountID, remoteConversationID, reply)
+		}
 	}
 	if dto.IsFromMe {
 		status, err := s.sendStatusForMessage(message)
@@ -197,6 +267,28 @@ func (s *Source) mapMessage(
 		dto.MediaID = fmt.Sprintf("v2msg:%s:%d", message.MessageID, attachment.Ordinal)
 		dto.MimeType = attachment.MIME
 	}
+	if rendered := slacklive.RenderBlocksJSON(extra.Payload.Blocks); rendered != "" {
+		dto.Body = rendered
+	}
+	if actions := slacklive.InteractiveActions(extra.Payload.Blocks); len(actions) > 0 {
+		link := slacklive.MessageDeepLink(slackTeamID(account.AccountID), remoteConversationID, message.RemoteMessageID)
+		dto.BlockActions = make([]db.MessageAction, 0, len(actions))
+		for _, action := range actions {
+			item := db.MessageAction{
+				Label: action.Label,
+				Kind:  action.Kind,
+				URL:   action.URL,
+				Style: action.Style,
+			}
+			if item.URL == "" {
+				item.URL = link
+			}
+			dto.BlockActions = append(dto.BlockActions, item)
+		}
+	}
+	dto.Transcript = extra.Payload.Transcript
+	dto.TranscriptModel = extra.Payload.TranscriptModel
+	dto.TranscribedAtMS = extra.Payload.TranscribedAtMS
 	return dto, nil
 }
 

@@ -27,9 +27,10 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Slack sync + unread + history | Incremental per-channel cursors, dedupe-safe IDs, lazy older pages, SSE invalidation |
 | Slack threads | Dedicated TUI thread view, `conversations.replies`, reply-in-thread send |
 | Slack realtime | Optional Socket Mode; polling remains startup/reconnect fallback |
-| Bridge Slack adapter | Thin registry entry; text-send capability; **not** on V2 stack |
-| TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). Daemon parks Google then runs Gaia; `Esc` cancels, `q` closes the overlay |
+| Bridge Slack adapter | Thin registry entry; text-send + reactions + media download/send; V2 account bootstrap per `slack-<team>` when ingest is on |
+| TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). A paste against an existing `session.json` refreshes cookies and reconnects first; Gaia + phone emoji is the unpaired / reconnect-failed fallback. `Esc` cancels, `q` closes the overlay |
 | TUI-owned daemon dies with the TUI (Windows job object) | Shipped this branch; closing the terminal no longer leaves `om-tui.exe` serving |
+| Daemon holds `instance.lock` | Store-owning `serve` acquires `<data-dir>/instance.lock` before `app.New`. MCP-stdio clients and `--demo` do not. `backup` / `migrate` / `repair --apply` / a second serve refuse while it is held |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |
 | Google device ID-space reset repair (`repair google-idspace`) | Ported from upstream |
 | Docs: `docs/tui.md` + `docs/runbook/` + `NOTICE.md` | Present |
@@ -39,23 +40,18 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 
 | Item | Notes |
 |---|---|
-| Slack → V2 ingest/outbox | No Slack decoder / V2 account wiring |
-| Slack media / reaction mutation / Block Kit | Text-first; expand later |
-| V2 primary as default | Still opt-in; story/person/viz unavailable when primary |
-| Daemon honors `instance.lock` | Still backup/migrate-only |
+| Slack → V2 ingest/outbox | Decoder, per-team migrate, adapter `SendText` + `SendReaction` + `DownloadMedia` + `SendMedia`, TUI PRIMARY send, river-scoped search, unread + native mark-read, Slack Ctrl+T/PgUp live-ID remap both ways, Slack reaction mutation, file download/send, Block Kit layout via `message_extras` plus TUI `b`/`Ctrl+B` (URL buttons in-browser; app-owned controls via `slack://` — Slack has no public user-token click API), person/story/viz MCP, leftover v1 read surfaces, transcripts, platform `import_messages` SyncInto, favorite/mute, and MCP `react_to_message` on PRIMARY. Extra WA/Signal rivers migrate and ingest onto their own v2 accounts. PRIMARY is the compiled default after migrate; `OPENMESSAGES_V2_PRIMARY=0` stays on frozen v1. |
+| V2 primary as default | Default on after a published `v2/store.sqlite3`. Fresh empty data dirs bootstrap an empty v2 store. A non-empty `messages.db` plus a missing/stub v2 store still requires `om-tui migrate`. Set `OPENMESSAGES_V2_PRIMARY=0` to serve v1. Contacts, people, stats/story, person/story/viz MCP, transcripts, import sync, conversation `source_platform` filters, conversation-name search, favorite/mute, MCP `react_to_message`, MCP `send_media_to_conversation`, drafts, tabs, contact CRM metadata, `/api/new-conversation`, and PRIMARY `send_message` minting use v2 when primary. Google contact **sync** (`/api/contacts/sync`) and scheduled-send stay fail-closed. GET `/api/conversations/{id}` works. Windows `backup` uses a drive-letter-safe SQLite DSN and file-copies on genuine VACUUM OOM. |
 | Native GUI / desktop notifications on macOS/Linux | Non-goal for om-tui; Windows-only toasts today |
 | QR Google pair | Dead for many accounts — TUI paste / `pair --google` cookie method |
-| TUI Google Chrome cookie auto-read | Parked: current Chrome encrypts Gaia cookies (v20). Pair by pasting a `messages.google.com` curl. Windows v20 cannot self-heal; `SESSION_COOKIE_INVALID` after hours is expected |
+| TUI Google Chrome cookie auto-read | Parked: current Chrome encrypts Gaia cookies (v20 / app-bound). Chrome's elevation COM path-validates callers, so silent unwrap from om-tui.exe is not viable. Paste a `messages.google.com` curl. If this PC is already paired, paste rewrites cookies and reconnects (no phone tap). Gaia + emoji only when there is no session or reconnect fails. `SESSION_COOKIE_INVALID` after hours is expected on Windows until cookies are pasted |
 | Signal QR on Windows | `script` PTY wrapper was Unix-only; Windows now runs `signal-cli link` directly. 0.14.8 needs JRE 25 — om-tui injects a discovered JDK (scoop `temurin25-jdk`) over stale `JAVA_HOME` |
 | CLAUDE.md / README / agent-runbook | Synced for the TUI-only, cross-platform fork; prefer this runbook if anything drifts |
 
 ## Immediate next steps (suggested)
 
-1. **Dogfood WhatsApp / Signal rivers in the TUI** — `[` / `]` onto the river, `p` to scan the QR, send/receive, `r` reconnect.
-2. **Dogfood the Slack daily-driver path** — names, unread filters, dedicated threads, older history, and optional Socket Mode.
-3. **Decide V2 posture for Slack** — keep Slack legacy-only until V2 primary is real, or add decoder + outbox before cutover.
-4. Smoke-test the macOS/Linux vault backends (Keychain, Secret Service) on real hardware — only cross-compile-checked so far, not runtime-verified.
-5. V2 parity for `get_person_messages` / person-story MCP tools (deferred while V2 is the serving store; PR #13 in flight).
+1. **This Windows install is on PRIMARY.** `om-tui migrate` published `%LOCALAPPDATA%\OpenMessage\v2\store.sqlite3`. Frozen `messages.db` is the rollback fossil; shadow ingest was moved to `v2.shadow-*`. File-copy backup is in `migration-backups/`. Start the TUI from the rebuilt `om-tui.exe` so transports attach to v2 ingest/outbox. Google history backfill (startup FetchMessages) tees into v2; live frames already did. `OPENMESSAGES_V2_PRIMARY=0` is the v1 escape hatch. Google contact **sync** and scheduled-send stay fail-closed. On Windows, Google cookies still expire (v20); paste refreshes the existing session without a phone tap unless the device was unlinked.
+2. Smoke-test the macOS/Linux vault backends (Keychain, Secret Service) on real hardware — only cross-compile-checked so far, not runtime-verified.
 
 ## How to verify right now
 

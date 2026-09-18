@@ -63,6 +63,30 @@ func (s *Source) GetMessagesByConversationAfter(
 	return s.mapMessages(messages)
 }
 
+// GetMessagesByConversations returns a newest-limited cross-conversation page,
+// remapped oldest-first like the legacy person-history query.
+func (s *Source) GetMessagesByConversations(conversationIDs []string, limit int) ([]*db.Message, error) {
+	return s.messagesByConversations(conversationIDs, 0, 0, limit)
+}
+
+// GetMessagesByConversationsRange is the date-bounded person-history query.
+func (s *Source) GetMessagesByConversationsRange(conversationIDs []string, afterMS, beforeMS int64, limit int) ([]*db.Message, error) {
+	return s.messagesByConversations(conversationIDs, afterMS, beforeMS, limit)
+}
+
+func (s *Source) messagesByConversations(conversationIDs []string, afterMS, beforeMS int64, limit int) ([]*db.Message, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	messages, err := s.messages.ListMessagesByConversations(
+		context.Background(), conversationIDs, afterMS, beforeMS, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return s.mapMessages(messages)
+}
+
 // GetMessagesAroundMessage returns a chronological window including anchor.
 func (s *Source) GetMessagesAroundMessage(
 	conversationID string,
@@ -83,6 +107,28 @@ func (s *Source) GetMessagesAroundMessage(
 		return nil, err
 	}
 	return s.mapMessages(messages)
+}
+
+// GetMessageByID returns one mapped message, or nil if it is missing.
+func (s *Source) GetMessageByID(messageID string) (*db.Message, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	message, err := s.messages.GetMessage(context.Background(), messageID)
+	if errors.Is(err, sqlite.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	mapped, err := s.mapMessages([]sqlite.Message{message})
+	if err != nil {
+		return nil, err
+	}
+	if len(mapped) == 0 {
+		return nil, nil
+	}
+	return mapped[0], nil
 }
 
 func (s *Source) walkConversationMessages(

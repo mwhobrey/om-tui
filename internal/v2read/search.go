@@ -2,6 +2,7 @@ package v2read
 
 import (
 	"context"
+	"strings"
 
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
@@ -18,6 +19,7 @@ func (s *Source) SearchMessagesFiltered(
 		return nil, err
 	}
 	messages, err := s.messages.SearchMessages(context.Background(), query, sqlite.SearchQuery{
+		AccountID:            s.accountIDForSearchRiver(filter.RiverID),
 		ConversationID:       filter.ConversationID,
 		SenderCanonicalValue: filter.Phone,
 		SinceMS:              filter.SinceMS,
@@ -28,4 +30,16 @@ func (s *Source) SearchMessagesFiltered(
 		return nil, err
 	}
 	return s.mapMessages(messages)
+}
+
+func (s *Source) accountIDForSearchRiver(riverID string) string {
+	riverID = strings.TrimSpace(riverID)
+	if riverID == "" {
+		return ""
+	}
+	accounts, err := s.accountIndex()
+	if err != nil {
+		return ""
+	}
+	return accountIDForRiver(riverID, accounts)
 }

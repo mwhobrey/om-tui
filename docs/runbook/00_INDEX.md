@@ -77,6 +77,6 @@ go test -race ./...
 | Google Messages (SMS/RCS) | yes | — | libgm / mautrix-gmessages fork |
 | WhatsApp | yes | text export / Desktop | `whatsapp-default` plus extra `whatsapp-N` rivers; TUI QR pair; whatsmeow; one daemon owns all sessions |
 | Signal | yes | Desktop | `signal-default` plus extra `signal-N` rivers; TUI QR pair; local `signal-cli` ≥ 0.14.5 |
-| Slack | yes | — | `slack-<team>` rivers + vault; text send + recent sync; not on V2 ingest |
+| Slack | yes | — | `slack-<team>` rivers + vault; text send + recent sync; V2 migrate + outbox; TUI send uses `/api/v1/outbox` on PRIMARY; Block Kit `b`/`Ctrl+B` opens URL buttons and Slack-deep-links app-owned controls |
 | Google Chat | — | Takeout | importer only |
 | iMessage | — | `chat.db` | macOS Full Disk Access |

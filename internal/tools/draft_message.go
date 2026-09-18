@@ -10,6 +10,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
 func draftMessageTool() mcp.Tool {
@@ -22,7 +23,8 @@ func draftMessageTool() mcp.Tool {
 	)
 }
 
-func draftMessageHandler(a *app.App) server.ToolHandlerFunc {
+func draftMessageHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		conversationID := strArg(args, "conversation_id")
@@ -36,6 +38,19 @@ func draftMessageHandler(a *app.App) server.ToolHandlerFunc {
 		}
 
 		now := time.Now()
+		if options.V2Primary {
+			if options.V2 == nil || options.V2.V2Store == nil {
+				return errorResult("draft_message: v2 store is unavailable"), nil
+			}
+			draft, err := options.V2.V2Store.UpsertDraft(ctx, sqlite.Draft{
+				ConversationID: conversationID,
+				Body:           message,
+			})
+			if err != nil {
+				return errorResult(fmt.Sprintf("failed to create draft: %v", err)), nil
+			}
+			return textResult(fmt.Sprintf("Draft %s created. The user can review and send it from the app.", draft.DraftID)), nil
+		}
 		draftID := fmt.Sprintf("draft_%d", now.UnixMilli())
 
 		err := a.Store.UpsertDraft(&db.Draft{

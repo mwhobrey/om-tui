@@ -80,6 +80,26 @@ func (s *Store) ListContactsFromConversations(query string, limit int) ([]*Conta
 	}
 	defer rows.Close()
 
+	var convs []*Conversation
+	for rows.Next() {
+		c := &Conversation{}
+		if err := rows.Scan(&c.ConversationID, &c.Name, &c.Participants); err != nil {
+			continue
+		}
+		convs = append(convs, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ContactsFromConversations(convs, query, limit), nil
+}
+
+// ContactsFromConversations extracts unique non-self participants for
+// autocomplete. Conversations are assumed newest-first.
+func ContactsFromConversations(convs []*Conversation, query string, limit int) []*Contact {
+	if limit <= 0 {
+		return nil
+	}
 	type participant struct {
 		Name   string `json:"name"`
 		Number string `json:"number"`
@@ -90,15 +110,16 @@ func (s *Store) ListContactsFromConversations(query string, limit int) ([]*Conta
 	var contacts []*Contact
 	queryLower := strings.ToLower(query)
 
-	for rows.Next() {
-		var convID, name, participantsJSON string
-		if err := rows.Scan(&convID, &name, &participantsJSON); err != nil {
+	for _, conv := range convs {
+		if conv == nil {
 			continue
 		}
+		convID := conv.ConversationID
+		name := conv.Name
+		participantsJSON := conv.Participants
 
 		var participants []participant
 		if err := json.Unmarshal([]byte(participantsJSON), &participants); err != nil {
-			// Fall back to conversation name if participants can't be parsed
 			if name != "" && !seen[name] {
 				if query == "" || containsInsensitive(name, queryLower) {
 					seen[name] = true
@@ -107,6 +128,9 @@ func (s *Store) ListContactsFromConversations(query string, limit int) ([]*Conta
 						Name:      name,
 					})
 				}
+			}
+			if len(contacts) >= limit {
+				return contacts[:limit]
 			}
 			continue
 		}
@@ -135,14 +159,12 @@ func (s *Store) ListContactsFromConversations(query string, limit int) ([]*Conta
 				Name:      displayName,
 				Number:    p.Number,
 			})
-		}
-
-		if len(contacts) >= limit {
-			contacts = contacts[:limit]
-			break
+			if len(contacts) >= limit {
+				return contacts
+			}
 		}
 	}
-	return contacts, rows.Err()
+	return contacts
 }
 
 // UpsertUnifiedContact creates or updates a unified contact.

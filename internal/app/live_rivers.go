@@ -302,6 +302,9 @@ func (a *App) StartExtraLiveRivers(ctx context.Context) {
 				a.Logger.Warn().Err(err).Str("river_id", r.ID).Msg("Failed to init extra WhatsApp river")
 				continue
 			}
+			if a.OnExtraWhatsAppRiverReady != nil {
+				a.OnExtraWhatsAppRiverReady(r.ID, bridge)
+			}
 			if err := bridge.ConnectIfPaired(); err != nil {
 				a.Logger.Warn().Err(err).Str("river_id", r.ID).Msg("Failed to connect extra WhatsApp river")
 			}
@@ -310,6 +313,9 @@ func (a *App) StartExtraLiveRivers(ctx context.Context) {
 			if err != nil {
 				a.Logger.Warn().Err(err).Str("river_id", r.ID).Msg("Failed to init extra Signal river")
 				continue
+			}
+			if a.OnExtraSignalRiverReady != nil {
+				a.OnExtraSignalRiverReady(r.ID, bridge)
 			}
 			if err := bridge.ConnectIfPaired(); err != nil {
 				a.Logger.Warn().Err(err).Str("river_id", r.ID).Msg("Failed to connect extra Signal river")

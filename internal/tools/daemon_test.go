@@ -48,6 +48,9 @@ func v2DaemonHandler(t *testing.T, deliveryState string) http.Handler {
 			"remote_message_id": "remote-9",
 		})
 	})
+	mux.HandleFunc("/api/new-conversation", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"conversation_id": "minted-1", "name": "New"})
+	})
 	return mux
 }
 
@@ -206,9 +209,25 @@ func TestDaemonSendToConversationLegacyDaemon(t *testing.T) {
 
 func TestDaemonSendMessageResolvesPlatformsWithoutTransports(t *testing.T) {
 	options := Options{Daemon: daemonClientFor(t, v2DaemonHandler(t, "confirmed"))}
-	handler := daemonSendMessageHandler(options)
 
 	t.Run("whatsapp recipient", func(t *testing.T) {
+		store, err := db.New(":memory:")
+		if err != nil {
+			t.Fatalf("create db: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		if err := store.UpsertConversation(&db.Conversation{
+			ConversationID: "v2-wa-native",
+			Name:           "Pat",
+			Participants:   `[{"name":"Pat","number":"16505550100@s.whatsapp.net"}]`,
+			SourcePlatform: "whatsapp",
+		}); err != nil {
+			t.Fatalf("seed conversation: %v", err)
+		}
+		withReads := options
+		withReads.Reads = store
+		handler := daemonSendMessageHandler(withReads)
+
 		req := mcp.CallToolRequest{}
 		req.Params.Arguments = map[string]any{
 			"recipient": "+16505550100",
@@ -221,6 +240,84 @@ func TestDaemonSendMessageResolvesPlatformsWithoutTransports(t *testing.T) {
 		}
 		if result.IsError {
 			t.Fatalf("expected success, got %+v", result)
+		}
+	})
+
+	t.Run("whatsapp submits native conversation id", func(t *testing.T) {
+		store, err := db.New(":memory:")
+		if err != nil {
+			t.Fatalf("create db: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		if err := store.UpsertConversation(&db.Conversation{
+			ConversationID: "v2-wa-native",
+			Name:           "Pat",
+			Participants:   `[{"name":"Pat","number":"16505550100@s.whatsapp.net"}]`,
+			SourcePlatform: "whatsapp",
+		}); err != nil {
+			t.Fatalf("seed conversation: %v", err)
+		}
+		var submittedID string
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"v2_send": true, "v2_primary": true, "connected": true})
+		})
+		mux.HandleFunc("/api/v1/outbox/messages", func(w http.ResponseWriter, r *http.Request) {
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode submission: %v", err)
+			}
+			submittedID, _ = request["conversation_id"].(string)
+			json.NewEncoder(w).Encode(map[string]any{"outbox_id": "out-1", "state": "queued"})
+		})
+		mux.HandleFunc("/api/v1/outbox/out-1", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"outbox_id":         "out-1",
+				"state":             "confirmed",
+				"remote_message_id": "remote-9",
+			})
+		})
+		handler := daemonSendMessageHandler(Options{Daemon: daemonClientFor(t, mux), Reads: store})
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = map[string]any{
+			"recipient": "+16505550100",
+			"platform":  "whatsapp",
+			"message":   "hi",
+		}
+		result, err := handler(context.Background(), req)
+		if err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected success, got %+v", result)
+		}
+		if submittedID != "v2-wa-native" {
+			t.Fatalf("outbox conversation_id = %q, want v2-wa-native", submittedID)
+		}
+	})
+
+	t.Run("whatsapp without existing conversation", func(t *testing.T) {
+		store, err := db.New(":memory:")
+		if err != nil {
+			t.Fatalf("create db: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
+		withReads := options
+		withReads.Reads = store
+		handler := daemonSendMessageHandler(withReads)
+
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = map[string]any{
+			"recipient": "+16505550100",
+			"platform":  "whatsapp",
+			"message":   "hi",
+		}
+		result, err := handler(context.Background(), req)
+		if err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected mint+send for a brand-new WhatsApp thread in v2-primary, got %+v", result)
 		}
 	})
 
@@ -243,13 +340,8 @@ func TestDaemonSendMessageResolvesPlatformsWithoutTransports(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handler: %v", err)
 		}
-		if !result.IsError {
-			t.Fatal("expected error result for a brand-new SMS thread in client mode")
-		}
-		payload := structuredMap(t, result)
-		message, _ := payload["error"].(string)
-		if !strings.Contains(message, "no existing SMS conversation") {
-			t.Fatalf("sms error = %q", message)
+		if result.IsError {
+			t.Fatalf("expected mint+send for a brand-new SMS thread in v2-primary, got %+v", result)
 		}
 	})
 
@@ -284,8 +376,8 @@ func TestDaemonSendMessageResolvesPlatformsWithoutTransports(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handler: %v", err)
 		}
-		if !result.IsError {
-			t.Fatal("straddling digit sequence must not resolve to a conversation")
+		if result.IsError {
+			t.Fatalf("straddle should mint a new thread, not error: %+v", result)
 		}
 	})
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/v2wire"
 )
 
 var (
@@ -85,6 +86,19 @@ func sendMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.ToolHan
 			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			if v2 != nil && v2.V2Primary {
+				minted, err := v2wire.EnsureConversation(v2.V2Store, v2wire.ConversationSpec{
+					AccountID:            "whatsapp-primary",
+					Platform:             "whatsapp",
+					RemoteConversationID: conversationID,
+					Title:                name,
+					Group:                isGroup,
+				})
+				if err != nil {
+					return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil
+				}
+				return submitV2Text(ctx, a, v2, args, minted.ConversationID, message), nil
+			}
 			if v2 != nil {
 				if err := ensureDirectConversationExists(a, conversationID, "whatsapp", name, number, isGroup, time.Now().UnixMilli()); err != nil {
 					return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil
@@ -115,6 +129,19 @@ func sendMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.ToolHan
 			conversationID, name, number, isGroup, err := canonicalSignalDirectConversation(recipient)
 			if err != nil {
 				return errorResult(err.Error()), nil
+			}
+			if v2 != nil && v2.V2Primary {
+				minted, err := v2wire.EnsureConversation(v2.V2Store, v2wire.ConversationSpec{
+					AccountID:            "signal-primary",
+					Platform:             "signal",
+					RemoteConversationID: conversationID,
+					Title:                name,
+					Group:                isGroup,
+				})
+				if err != nil {
+					return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil
+				}
+				return submitV2Text(ctx, a, v2, args, minted.ConversationID, message), nil
 			}
 			if v2 != nil {
 				if err := ensureDirectConversationExists(a, conversationID, "signal", name, number, isGroup, time.Now().UnixMilli()); err != nil {
@@ -159,6 +186,19 @@ func sendMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.ToolHan
 			}
 			if conv == nil {
 				return errorResult("no conversation returned"), nil
+			}
+			if v2 != nil && v2.V2Primary {
+				minted, err := v2wire.EnsureConversation(v2.V2Store, v2wire.ConversationSpec{
+					AccountID:            "google-primary",
+					Platform:             "sms",
+					RemoteConversationID: conv.GetConversationID(),
+					Title:                firstNonEmpty(conv.GetName(), recipient),
+					Group:                conv.GetIsGroupChat(),
+				})
+				if err != nil {
+					return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil
+				}
+				return submitV2Text(ctx, a, v2, args, minted.ConversationID, message), nil
 			}
 			if err := upsertGoogleConversation(a, conv); err != nil {
 				return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil

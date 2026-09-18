@@ -66,6 +66,12 @@ var migration0009SQL string
 //go:embed migrations/0010_reactions.sql
 var migration0010SQL string
 
+//go:embed migrations/0011_message_extras.sql
+var migration0011SQL string
+
+//go:embed migrations/0012_leftover_writes.sql
+var migration0012SQL string
+
 var embeddedMigrations = []migration{
 	newMigration(1, "storage_shell", migration0001SQL, newStorageShellArguments),
 	newMigration(2, "identity_graph", migration0002SQL, nil),
@@ -77,6 +83,8 @@ var embeddedMigrations = []migration{
 	newMigration(8, "message_attachments", migration0008SQL, nil),
 	newMigration(9, "outbox_send_again", migration0009SQL, nil),
 	newMigration(10, "reactions", migration0010SQL, nil),
+	newMigration(11, "message_extras", migration0011SQL, nil),
+	newMigration(12, "leftover_writes", migration0012SQL, nil),
 }
 
 func newMigration(
@@ -85,6 +93,7 @@ func newMigration(
 	upSQL string,
 	arguments migrationArguments,
 ) migration {
+	upSQL = strings.ReplaceAll(upSQL, "\r\n", "\n")
 	sum := sha256.Sum256([]byte(upSQL))
 	return migration{
 		version:        version,

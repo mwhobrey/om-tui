@@ -13,6 +13,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/v2wire"
 )
 
 var getOrCreateGoogleGroupConversationV2 = func(a *app.App, phones []string) (*gmproto.Conversation, error) {
@@ -78,6 +79,19 @@ func sendGroupMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.To
 			}
 			if conv == nil {
 				return errorResult("no conversation returned"), nil
+			}
+			if v2.V2Primary {
+				minted, err := v2wire.EnsureConversation(v2.V2Store, v2wire.ConversationSpec{
+					AccountID:            "google-primary",
+					Platform:             "sms",
+					RemoteConversationID: conv.GetConversationID(),
+					Title:                conv.GetName(),
+					Group:                true,
+				})
+				if err != nil {
+					return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil
+				}
+				return submitV2Text(ctx, a, v2, args, minted.ConversationID, message), nil
 			}
 			if err := upsertGoogleConversation(a, conv); err != nil {
 				return errorResult(fmt.Sprintf("failed to persist conversation: %v", err)), nil

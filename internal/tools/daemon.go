@@ -253,41 +253,25 @@ func daemonSendMessageHandler(options Options) server.ToolHandlerFunc {
 			return errorResult("message is required"), nil
 		}
 
-		var conversationID string
-		switch platform {
-		case "whatsapp":
-			id, _, _, _, err := canonicalWhatsAppDirectConversation(recipient)
-			if err != nil {
-				return errorResult(err.Error()), nil
-			}
-			conversationID = id
-		case "signal":
-			id, _, _, _, err := canonicalSignalDirectConversation(recipient)
-			if err != nil {
-				return errorResult(err.Error()), nil
-			}
-			conversationID = id
-		case "sms":
-			if !looksLikePhoneNumber(recipient) {
-				return errorResult(fmt.Sprintf("SMS recipient must be a phone number with country code (e.g. +15551234567), got %q", recipient)), nil
-			}
-			conversation, err := findDirectSMSConversation(options.Reads, recipient)
-			if err != nil {
-				return errorResult(fmt.Sprintf("resolve SMS conversation: %v", err)), nil
-			}
-			if conversation == nil {
-				return errorResult(fmt.Sprintf(
-					"no existing SMS conversation with %s. In transportless client mode, starting a brand-new SMS thread requires the OpenMessage app (send the first message there); replies to existing threads work here — use resolve_contact_routes to find the conversation, then send_to_conversation.", recipient,
-				)), nil
-			}
-			conversationID = conversation.ConversationID
-		default:
-			return errorResult(fmt.Sprintf("unsupported platform %q (supported: sms, whatsapp, signal)", platform)), nil
-		}
-
 		status, failure := daemonStatusOrResult(ctx, daemon)
 		if failure != nil {
 			return failure, nil
+		}
+
+		conversationID, errResult := resolveDaemonDirectConversation(options.Reads, status.V2Primary, platform, recipient)
+		if errResult != nil && status.V2Primary {
+			created, err := daemon.CreateConversation(ctx, recipient, platform)
+			if err != nil {
+				return errorResult(fmt.Sprintf("create conversation: %v", err)), nil
+			}
+			if strings.TrimSpace(created.ConversationID) == "" {
+				return errResult, nil
+			}
+			conversationID = created.ConversationID
+			errResult = nil
+		}
+		if errResult != nil {
+			return errResult, nil
 		}
 		if status.SendsViaOutbox() {
 			return daemonSubmitTextAndWait(ctx, daemon, args, conversationID, message), nil
@@ -419,6 +403,162 @@ func daemonReactToMessageHandler(options Options) server.ToolHandlerFunc {
 			"via":        "app",
 		}, fmt.Sprintf("Reaction %s (%s) sent via the running OpenMessage app.", emoji, action)), nil
 	}
+}
+
+// resolveDaemonDirectConversation maps a recipient to a conversation ID.
+// PRIMARY looks up an existing serving-store thread (v2 IDs after cutover).
+// Legacy IDs stay only for WhatsApp/Signal outside PRIMARY, where the daemon
+// still mirrors from messages.db. SMS always requires an existing thread.
+func resolveDaemonDirectConversation(reads readsource.ReadSource, v2Primary bool, platform, recipient string) (string, *mcp.CallToolResult) {
+	switch platform {
+	case "sms":
+		if !looksLikePhoneNumber(recipient) {
+			return "", errorResult(fmt.Sprintf("SMS recipient must be a phone number with country code (e.g. +15551234567), got %q", recipient))
+		}
+		conversation, err := findDirectSMSConversation(reads, recipient)
+		if err != nil {
+			return "", errorResult(fmt.Sprintf("resolve SMS conversation: %v", err))
+		}
+		if conversation == nil {
+			return "", errorResult(fmt.Sprintf(
+				"no existing SMS conversation with %s. In transportless client mode, starting a brand-new SMS thread requires the OpenMessage app (send the first message there); replies to existing threads work here — use resolve_contact_routes to find the conversation, then send_to_conversation.", recipient,
+			))
+		}
+		return conversation.ConversationID, nil
+	case "whatsapp":
+		id, _, _, _, err := canonicalWhatsAppDirectConversation(recipient)
+		if err != nil {
+			return "", errorResult(err.Error())
+		}
+		if v2Primary {
+			conversation, err := findDirectWhatsAppConversation(reads, recipient)
+			if err != nil {
+				return "", errorResult(fmt.Sprintf("resolve WhatsApp conversation: %v", err))
+			}
+			if conversation == nil {
+				return "", missingExistingDirectConversation("WhatsApp", recipient)
+			}
+			return conversation.ConversationID, nil
+		}
+		return id, nil
+	case "signal":
+		id, _, _, _, err := canonicalSignalDirectConversation(recipient)
+		if err != nil {
+			return "", errorResult(err.Error())
+		}
+		if v2Primary {
+			conversation, err := findDirectSignalConversation(reads, recipient)
+			if err != nil {
+				return "", errorResult(fmt.Sprintf("resolve Signal conversation: %v", err))
+			}
+			if conversation == nil {
+				return "", missingExistingDirectConversation("Signal", recipient)
+			}
+			return conversation.ConversationID, nil
+		}
+		return id, nil
+	default:
+		return "", errorResult(fmt.Sprintf("unsupported platform %q (supported: sms, whatsapp, signal)", platform))
+	}
+}
+
+func missingExistingDirectConversation(platform, recipient string) *mcp.CallToolResult {
+	return errorResult(fmt.Sprintf(
+		"no existing %s conversation with %s. v2-primary cannot mint a new thread from send_message; use resolve_contact_routes then send_to_conversation.",
+		platform, recipient,
+	))
+}
+
+func findDirectWhatsAppConversation(reads readsource.ReadSource, recipient string) (*db.Conversation, error) {
+	id, _, number, isGroup, err := canonicalWhatsAppDirectConversation(recipient)
+	if err != nil {
+		return nil, err
+	}
+	if isGroup {
+		return nil, nil
+	}
+	jid := strings.ToLower(strings.TrimPrefix(id, "whatsapp:"))
+	digits := digitsOnly(firstNonEmpty(number, jid))
+	return findDirectConversation(reads, "whatsapp", func(participant conversationParticipantRef) bool {
+		value := strings.ToLower(strings.TrimSpace(firstNonEmpty(participant.Number, participant.Phone, participant.ID)))
+		if value == "" {
+			return false
+		}
+		if value == jid || strings.HasSuffix(value, "@"+jid) {
+			return true
+		}
+		if strings.Contains(value, "@") {
+			value = strings.SplitN(value, "@", 2)[0]
+		}
+		return digits != "" && phoneDigitsMatch(last10Digits(digits), value)
+	})
+}
+
+func findDirectSignalConversation(reads readsource.ReadSource, recipient string) (*db.Conversation, error) {
+	_, _, number, isGroup, err := canonicalSignalDirectConversation(recipient)
+	if err != nil {
+		return nil, err
+	}
+	if isGroup {
+		return nil, nil
+	}
+	address := strings.ToLower(strings.TrimSpace(firstNonEmpty(number, recipient)))
+	digits := digitsOnly(address)
+	return findDirectConversation(reads, "signal", func(participant conversationParticipantRef) bool {
+		value := strings.ToLower(strings.TrimSpace(firstNonEmpty(participant.Number, participant.Phone, participant.ID)))
+		if value == "" {
+			return false
+		}
+		if value == address || strings.EqualFold(value, number) {
+			return true
+		}
+		return digits != "" && phoneDigitsMatch(last10Digits(digits), value)
+	})
+}
+
+type conversationParticipantRef struct {
+	Number string `json:"number"`
+	Phone  string `json:"phone"`
+	ID     string `json:"id"`
+}
+
+func findDirectConversation(
+	reads readsource.ReadSource,
+	platform string,
+	match func(conversationParticipantRef) bool,
+) (*db.Conversation, error) {
+	if reads == nil {
+		return nil, fmt.Errorf("no read source available")
+	}
+	conversations, err := reads.ListConversations(2000)
+	if err != nil {
+		return nil, err
+	}
+	for _, conversation := range conversations {
+		if conversation == nil || conversation.IsGroup {
+			continue
+		}
+		if normalizedPlatform(conversation.SourcePlatform) != platform {
+			continue
+		}
+		var participants []conversationParticipantRef
+		if err := json.Unmarshal([]byte(conversation.Participants), &participants); err != nil {
+			continue
+		}
+		for _, participant := range participants {
+			if match(participant) {
+				return conversation, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func last10Digits(digits string) string {
+	if len(digits) > 10 {
+		return digits[len(digits)-10:]
+	}
+	return digits
 }
 
 // findDirectSMSConversation scans recent conversations for a non-group

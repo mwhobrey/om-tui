@@ -701,6 +701,9 @@ func (a *App) storeConversation(conv *gmproto.Conversation) error {
 		return err
 	}
 	a.QueueGoogleAvatarCandidates(avatarCandidates)
+	if ingest := a.googleHistory(); ingest != nil {
+		ingest.IngestHistoryConversation(conv)
+	}
 	return nil
 }
 
@@ -746,5 +749,8 @@ func (a *App) storeMessage(msg *gmproto.Message) {
 
 	if err := a.Store.UpsertMessage(dbMsg); err != nil {
 		a.Logger.Error().Err(err).Str("msg_id", dbMsg.MessageID).Msg("Failed to store backfill message")
+	}
+	if ingest := a.googleHistory(); ingest != nil {
+		ingest.IngestHistoryMessage(msg)
 	}
 }

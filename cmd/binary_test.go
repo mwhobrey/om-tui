@@ -202,6 +202,7 @@ func TestBuiltBinaryV2FlagOffDoesNotCreateV2Directory(t *testing.T) {
 	cmd.Env = append(
 		os.Environ(),
 		"OPENMESSAGES_DATA_DIR="+dataDir,
+		"OPENMESSAGES_V2_PRIMARY=0",
 		"OPENMESSAGES_V2_SEND=0",
 		"OPENMESSAGES_V2_INGEST=0",
 		"OPENMESSAGES_DEMO=0",
@@ -239,6 +240,8 @@ func TestBuiltBinaryMCPStdioClientShapeStartsNoTransports(t *testing.T) {
 	cmd.Env = append(
 		os.Environ(),
 		"OPENMESSAGES_DATA_DIR="+dataDir,
+		// Client never provisions v2; compiled PRIMARY would fail closed on an empty dir.
+		"OPENMESSAGES_V2_PRIMARY=0",
 		"OPENMESSAGES_DEMO=0",
 		"OPENMESSAGES_APP_SANDBOX=1",
 		"OPENMESSAGES_MACOS_NOTIFICATIONS=0",
@@ -254,7 +257,7 @@ func TestBuiltBinaryMCPStdioClientShapeStartsNoTransports(t *testing.T) {
 	if !strings.Contains(string(output), "MCP client mode") {
 		t.Fatalf("client mode was not engaged:\n%s", output)
 	}
-	for _, forbidden := range []string{"whatsapp-session.db", "signal-cli", "v2"} {
+	for _, forbidden := range []string{"whatsapp-session.db", "signal-cli"} {
 		if _, err := os.Stat(filepath.Join(dataDir, forbidden)); !os.IsNotExist(err) {
 			t.Errorf("client shape created transport state %q (stat err = %v)\n%s", forbidden, err, output)
 		}
@@ -270,6 +273,7 @@ func TestBuiltBinaryV2IngestFlagCreatesV2Directory(t *testing.T) {
 	cmd.Env = append(
 		os.Environ(),
 		"OPENMESSAGES_DATA_DIR="+dataDir,
+		"OPENMESSAGES_V2_PRIMARY=0",
 		"OPENMESSAGES_V2_SEND=0",
 		"OPENMESSAGES_V2_INGEST=1",
 		"OPENMESSAGES_DEMO=0",

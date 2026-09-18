@@ -300,6 +300,19 @@ func TestUpsertsPreserveIDsAndCreationTimes(t *testing.T) {
 	gotConversation, err := store.GetConversation(conversation.ConversationID)
 	mustRepositoryRead(t, "GetConversation", err)
 	assertRepositoryEqual(t, "deduplicated conversation", gotConversation, updatedConversation)
+	mustRepositoryWrite(t, "SetConversationFavorite", store.SetConversationFavorite(conversation.ConversationID, true))
+	mustRepositoryWrite(t, "SetConversationNotificationMode", store.SetConversationNotificationMode(conversation.ConversationID, NotificationModeMuted))
+	gotConversation, err = store.GetConversation(conversation.ConversationID)
+	mustRepositoryRead(t, "GetConversation after local flags", err)
+	if !gotConversation.IsFavorite || gotConversation.NotificationMode != NotificationModeMuted {
+		t.Fatalf("local flags = favorite=%v mode=%q", gotConversation.IsFavorite, gotConversation.NotificationMode)
+	}
+	if err := store.SetConversationFavorite("missing", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetConversationFavorite(missing) = %v, want ErrNotFound", err)
+	}
+	updatedConversation.IsFavorite = true
+	updatedConversation.NotificationMode = NotificationModeMuted
+	updatedConversation.UpdatedAtMS = gotConversation.UpdatedAtMS
 	remoteConversation, err := store.GetConversationByRemote(
 		conversation.AccountID,
 		conversation.RemoteConversationID,

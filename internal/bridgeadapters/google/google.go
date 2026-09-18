@@ -252,6 +252,33 @@ func (a *Adapter) currentRun() *run {
 	return r
 }
 
+// IngestHistoryConversation tees a ListConversations row into the v2 sink.
+// Live conversation frames already go through handleEvent; history fetches
+// from App.Backfill do not.
+func (a *Adapter) IngestHistoryConversation(conv *gmproto.Conversation) {
+	if conv == nil {
+		return
+	}
+	r := a.currentRun()
+	if r == nil {
+		return
+	}
+	r.teeIngress(conv, time.Now())
+}
+
+// IngestHistoryMessage tees a FetchMessages row as an old wrapped frame.
+// IsOld is required on the Google envelope; it does not skip decode.
+func (a *Adapter) IngestHistoryMessage(msg *gmproto.Message) {
+	if msg == nil {
+		return
+	}
+	r := a.currentRun()
+	if r == nil {
+		return
+	}
+	r.teeIngress(&libgm.WrappedMessage{Message: msg, IsOld: true}, time.Now())
+}
+
 func (a *Adapter) clearCurrent(candidate *run) {
 	a.mu.Lock()
 	if a.current == candidate {
@@ -706,4 +733,5 @@ var (
 	_ bridge.Adapter            = (*Adapter)(nil)
 	_ bridge.CapabilityDeclarer = (*Adapter)(nil)
 	_ bridge.Run                = (*run)(nil)
+	_ app.GoogleHistoryIngest   = (*Adapter)(nil)
 )

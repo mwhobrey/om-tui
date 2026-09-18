@@ -24,6 +24,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/bridge"
 	googleadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/google"
 	signaladapter "github.com/maxghenis/openmessage/internal/bridgeadapters/signal"
+	slackadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/slack"
 	whatsappadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/whatsapp"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/googlecookies"
@@ -32,6 +33,8 @@ import (
 	"github.com/maxghenis/openmessage/internal/localapi"
 	"github.com/maxghenis/openmessage/internal/notify"
 	"github.com/maxghenis/openmessage/internal/readsource"
+	"github.com/maxghenis/openmessage/internal/signallive"
+	"github.com/maxghenis/openmessage/internal/slacklive"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/telemetry"
 	"github.com/maxghenis/openmessage/internal/tools"
@@ -146,6 +149,13 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	if !isDemo && opts.mcpClientShape() && !opts.transportsEnabled() {
 		return runServeMCPClient(logger, opts)
 	}
+	if serveTakesInstanceLock(isDemo, opts) {
+		lock, err := acquireServeInstanceLock()
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+	}
 	transports := opts.transportsEnabled()
 
 	v2Mode, err := resolveV2RuntimeMode(isDemo, app.DefaultDataDir())
@@ -223,6 +233,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	if !isDemo && transports {
 		googleLifecycle = googleadapter.New(googleAccountID, a, canRefreshGoogleCookies)
 		a.SetGoogleLifecycleNotifier(googleLifecycle)
+		a.SetGoogleHistoryIngest(googleLifecycle)
 		if v2Send || v2Ingest {
 			stack, err = newV2Stack(v2StackDeps{
 				Logger:  logger,
@@ -454,6 +465,90 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	}
 
 	if transports && !isDemo {
+		if stack != nil {
+			a.OnSlackClientReady = func(riverID string, client *slacklive.Client) {
+				if client == nil {
+					return
+				}
+				if _, exists := stack.Registry.Snapshot(riverID); !exists {
+					if err := stack.RegisterAdapter(slackadapter.New(riverID, client)); err != nil {
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to register Slack adapter with v2 stack")
+						return
+					}
+				}
+				client.SetIngress(func(frame slacklive.IngressFrame) {
+					record, err := ingest.BuildSlackIngress(riverID, 0, frame, time.Now())
+					if err != nil {
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to encode Slack v2 ingress")
+						return
+					}
+					if err := stack.Sink.AppendIngress(context.Background(), *record); err != nil {
+						stack.Sink.RecordIngressError(riverID)
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to append Slack v2 ingress")
+					}
+				})
+			}
+			a.OnExtraWhatsAppRiverReady = func(riverID string, host *whatsapplive.Bridge) {
+				if host == nil {
+					return
+				}
+				if _, exists := stack.Registry.Snapshot(riverID); !exists {
+					if err := stack.RegisterAdapter(whatsappadapter.New(riverID, host)); err != nil {
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to register extra WhatsApp adapter with v2 stack")
+						return
+					}
+				}
+				host.ObserveIngress(func(frame whatsapplive.IngressFrame) {
+					if err := stack.Sink.AppendIngress(context.Background(), bridge.RawIngressRecord{
+						AccountID:    riverID,
+						Generation:   0,
+						DedupeKey:    frame.DedupeKey,
+						Codec:        whatsapplive.IngressCodec,
+						CodecVersion: whatsapplive.IngressCodecVersion,
+						ReceivedAt:   frame.ReceivedAt,
+						Payload:      frame.Payload,
+					}); err != nil {
+						stack.Sink.RecordIngressError(riverID)
+						host.LogIngressError(err, riverID, 0)
+					}
+				})
+			}
+			a.OnExtraSignalRiverReady = func(riverID string, host *signallive.Bridge) {
+				if host == nil {
+					return
+				}
+				if _, exists := stack.Registry.Snapshot(riverID); !exists {
+					if err := stack.RegisterAdapter(signaladapter.New(riverID, host)); err != nil {
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to register extra Signal adapter with v2 stack")
+						return
+					}
+				}
+				host.ObserveIngress(func(account string, line []byte, resolvedSource, resolvedDestination string) {
+					record, ephemeral, err := ingest.BuildSignalIngress(
+						riverID, 0, account, line, resolvedSource, resolvedDestination, time.Now(),
+					)
+					if err != nil {
+						stack.Sink.RecordIngressError(riverID)
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to encode extra Signal v2 ingress")
+						return
+					}
+					if ephemeral != nil {
+						if err := stack.Sink.EmitEphemeral(context.Background(), *ephemeral); err != nil {
+							stack.Sink.RecordIngressError(riverID)
+							logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to emit extra Signal ephemeral")
+						}
+						return
+					}
+					if record == nil {
+						return
+					}
+					if err := stack.Sink.AppendIngress(context.Background(), *record); err != nil {
+						stack.Sink.RecordIngressError(riverID)
+						logger.Warn().Err(err).Str("river_id", riverID).Msg("Failed to append extra Signal v2 ingress")
+					}
+				})
+			}
+		}
 		a.StartAllSlackRivers(context.Background())
 		a.StartExtraLiveRivers(context.Background())
 		defer a.StopAllSlackRivers()
@@ -915,10 +1010,15 @@ func runServeMCPClient(logger zerolog.Logger, opts serveOptions) error {
 		buildVersion,
 		mcpserver.WithToolCapabilities(true),
 	)
+	var mcpV2 *tools.V2Dependencies
+	if v2Store != nil {
+		mcpV2 = &tools.V2Dependencies{V2Store: v2Store, V2Primary: v2Primary}
+	}
 	tools.RegisterWithOptions(mcpSrv, a, tools.Options{
 		Reads:     reads,
 		V2Primary: v2Primary,
 		Daemon:    daemon,
+		V2:        mcpV2,
 	})
 
 	logger.Info().
@@ -1041,6 +1141,46 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		return serveOptions{}, fmt.Errorf("serve requires at least one enabled transport: web, api, mcp-sse, or mcp-stdio")
 	}
 	return opts, nil
+}
+
+// serveTakesInstanceLock reports whether this process should hold
+// <data-dir>/instance.lock for its lifetime. Store-owning daemons do;
+// per-session MCP-stdio clients and demo (which uses a throwaway data dir)
+// must not — N MCP sessions share the live store, and demo must not lock
+// the operator's real data directory.
+func serveTakesInstanceLock(isDemo bool, opts serveOptions) bool {
+	if isDemo {
+		return false
+	}
+	if opts.mcpClientShape() && !opts.transportsEnabled() {
+		return false
+	}
+	return true
+}
+
+func acquireServeInstanceLock() (*instanceLock, error) {
+	dataDir := app.DefaultDataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	lockPath := filepath.Join(dataDir, instanceLockName)
+	commit, _ := buildRevision()
+	lock, err := acquireInstanceLock(lockPath, instanceLockRecord{
+		PID:           os.Getpid(),
+		Process:       "om-tui serve",
+		StartedAt:     time.Now().UTC().Format(time.RFC3339),
+		BuildID:       Version(),
+		Commit:        commit,
+		CanonicalPath: dataDir,
+		ProbeURL:      defaultBackendProbeURL(),
+	})
+	if err != nil {
+		if errors.Is(err, errInstanceLockHeld) {
+			return nil, fmt.Errorf("OM-TUI state is in use: %s is locked; stop the other om-tui/serve process and retry: %w", lockPath, err)
+		}
+		return nil, fmt.Errorf("acquire instance lock: %w", err)
+	}
+	return lock, nil
 }
 
 func configureServeEnv(opts serveOptions) func() {

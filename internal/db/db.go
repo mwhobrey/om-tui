@@ -41,18 +41,27 @@ type Message struct {
 	TimestampMS     int64
 	Status          string
 	IsFromMe        bool
-	MentionsMe      bool   `json:"mentions_me,omitempty"`
-	MediaID         string `json:",omitempty"`
-	MimeType        string `json:",omitempty"`
-	DecryptionKey   string `json:"-"`          // hex-encoded, never exposed in API
-	Reactions       string `json:",omitempty"` // JSON array of {emoji, count}
-	ReplyToID       string `json:",omitempty"`
-	ReplyCount      int    `json:"reply_count,omitempty"`
-	SourcePlatform  string `json:"source_platform,omitempty"` // sms, gchat, imessage, whatsapp, signal, telegram
-	SourceID        string `json:"source_id,omitempty"`       // platform-specific original ID for dedup
-	Transcript      string `json:"transcript,omitempty"`
-	TranscribedAtMS int64  `json:"transcribed_at_ms,omitempty"`
-	TranscriptModel string `json:"transcript_model,omitempty"`
+	MentionsMe      bool            `json:"mentions_me,omitempty"`
+	MediaID         string          `json:",omitempty"`
+	MimeType        string          `json:",omitempty"`
+	DecryptionKey   string          `json:"-"`          // hex-encoded, never exposed in API
+	Reactions       string          `json:",omitempty"` // JSON array of {emoji, count}
+	ReplyToID       string          `json:",omitempty"`
+	ReplyCount      int             `json:"reply_count,omitempty"`
+	SourcePlatform  string          `json:"source_platform,omitempty"` // sms, gchat, imessage, whatsapp, signal, telegram
+	SourceID        string          `json:"source_id,omitempty"`       // platform-specific original ID for dedup
+	Transcript      string          `json:"transcript,omitempty"`
+	TranscribedAtMS int64           `json:"transcribed_at_ms,omitempty"`
+	TranscriptModel string          `json:"transcript_model,omitempty"`
+	BlockActions    []MessageAction `json:"block_actions,omitempty"`
+}
+
+// MessageAction is one Slack Block Kit control the TUI can activate.
+type MessageAction struct {
+	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Style string `json:"style,omitempty"`
 }
 
 type Contact struct {

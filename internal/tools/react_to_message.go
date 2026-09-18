@@ -47,7 +47,8 @@ func reactToMessageTool() mcp.Tool {
 	)
 }
 
-func reactToMessageHandler(a *app.App) server.ToolHandlerFunc {
+func reactToMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.ToolHandlerFunc {
+	v2 := activeV2(v2Options)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		conversationID := strArg(args, "conversation_id")
@@ -63,6 +64,9 @@ func reactToMessageHandler(a *app.App) server.ToolHandlerFunc {
 		}
 		if emoji == "" {
 			return errorResult("emoji is required"), nil
+		}
+		if v2 != nil && v2.V2Primary {
+			return submitV2Reaction(ctx, v2, args, conversationID, messageID, emoji, action), nil
 		}
 
 		conv, err := a.Store.GetConversation(conversationID)

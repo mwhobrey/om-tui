@@ -545,3 +545,60 @@ func TestBackupCapturesAuxiliaryDatabaseHotWAL(t *testing.T) {
 		t.Fatalf("backup copy hot rows = %d, want 2 (WAL content dropped)", count)
 	}
 }
+
+func TestSQLiteReadOnlyDSNNormalizesWindowsDrivePaths(t *testing.T) {
+	got := sqliteReadOnlyDSN(`C:\Users\inthe\openmessage\messages.db`)
+	if !strings.HasPrefix(got, "file:///C:/Users/inthe/openmessage/messages.db?") {
+		t.Fatalf("sqliteReadOnlyDSN() = %q, want file:///C:/... Windows URL", got)
+	}
+	if !strings.Contains(got, "mode=ro") {
+		t.Fatalf("sqliteReadOnlyDSN() = %q, want mode=ro", got)
+	}
+}
+
+func TestSQLiteReadOnlyDSNKeepsPOSIXPaths(t *testing.T) {
+	got := sqliteReadOnlyDSN("/home/user/.local/share/openmessage/messages.db")
+	if !strings.HasPrefix(got, "file:///home/user/.local/share/openmessage/messages.db?") {
+		t.Fatalf("sqliteReadOnlyDSN() = %q, want POSIX file URL", got)
+	}
+}
+
+func TestVacuumMemoryErrorDetection(t *testing.T) {
+	if !isVacuumMemoryError(errors.New("SQL logic error: out of memory (1)")) {
+		t.Fatal("expected out-of-memory VACUUM errors to trip the file-copy fallback")
+	}
+	if isVacuumMemoryError(errors.New("disk is full")) {
+		t.Fatal("disk-full should not look like a VACUUM memory failure")
+	}
+}
+
+func TestSnapshotSQLiteByCopyKeepsWAL(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "src.db")
+	database, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA journal_mode=WAL; CREATE TABLE t(id INTEGER); INSERT INTO t VALUES (1);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "dest.db")
+	if err := snapshotSQLiteByCopy(source, dest); err != nil {
+		t.Fatal(err)
+	}
+	copied, err := sql.Open("sqlite", sqliteReadOnlyDSN(dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copied.Close()
+	var count int
+	if err := copied.QueryRow("SELECT COUNT(*) FROM t").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("copied rows = %d, want 1", count)
+	}
+}

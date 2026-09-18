@@ -477,6 +477,58 @@ func TestIngressTeeMessageFramesUseContentHash(t *testing.T) {
 	}
 }
 
+func TestIngestHistoryMessageTeesIsOld(t *testing.T) {
+	host := newTestApp(t)
+	fake := &fakeTransport{}
+	a := newTestAdapter(t, host, fake)
+	sink := &recordingSink{}
+	run, err := a.Start(context.Background(), bridge.StartRequest{
+		AccountID:  "google-primary",
+		Generation: 3,
+	}, sink)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { stopRun(t, run) })
+
+	conv := &gmproto.Conversation{ConversationID: "conversation-1", Name: "Alice"}
+	message := &gmproto.Message{
+		MessageID:      "history-1",
+		ConversationID: "conversation-1",
+		Timestamp:      1_234_000,
+	}
+	a.IngestHistoryConversation(conv)
+	a.IngestHistoryMessage(message)
+	a.IngestHistoryMessage(nil)
+	a.IngestHistoryConversation(nil)
+
+	records := sink.ingressRecords()
+	if len(records) != 2 {
+		t.Fatalf("AppendIngress calls = %d, want 2", len(records))
+	}
+
+	var convEnvelope struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(records[0].Payload, &convEnvelope); err != nil {
+		t.Fatalf("decode conversation envelope: %v", err)
+	}
+	if convEnvelope.Kind != "conversation" {
+		t.Fatalf("first frame kind = %q, want conversation", convEnvelope.Kind)
+	}
+
+	var envelope struct {
+		Kind  string `json:"kind"`
+		IsOld *bool  `json:"is_old"`
+	}
+	if err := json.Unmarshal(records[1].Payload, &envelope); err != nil {
+		t.Fatalf("decode message envelope: %v", err)
+	}
+	if envelope.Kind != "message" || envelope.IsOld == nil || !*envelope.IsOld {
+		t.Fatalf("history envelope = kind %q is_old %v, want message is_old true", envelope.Kind, envelope.IsOld)
+	}
+}
+
 func TestIngressTeeThroughRealSinkDedupesExactFrames(t *testing.T) {
 	host := newTestApp(t)
 	storePath := filepath.Join(t.TempDir(), "v2.sqlite3")

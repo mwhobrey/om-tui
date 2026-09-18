@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -102,6 +103,7 @@ func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 	fail := func(err error) tea.Msg {
 		return sendFailedMsg{conversationID: conversationID, body: path, err: err}
 	}
+	slackRiver := m.activeRiverProvider() == "slack"
 	return func() tea.Msg {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -154,7 +156,10 @@ func (m Model) sendMediaCmd(conversationID, path, caption string) tea.Cmd {
 			IdempotencyKey: key,
 			Content:        file,
 		}
-		if status.V2Send || status.V2Primary {
+		if slackRiver && !status.V2Primary {
+			return fail(errors.New("Slack file send requires V2 primary"))
+		}
+		if status.V2Primary || (status.V2Send && !slackRiver) {
 			if _, err := client.SubmitMedia(ctx, submission); err != nil {
 				return fail(err)
 			}

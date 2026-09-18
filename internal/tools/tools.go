@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/localapi"
 	"github.com/maxghenis/openmessage/internal/readsource"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
 // Options selects the canonical read source and optional durable-send seam.
@@ -45,8 +45,11 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 		options.Reads = a.Store
 	}
 	configuredV2 := activeV2([]*V2Dependencies{options.V2})
+	v2ForWrites := options.V2
 	v2Primary := options.V2Primary
 	if configuredV2 != nil && configuredV2.V2Primary {
+		v2Primary = true
+	} else if v2ForWrites != nil && v2ForWrites.V2Primary {
 		v2Primary = true
 	}
 	if configuredV2 != nil && v2Primary != configuredV2.V2Primary {
@@ -55,7 +58,11 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 		configuredV2 = &configuredCopy
 	}
 	options.V2Primary = v2Primary
-	options.V2 = configuredV2
+	if configuredV2 != nil {
+		options.V2 = configuredV2
+	} else {
+		options.V2 = v2ForWrites
+	}
 
 	s.AddTool(getMessagesTool(), getMessagesHandler(a, options))
 	s.AddTool(getConversationTool(), getConversationHandler(a, options))
@@ -77,28 +84,28 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 	if options.Daemon != nil {
 		s.AddTool(reactToMessageTool(), daemonReactToMessageHandler(options))
 	} else {
-		s.AddTool(reactToMessageTool(), reactToMessageHandler(a))
+		s.AddTool(reactToMessageTool(), reactToMessageHandler(a, configuredV2))
 	}
-	s.AddTool(setMessageTranscriptTool(), setMessageTranscriptHandler(a))
+	s.AddTool(setMessageTranscriptTool(), setMessageTranscriptHandler(a, options))
 	s.AddTool(listConversationsTool(), listConversationsHandler(a, options))
-	s.AddTool(listContactsTool(), listContactsHandler(a))
-	s.AddTool(resolveContactRoutesTool(), resolveContactRoutesHandler(a))
+	s.AddTool(listContactsTool(), listContactsHandler(a, options))
+	s.AddTool(resolveContactRoutesTool(), resolveContactRoutesHandler(a, options))
 	if options.Daemon != nil {
 		s.AddTool(getStatusTool(), daemonGetStatusHandler(a, options))
 	} else {
 		s.AddTool(getStatusTool(), getStatusHandler(a, options))
 	}
-	s.AddTool(draftMessageTool(), draftMessageHandler(a))
-	s.AddTool(downloadMediaTool(), downloadMediaHandler(a))
-	s.AddTool(importMessagesTool(), importMessagesHandler(a))
-	s.AddTool(getPersonMessagesTool(), unavailableInV2Primary(v2Primary, getPersonMessagesHandler(a)))
-	s.AddTool(conversationStatsTool(), unavailableInV2Primary(v2Primary, conversationStatsHandler(a)))
-	s.AddTool(generateStoryTool(), unavailableInV2Primary(v2Primary, generateStoryHandler(a)))
-	s.AddTool(personStatsTool(), unavailableInV2Primary(v2Primary, personStatsHandler(a)))
-	s.AddTool(generatePersonStoryTool(), unavailableInV2Primary(v2Primary, generatePersonStoryHandler(a)))
-	s.AddTool(generateVizTool(), unavailableInV2Primary(v2Primary, generateVizHandler(a)))
-	s.AddTool(getPersonMessagesRangeTool(), unavailableInV2Primary(v2Primary, getPersonMessagesRangeHandler(a)))
-	s.AddTool(renderStoryTool(), unavailableInV2Primary(v2Primary, renderStoryHandler(a)))
+	s.AddTool(draftMessageTool(), draftMessageHandler(a, options))
+	s.AddTool(downloadMediaTool(), downloadMediaHandler(a, options))
+	s.AddTool(importMessagesTool(), importMessagesHandler(a, options))
+	s.AddTool(getPersonMessagesTool(), getPersonMessagesHandler(a, options))
+	s.AddTool(conversationStatsTool(), conversationStatsHandler(a, options))
+	s.AddTool(generateStoryTool(), generateStoryHandler(a, options))
+	s.AddTool(personStatsTool(), personStatsHandler(a, options))
+	s.AddTool(generatePersonStoryTool(), generatePersonStoryHandler(a, options))
+	s.AddTool(generateVizTool(), generateVizHandler(a, options))
+	s.AddTool(getPersonMessagesRangeTool(), getPersonMessagesRangeHandler(a, options))
+	s.AddTool(renderStoryTool(), renderStoryHandler(a, options))
 	switch {
 	case options.Daemon != nil:
 		s.AddTool(sendGroupMessageTool(true), daemonSendGroupMessageHandler())
@@ -106,17 +113,6 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 		s.AddTool(sendGroupMessageTool(), sendGroupMessageHandler(a))
 	default:
 		s.AddTool(sendGroupMessageTool(true), sendGroupMessageHandler(a, configuredV2))
-	}
-}
-
-const unavailableWhileV2Serving = "not available while v2 is the serving store"
-
-func unavailableInV2Primary(primary bool, legacy server.ToolHandlerFunc) server.ToolHandlerFunc {
-	if !primary {
-		return legacy
-	}
-	return func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return errorResult(unavailableWhileV2Serving), nil
 	}
 }
 
@@ -129,6 +125,13 @@ func resolvedOptions(a *app.App, configured []Options) Options {
 		}
 	}
 	return options
+}
+
+func v2WriteStore(options Options) *sqlite.Store {
+	if options.V2 == nil {
+		return nil
+	}
+	return options.V2.V2Store
 }
 
 func strArg(args map[string]any, key string) string {

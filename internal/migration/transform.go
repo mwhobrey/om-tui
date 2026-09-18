@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/blob"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/v2keys"
@@ -257,7 +258,7 @@ func Transform(ctx context.Context, options Options) (report Report, returnErr e
 	if err := writeConversations(target, state); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrTransform, err)
 	}
-	if err := writeHistory(ctx, messageRepository, dataset, state, &clockMS, &report); err != nil {
+	if err := writeHistory(ctx, target, messageRepository, dataset, state, &clockMS, &report); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrTransform, err)
 	}
 	if err := writeReactions(ctx, reactionRepository, state, &report); err != nil {
@@ -307,14 +308,14 @@ func buildTransformState(dataset legacyDataset, report *Report) (*transformState
 	}
 
 	for _, legacy := range dataset.conversations {
-		account, err := accountForPlatform(normalizeLegacyPlatform(legacy.Platform))
+		account, err := accountForLegacyConversation(legacy.Platform, legacy.ID)
 		if err != nil {
 			return nil, err
 		}
-		state.accounts[account.Platform] = account
+		state.accounts[account.AccountID] = account
 		plan := &conversationPlan{
 			Legacy: legacy, Account: account,
-			V2ID: v2keys.DeriveID("conversation", account.AccountID, legacy.ID),
+			V2ID: conversationV2ID(account, legacy.ID),
 		}
 		// A real legacy store carries conversations with an empty-string or
 		// malformed participants column. Those are unparseable JSON, but the
@@ -360,8 +361,12 @@ func buildTransformState(dataset legacyDataset, report *Report) (*transformState
 	}
 
 	for _, message := range dataset.messages {
-		account, _ := accountForPlatform(normalizeLegacyPlatform(message.Platform))
-		state.accounts[account.Platform] = account
+		plan := state.conversations[message.ConversationID]
+		if plan == nil {
+			continue
+		}
+		account := plan.Account
+		state.accounts[account.AccountID] = account
 		if strings.TrimSpace(message.SenderNumber) != "" {
 			if _, err := addIdentity(
 				state, account, message.SenderNumber, message.SenderName, message.IsFromMe, 20,
@@ -375,7 +380,7 @@ func buildTransformState(dataset legacyDataset, report *Report) (*transformState
 
 	if len(dataset.contacts) > 0 {
 		account, _ := accountForPlatform("sms")
-		state.accounts[account.Platform] = account
+		state.accounts[account.AccountID] = account
 		for _, contact := range dataset.contacts {
 			if strings.TrimSpace(contact.Number) == "" {
 				report.Warnings = append(report.Warnings,
@@ -411,9 +416,16 @@ func buildTransformState(dataset legacyDataset, report *Report) (*transformState
 			}
 			account, err := accountForPlatform(normalizeLegacyPlatform(identifier.Platform))
 			if err != nil {
+				if normalizeLegacyPlatform(identifier.Platform) == "slack" {
+					report.Warnings = append(report.Warnings, fmt.Sprintf(
+						"unified contact %q identifier %d skipped: Slack identities are account-scoped and have no team in the identifier",
+						legacy.ID, index,
+					))
+					continue
+				}
 				return nil, fmt.Errorf("unified contact %q identifier %d: %w", legacy.ID, index, err)
 			}
-			state.accounts[account.Platform] = account
+			state.accounts[account.AccountID] = account
 			key, err := addIdentity(state, account, identifier.Value, legacy.DisplayName, false, 40)
 			if err != nil {
 				return nil, fmt.Errorf("unified contact %q identifier %d: %w", legacy.ID, index, err)
@@ -468,8 +480,7 @@ func planLegacyReactions(dataset legacyDataset, state *transformState, report *R
 		if conversation == nil {
 			continue
 		}
-		messageID := v2keys.DeriveID("message", conversation.Account.AccountID,
-			message.ConversationID+"\x1f"+deriveRemoteMessageID(message))
+		messageID := messageV2ID(conversation.Account, message.ConversationID, deriveRemoteMessageID(message))
 		seen := map[string]struct{}{}
 		messageMalformed, messageUnmappable := false, false
 		before := len(state.reactions)
@@ -700,7 +711,7 @@ func writeConversations(target *sqlite.Store, state *transformState) error {
 		}
 		if err := target.UpsertConversation(sqlite.Conversation{
 			ConversationID: plan.V2ID, AccountID: plan.Account.AccountID,
-			RemoteConversationID: v2keys.NormalizeRemoteConversationID(plan.Account.Platform, plan.Legacy.ID),
+			RemoteConversationID: conversationNaturalKey(plan.Account, plan.Legacy.ID),
 			Kind:                 kind, Title: plan.Legacy.Name, NotificationMode: notification,
 			IsFavorite: plan.Legacy.IsFavorite, ArchivedAtMS: archivedAt,
 			LastMessageAtMS: lastMessageAt, MetadataJSON: "{}",
@@ -725,6 +736,7 @@ func writeConversations(target *sqlite.Store, state *transformState) error {
 
 func writeHistory(
 	ctx context.Context,
+	store *sqlite.Store,
 	repository *sqlite.MessageRepository,
 	dataset legacyDataset,
 	state *transformState,
@@ -739,10 +751,7 @@ func writeHistory(
 	for _, legacy := range dataset.messages {
 		conversation := state.conversations[legacy.ConversationID]
 		remoteID := deriveRemoteMessageID(legacy)
-		messageID := v2keys.DeriveID(
-			"message", conversation.Account.AccountID,
-			legacy.ConversationID+"\x1f"+remoteID,
-		)
+		messageID := messageV2ID(conversation.Account, legacy.ConversationID, remoteID)
 		collisionKey := conversation.Account.AccountID + "\x1f" + conversation.V2ID + "\x1f" + remoteID
 		collisionGroups[collisionKey] = append(collisionGroups[collisionKey], legacy.ID)
 		state.expectedHistory[messageID] = expectedMessage{
@@ -799,6 +808,16 @@ func writeHistory(
 		if err := repository.ImportMessage(ctx, projection); err != nil {
 			return fmt.Errorf("import message %q: %w", legacy.ID, err)
 		}
+		if strings.TrimSpace(legacy.Transcript) != "" || legacy.TranscribedAtMS != 0 ||
+			strings.TrimSpace(legacy.TranscriptModel) != "" {
+			if err := store.MergeMessagePayload(ctx, messageID, sqlite.MessagePayload{
+				Transcript:      legacy.Transcript,
+				TranscriptModel: legacy.TranscriptModel,
+				TranscribedAtMS: legacy.TranscribedAtMS,
+			}); err != nil {
+				return fmt.Errorf("import message %q transcript: %w", legacy.ID, err)
+			}
+		}
 	}
 
 	for key, ids := range collisionGroups {
@@ -848,9 +867,10 @@ func writeScheduled(
 			createdAt = state.baseTimestampMS
 		}
 		requestID := v2keys.DeriveID("transport_request", conversation.Account.AccountID, scheduled.ID)
-		localMessageID := v2keys.DeriveID(
-			"message", conversation.Account.AccountID,
-			scheduled.ConversationID+"\x1f"+requestID,
+		localMessageID := messageV2ID(
+			conversation.Account,
+			scheduled.ConversationID,
+			requestID,
 		)
 		var replyTo *string
 		if strings.TrimSpace(scheduled.ReplyToID) != "" {
@@ -1122,14 +1142,59 @@ func identityID(key identityKey) string {
 }
 
 func deriveRemoteMessageID(message legacyMessage) string {
+	if normalizeLegacyPlatform(message.Platform) == "slack" {
+		if ts := slackRemoteMessageID(message); ts != "" {
+			return ts
+		}
+	}
 	if message.SourceID != "" {
 		return message.SourceID
 	}
 	return stripPlatformPrefix(message.ID)
 }
 
+func slackRemoteMessageID(message legacyMessage) string {
+	parts := strings.Split(strings.TrimSpace(message.ID), ":")
+	if len(parts) == 3 && parts[0] == "slack" && parts[2] != "" {
+		return parts[2]
+	}
+	source := strings.TrimSpace(message.SourceID)
+	if _, ts, ok := strings.Cut(source, ":"); ok && ts != "" {
+		return ts
+	}
+	return source
+}
+
+func conversationNaturalKey(account accountSpec, legacyConversationID string) string {
+	if extra := river.RiverIDFromScoped(legacyConversationID); extra != "" {
+		remote := river.UnscopeID(legacyConversationID)
+		switch account.Platform {
+		case "whatsapp":
+			return "whatsapp:" + remote
+		case "signal":
+			if strings.HasPrefix(strings.TrimSpace(legacyConversationID), "signal-group/") {
+				return "signal-group:" + remote
+			}
+			return "signal:" + remote
+		}
+	}
+	return v2keys.NormalizeRemoteConversationID(account.Platform, legacyConversationID)
+}
+
+func conversationV2ID(account accountSpec, legacyConversationID string) string {
+	return v2keys.DeriveID("conversation", account.AccountID, conversationNaturalKey(account, legacyConversationID))
+}
+
+func messageV2ID(account accountSpec, legacyConversationID, remoteMessageID string) string {
+	return v2keys.DeriveID(
+		"message",
+		account.AccountID,
+		conversationNaturalKey(account, legacyConversationID)+"\x1f"+remoteMessageID,
+	)
+}
+
 func stripPlatformPrefix(value string) string {
-	for _, prefix := range []string{"whatsapp:", "signal:", "gchat:", "imessage:"} {
+	for _, prefix := range []string{"whatsapp:", "signal:", "gchat:", "imessage:", "slack:"} {
 		if strings.HasPrefix(value, prefix) {
 			return strings.TrimPrefix(value, prefix)
 		}
@@ -1145,6 +1210,8 @@ func normalizeLegacyPlatform(value string) string {
 		return "whatsapp"
 	case "signal", "signal_cli":
 		return "signal"
+	case "slack":
+		return "slack"
 	case "gchat", "google_chat":
 		return "gchat"
 	case "imessage", "apple_messages":
@@ -1155,11 +1222,61 @@ func normalizeLegacyPlatform(value string) string {
 }
 
 func accountForPlatform(platform string) (accountSpec, error) {
-	account, ok := platformAccounts[normalizeLegacyPlatform(platform)]
+	normalized := normalizeLegacyPlatform(platform)
+	if normalized == "slack" {
+		return accountSpec{}, fmt.Errorf("slack rows need a slack:TEAM:CHANNEL conversation id")
+	}
+	account, ok := platformAccounts[normalized]
 	if !ok {
 		return accountSpec{}, fmt.Errorf("unsupported legacy source_platform %q", platform)
 	}
 	return account, nil
+}
+
+func accountForLegacyConversation(platform, conversationID string) (accountSpec, error) {
+	if extra := river.RiverIDFromScoped(conversationID); extra != "" {
+		return extraLiveAccount(platform, extra)
+	}
+	if normalizeLegacyPlatform(platform) != "slack" {
+		return accountForPlatform(platform)
+	}
+	teamID, _, ok := river.ParseSlackConversationID(conversationID)
+	if !ok {
+		return accountSpec{}, fmt.Errorf("unsupported slack conversation id %q", conversationID)
+	}
+	return accountSpec{
+		Platform:    "slack",
+		AccountID:   river.SlackRiverID(teamID),
+		BridgeKey:   "slack_web",
+		DisplayName: "Slack",
+		Mode:        sqlite.AccountModeLive,
+	}, nil
+}
+
+func extraLiveAccount(platform, riverID string) (accountSpec, error) {
+	if !river.SafeLiveRiverID(riverID) {
+		return accountSpec{}, fmt.Errorf("unsupported extra river id %q", riverID)
+	}
+	switch river.NormalizeProvider(platform) {
+	case river.ProviderWhatsApp:
+		return accountSpec{
+			Platform:    "whatsapp",
+			AccountID:   riverID,
+			BridgeKey:   "whatsmeow",
+			DisplayName: riverID,
+			Mode:        sqlite.AccountModeLive,
+		}, nil
+	case river.ProviderSignal:
+		return accountSpec{
+			Platform:    "signal",
+			AccountID:   riverID,
+			BridgeKey:   "signal_cli",
+			DisplayName: riverID,
+			Mode:        sqlite.AccountModeLive,
+		}, nil
+	default:
+		return accountSpec{}, fmt.Errorf("unsupported extra live platform %q", platform)
+	}
 }
 
 func minLegacyTimestamp(dataset legacyDataset) int64 {
@@ -1213,9 +1330,6 @@ func appendRequiredWarnings(report *Report) {
 	}
 	if count := report.Dropped.UnmappableReactions; count > 0 {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("%d messages had unmappable reaction entries and migrated without all reactions", count))
-	}
-	if count := report.Dropped.TranscriptBearingMessages; count > 0 {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("%d messages with transcripts were counted and dropped: merged v2 has no transcript columns", count))
 	}
 	if count := report.Dropped.ContactAvatars; count > 0 {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("%d contact avatars were counted and dropped", count))

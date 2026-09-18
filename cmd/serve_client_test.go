@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,11 +55,77 @@ func TestServeOptionsTransportMatrix(t *testing.T) {
 	}
 }
 
+func TestServeTakesInstanceLockMatrix(t *testing.T) {
+	tests := []struct {
+		name string
+		demo bool
+		args []string
+		want bool
+	}{
+		{name: "api daemon", args: []string{"--api", "--no-web"}, want: true},
+		{name: "mcp stdio client", args: []string{"--mcp-stdio"}, want: false},
+		{name: "mcp stdio with transports", args: []string{"--mcp-stdio", "--transports"}, want: true},
+		{name: "demo api", demo: true, args: []string{"--api", "--no-web"}, want: false},
+		{name: "demo mcp stdio", demo: true, args: []string{"--mcp-stdio"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, err := parseServeOptions(tt.args)
+			if err != nil {
+				t.Fatalf("parseServeOptions(%v): %v", tt.args, err)
+			}
+			if got := serveTakesInstanceLock(tt.demo, opts); got != tt.want {
+				t.Fatalf("serveTakesInstanceLock(%v, %v) = %v, want %v", tt.demo, tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunServeRefusesWhenInstanceLockHeld(t *testing.T) {
+	dataDir := t.TempDir()
+	setClientModeTestEnv(t, dataDir)
+	lock, err := acquireInstanceLock(filepath.Join(dataDir, instanceLockName), instanceLockRecord{
+		PID: 4242, Process: "test-holder",
+	})
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	defer lock.Close()
+
+	err = RunServe(zerolog.Nop(), "--api", "--no-web")
+	if !errors.Is(err, errInstanceLockHeld) {
+		t.Fatalf("RunServe = %v, want instance lock held", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "messages.db")); !os.IsNotExist(statErr) {
+		t.Fatalf("serve opened the store despite lock: %v", statErr)
+	}
+}
+
+func TestRunServeMCPStdioStartsWhileInstanceLockHeld(t *testing.T) {
+	dataDir := t.TempDir()
+	setClientModeTestEnv(t, dataDir)
+	lock, err := acquireInstanceLock(filepath.Join(dataDir, instanceLockName), instanceLockRecord{
+		PID: 4242, Process: "test-daemon",
+	})
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	defer lock.Close()
+
+	var logs bytes.Buffer
+	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+		t.Fatalf("RunServe(--mcp-stdio) with lock held: %v\n%s", err, logs.String())
+	}
+	if !strings.Contains(logs.String(), "MCP client mode") {
+		t.Fatalf("client mode was not engaged:\n%s", logs.String())
+	}
+}
+
 func setClientModeTestEnv(t *testing.T, dataDir string) {
 	t.Helper()
 	t.Setenv("OPENMESSAGES_DATA_DIR", dataDir)
 	t.Setenv("OPENMESSAGES_DEMO", "0")
-	t.Setenv("OPENMESSAGES_V2_PRIMARY", "")
+	t.Setenv("OPENMESSAGES_V2_PRIMARY", "0")
 	t.Setenv("OPENMESSAGES_V2_SEND", "")
 	t.Setenv("OPENMESSAGES_V2_INGEST", "")
 	t.Setenv("OPENMESSAGES_APP_SANDBOX", "1")

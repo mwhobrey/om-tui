@@ -96,14 +96,6 @@ func sendMediaToConversationHandler(a *app.App, v2Options ...*V2Dependencies) se
 			return errorResult("file_path is required"), nil
 		}
 
-		conv, err := a.Store.GetConversation(conversationID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to load conversation: %v", err)), nil
-		}
-		if conv == nil {
-			return errorResult(fmt.Sprintf("conversation %s not found", conversationID)), nil
-		}
-
 		if info, err := os.Stat(filePath); err != nil {
 			return errorResult(fmt.Sprintf("stat file: %v", err)), nil
 		} else if info.IsDir() {
@@ -113,6 +105,14 @@ func sendMediaToConversationHandler(a *app.App, v2Options ...*V2Dependencies) se
 		}
 		if v2 != nil {
 			return submitV2MediaFile(ctx, a, v2, args, filePath, mimeType, caption, replyToID), nil
+		}
+
+		conv, err := a.Store.GetConversation(conversationID)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to load conversation: %v", err)), nil
+		}
+		if conv == nil {
+			return errorResult(fmt.Sprintf("conversation %s not found", conversationID)), nil
 		}
 		data, err := os.ReadFile(filePath)
 		if err != nil {

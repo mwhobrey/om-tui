@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
@@ -20,8 +23,9 @@ type toolRoutingReadSource struct {
 	searchCalls  int
 	statusCalls  int
 	getConvCalls int
-	lastQuery   string
-	lastFilter  db.SearchFilter
+	getMsgCalls  int
+	lastQuery    string
+	lastFilter   db.SearchFilter
 }
 
 func (s *toolRoutingReadSource) ListConversations(limit int) ([]*db.Conversation, error) {
@@ -31,6 +35,7 @@ func (s *toolRoutingReadSource) ListConversations(limit int) ([]*db.Conversation
 		Name:           "V2 Conversation",
 		SourcePlatform: "sms",
 		LastMessageTS:  200,
+		Participants:   `[{"name":"V2 Alice","number":"+15550001111"}]`,
 	}}, nil
 }
 
@@ -69,6 +74,33 @@ func (s *toolRoutingReadSource) GetConversation(id string) (*db.Conversation, er
 	return &db.Conversation{ConversationID: id, Name: "V2 Thread", SourcePlatform: "sms"}, nil
 }
 
+func (s *toolRoutingReadSource) GetMessagesByConversations(conversationIDs []string, limit int) ([]*db.Message, error) {
+	s.getConvCalls++
+	return []*db.Message{{
+		MessageID:      "v2-person-message",
+		ConversationID: "v2-conversation",
+		SenderName:     "V2 Alice",
+		Body:           "v2 person body",
+		TimestampMS:    200,
+		SourcePlatform: "sms",
+	}}, nil
+}
+
+func (s *toolRoutingReadSource) GetMessagesByConversationsRange(conversationIDs []string, afterMS, beforeMS int64, limit int) ([]*db.Message, error) {
+	return s.GetMessagesByConversations(conversationIDs, limit)
+}
+
+func (s *toolRoutingReadSource) GetMessageByID(messageID string) (*db.Message, error) {
+	s.getMsgCalls++
+	return &db.Message{
+		MessageID:      messageID,
+		ConversationID: "v2-conversation",
+		MediaID:        "v2msg:" + messageID + ":1",
+		MimeType:       "image/png",
+		SourcePlatform: "sms",
+	}, nil
+}
+
 func TestR5MCPReadHandlersUseConfiguredSource(t *testing.T) {
 	a := testApp(t)
 	reads := &toolRoutingReadSource{}
@@ -84,6 +116,31 @@ func TestR5MCPReadHandlersUseConfiguredSource(t *testing.T) {
 		}
 		if reads.listCalls != 1 {
 			t.Fatalf("ListConversations calls = %d, want 1", reads.listCalls)
+		}
+	})
+
+	t.Run("list conversations by platform", func(t *testing.T) {
+		result, err := listConversationsHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"source_platform": "sms",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || !strings.Contains(resultText(t, result), "V2 Conversation") {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+		if reads.listCalls != 2 {
+			t.Fatalf("ListConversations calls = %d, want 2 after platform filter", reads.listCalls)
+		}
+
+		empty, err := listConversationsHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"source_platform": "slack",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if empty.IsError || !strings.Contains(resultText(t, empty), "No conversations found") {
+			t.Fatalf("unexpected slack filter result: %#v", empty)
 		}
 	})
 
@@ -118,6 +175,75 @@ func TestR5MCPReadHandlersUseConfiguredSource(t *testing.T) {
 		}
 		if reads.lastQuery != "routed" || reads.lastFilter.Phone != "+15551230000" || reads.lastFilter.Limit != 9 {
 			t.Fatalf("search_messages filter = %#v, query=%q", reads.lastFilter, reads.lastQuery)
+		}
+	})
+
+	t.Run("get person messages", func(t *testing.T) {
+		result, err := getPersonMessagesHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"name":  "V2",
+			"limit": float64(20),
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || !strings.Contains(resultText(t, result), "v2 person body") {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+		if reads.getConvCalls == 0 {
+			t.Fatal("get_person_messages did not use configured source")
+		}
+	})
+
+	t.Run("list contacts", func(t *testing.T) {
+		result, err := listContactsHandler(a, options)(context.Background(), toolRequest(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || !strings.Contains(resultText(t, result), "V2 Alice") {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+		if reads.listCalls == 0 {
+			t.Fatal("list_contacts did not use configured source")
+		}
+	})
+
+	t.Run("resolve contact routes", func(t *testing.T) {
+		result, err := resolveContactRoutesHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"query": "V2 Alice",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := resultText(t, result)
+		if result.IsError || !strings.Contains(got, "V2") {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+	})
+
+	t.Run("download media", func(t *testing.T) {
+		result, err := downloadMediaHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"message_id": "v2-media",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || !strings.Contains(resultText(t, result), "/api/media/v2-media") {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+		if reads.getMsgCalls != 1 {
+			t.Fatalf("GetMessageByID calls = %d, want 1", reads.getMsgCalls)
+		}
+	})
+
+	t.Run("conversation stats", func(t *testing.T) {
+		result, err := conversationStatsHandler(a, options)(context.Background(), toolRequest(map[string]any{
+			"conversation_id": "v2-conversation",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError || !strings.Contains(resultText(t, result), "Stats for: V2 Thread") {
+			t.Fatalf("unexpected result: %#v", result)
 		}
 	})
 }
@@ -190,37 +316,79 @@ func TestR5MCPGetStatusReadsV2CoverageWithoutChangingLegacyShape(t *testing.T) {
 	}
 }
 
-func TestR5MCPPersonStoryAndVizToolsUnavailableInV2Primary(t *testing.T) {
+func TestR5MCPPersonStoryAndVizToolsAvailableInV2Primary(t *testing.T) {
 	a := testApp(t)
 	mcpServer := server.NewMCPServer("r5-routing", "test")
 	RegisterWithOptions(mcpServer, a, Options{Reads: a.Store, V2Primary: true})
 
-	for _, name := range []string{
-		"get_person_messages",
-		"get_person_messages_range",
-		"conversation_stats",
-		"generate_story",
-		"person_stats",
-		"generate_person_story",
-		"generate_viz",
-		"render_story",
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "get_person_messages", want: "name is required"},
+		{name: "get_person_messages_range", want: "name is required"},
+		{name: "conversation_stats", want: "conversation_id is required"},
+		{name: "generate_story", want: "conversation_id is required"},
+		{name: "person_stats", want: "name is required"},
+		{name: "generate_person_story", want: "name is required"},
+		{name: "generate_viz", want: "name is required"},
+		{name: "render_story", want: "name is required"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			registered := mcpServer.GetTool(name)
+		t.Run(test.name, func(t *testing.T) {
+			registered := mcpServer.GetTool(test.name)
 			if registered == nil {
-				t.Fatalf("tool %q was not registered", name)
+				t.Fatalf("tool %q was not registered", test.name)
 			}
 			result, err := registered.Handler(context.Background(), toolRequest(nil))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !result.IsError {
-				t.Fatalf("tool %q did not return an MCP error", name)
+			got := resultText(t, result)
+			if got == "not available while v2 is the serving store" {
+				t.Fatalf("tool %q still blocked on v2 primary", test.name)
 			}
-			if got := resultText(t, result); got != "not available while v2 is the serving store" {
-				t.Fatalf("tool %q error = %q", name, got)
+			if !result.IsError || !strings.Contains(got, test.want) {
+				t.Fatalf("tool %q error = %q, want %q", test.name, got, test.want)
 			}
 		})
+	}
+}
+
+func TestR5MCPDraftUnavailableAndV2WritesNeedStore(t *testing.T) {
+	a := testApp(t)
+	options := Options{Reads: a.Store, V2Primary: true}
+
+	draft, err := draftMessageHandler(a, options)(context.Background(), toolRequest(map[string]any{
+		"conversation_id": "c1",
+		"message":         "hello",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !draft.IsError || !strings.Contains(resultText(t, draft), "v2 store is unavailable") {
+		t.Fatalf("draft_message = %#v", draft)
+	}
+
+	transcript, err := setMessageTranscriptHandler(a, options)(context.Background(), toolRequest(map[string]any{
+		"message_id": "m1",
+		"transcript": "hi",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !transcript.IsError || !strings.Contains(resultText(t, transcript), "v2 store is unavailable") {
+		t.Fatalf("set_message_transcript = %#v", transcript)
+	}
+
+	imported, err := importMessagesHandler(a, options)(context.Background(), toolRequest(map[string]any{
+		"source": "gchat",
+		"path":   "/tmp",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !imported.IsError || !strings.Contains(resultText(t, imported), "v2 store is unavailable") {
+		t.Fatalf("import_messages = %#v", imported)
 	}
 }
 
@@ -268,6 +436,167 @@ func TestR5MCPV2PrimarySubmitUsesNativeConversationID(t *testing.T) {
 	}
 	if conversation, _ := harness.app.Store.GetConversation(conversationID); conversation != nil {
 		t.Fatalf("native tool route unexpectedly created legacy conversation: %+v", conversation)
+	}
+}
+
+func TestR5MCPV2PrimaryReactUsesNativeConversationID(t *testing.T) {
+	harness := newV2ToolHarness(t)
+	harness.deps.V2Primary = true
+	nowMS := time.Now().UnixMilli()
+	if err := harness.deps.V2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "google-primary",
+		BridgeKey:   "google_messages",
+		DisplayName: "Google",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const conversationID = "v2-native-react-conversation"
+	if err := harness.deps.V2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       conversationID,
+		AccountID:            "google-primary",
+		RemoteConversationID: "remote-v2-native-react-conversation",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Native react thread",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := sqlite.NewMessageRepository(harness.deps.V2Store, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const messageID = "v2-native-react-target"
+	if err := messages.ImportMessage(context.Background(), sqlite.MessageProjection{
+		Message: sqlite.Message{
+			MessageID:       messageID,
+			ConversationID:  conversationID,
+			AccountID:       "google-primary",
+			RemoteMessageID: "remote-v2-native-react-target",
+			Direction:       sqlite.MessageDirectionIncoming,
+			Body:            "react to me",
+			State:           sqlite.MessageStateActive,
+			OccurredAtMS:    nowMS,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyCalled := false
+	originalSend := sendWhatsAppReactionMessage
+	sendWhatsAppReactionMessage = func(*app.App, string, string, string, string) error {
+		legacyCalled = true
+		return nil
+	}
+	t.Cleanup(func() { sendWhatsAppReactionMessage = originalSend })
+
+	result, err := reactToMessageHandler(harness.app, &harness.deps)(context.Background(), toolRequest(map[string]any{
+		"conversation_id": conversationID,
+		"message_id":      messageID,
+		"emoji":           "👍",
+		"idempotency_key": "native-react-route-key",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("native react returned error: %#v", result)
+	}
+	if legacyCalled {
+		t.Fatal("PRIMARY react used the legacy WhatsApp reaction path")
+	}
+	if conversation, _ := harness.app.Store.GetConversation(conversationID); conversation != nil {
+		t.Fatalf("native react unexpectedly created legacy conversation: %+v", conversation)
+	}
+}
+
+func TestR5MCPV2PrimaryMediaUsesNativeConversationID(t *testing.T) {
+	harness := newV2ToolHarness(t)
+	harness.deps.V2Primary = true
+	nowMS := time.Now().UnixMilli()
+	if err := harness.deps.V2Store.UpsertAccount(sqlite.Account{
+		AccountID:   "google-primary",
+		BridgeKey:   "google_messages",
+		DisplayName: "Google",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const conversationID = "v2-native-media-conversation"
+	if err := harness.deps.V2Store.UpsertConversation(sqlite.Conversation{
+		ConversationID:       conversationID,
+		AccountID:            "google-primary",
+		RemoteConversationID: "remote-v2-native-media-conversation",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Native media thread",
+		NotificationMode:     sqlite.NotificationModeAll,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(t.TempDir(), "native-media.bin")
+	if err := os.WriteFile(filePath, []byte("native-media-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sendMediaToConversationHandler(harness.app, &harness.deps)(context.Background(), toolRequest(map[string]any{
+		"conversation_id": conversationID,
+		"file_path":       filePath,
+		"idempotency_key": "native-media-route-key",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		text := resultText(t, result)
+		if strings.Contains(strings.ToLower(text), "not found") {
+			t.Fatalf("native media used legacy conversation lookup: %s", text)
+		}
+		if !strings.Contains(strings.ToLower(text), "store blob") &&
+			!strings.Contains(strings.ToLower(text), "access is denied") {
+			t.Fatalf("native media returned error: %#v", result)
+		}
+	}
+	if conversation, _ := harness.app.Store.GetConversation(conversationID); conversation != nil {
+		t.Fatalf("native media unexpectedly created legacy conversation: %+v", conversation)
+	}
+}
+
+func TestR5MCPV2PrimarySendMessageDoesNotMintLegacyThread(t *testing.T) {
+	harness := newV2ToolHarness(t)
+	harness.deps.V2Primary = true
+	result, err := sendMessageHandler(harness.app, &harness.deps)(context.Background(), toolRequest(map[string]any{
+		"recipient": "+16505550100",
+		"platform":  "whatsapp",
+		"message":   "no new thread",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation, _ := harness.app.Store.GetConversation("whatsapp:16505550100@s.whatsapp.net"); conversation != nil {
+		t.Fatalf("PRIMARY send_message wrote a legacy conversation: %+v", conversation)
+	}
+	if result.IsError {
+		text := resultText(t, result)
+		if strings.Contains(text, "cannot mint a new thread") {
+			t.Fatalf("PRIMARY send_message still refuse-mints: %s", text)
+		}
 	}
 }
 

@@ -44,6 +44,14 @@ func TestDeriveIDMigrationFixtureGoldens(t *testing.T) {
 	}
 }
 
+func TestMessageIDMatchesDeriveNaturalKey(t *testing.T) {
+	got := MessageID("slack-T1", "C99", "123.456")
+	want := DeriveID("message", "slack-T1", "C99\x1f123.456")
+	if got != want {
+		t.Fatalf("MessageID() = %q, want %q", got, want)
+	}
+}
+
 func TestIdentityKey(t *testing.T) {
 	t.Parallel()
 
@@ -61,6 +69,8 @@ func TestIdentityKey(t *testing.T) {
 		{name: "signal aci", accountID: "signal-primary", platform: "signal", raw: " ABCDEF12-3456-7890-ABCD-EF1234567890 ", want: Identity{AccountID: "signal-primary", Kind: "signal_aci", Canonical: "abcdef12-3456-7890-abcd-ef1234567890"}},
 		{name: "signal platform comparison remains exact", accountID: "signal-primary", platform: "Signal", raw: "ABCDEF12-3456-7890-ABCD-EF1234567890", want: Identity{AccountID: "signal-primary", Kind: "username", Canonical: "ABCDEF12-3456-7890-ABCD-EF1234567890"}},
 		{name: "whatsapp jid", accountID: "whatsapp-primary", platform: "whatsapp", raw: " USER@S.WHATSAPP.NET ", want: Identity{AccountID: "whatsapp-primary", Kind: "jid", Canonical: "user@s.whatsapp.net"}},
+		{name: "slack user", accountID: "slack-T1", platform: "slack", raw: "U01ABCDEF", want: Identity{AccountID: "slack-T1", Kind: "slack_user", Canonical: "U01ABCDEF"}},
+		{name: "slack bot", accountID: "slack-T1", platform: "slack", raw: "B01234567", want: Identity{AccountID: "slack-T1", Kind: "slack_user", Canonical: "B01234567"}},
 		{name: "email", accountID: "gchat-archive", platform: "gchat", raw: " Friend@Example.COM ", want: Identity{AccountID: "gchat-archive", Kind: "email", Canonical: "friend@example.com"}},
 		{name: "legacy participant", accountID: "imessage-archive", platform: "imessage", raw: "legacy-participant:42", want: Identity{AccountID: "imessage-archive", Kind: "legacy_participant", Canonical: "legacy-participant:42"}},
 		{name: "username preserves case", accountID: "signal-primary", platform: "signal", raw: " MixedCaseHandle ", want: Identity{AccountID: "signal-primary", Kind: "username", Canonical: "MixedCaseHandle"}},
@@ -96,6 +106,9 @@ func TestNormalizeRemoteConversationID(t *testing.T) {
 		{name: "signal group", platform: "signal", legacyID: " signal-group:  group-id  ", want: "signal-group:group-id"},
 		{name: "signal unprefixed", platform: "signal", legacyID: "  unprefixed  ", want: "unprefixed"},
 		{name: "platform comparison remains exact", platform: "Signal", legacyID: " signal:  +16505550100  ", want: "signal:  +16505550100"},
+		{name: "slack legacy conversation", platform: "slack", legacyID: " slack:T1:C123  ", want: "C123"},
+		{name: "slack live channel", platform: "slack", legacyID: " C123 ", want: "C123"},
+		{name: "slack malformed keeps value", platform: "slack", legacyID: "slack:T1", want: "slack:T1"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

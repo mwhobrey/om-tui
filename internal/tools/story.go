@@ -13,6 +13,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/story"
 )
 
@@ -27,7 +28,8 @@ func conversationStatsTool() mcp.Tool {
 	)
 }
 
-func conversationStatsHandler(a *app.App) server.ToolHandlerFunc {
+func conversationStatsHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		convID := strArg(args, "conversation_id")
@@ -36,7 +38,7 @@ func conversationStatsHandler(a *app.App) server.ToolHandlerFunc {
 		}
 
 		// Get all messages for this conversation
-		msgs, err := a.Store.GetMessagesByConversation(convID, 100000)
+		msgs, err := options.Reads.GetMessagesByConversation(convID, 100000)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get messages: %v", err)), nil
 		}
@@ -48,7 +50,7 @@ func conversationStatsHandler(a *app.App) server.ToolHandlerFunc {
 		statsJSON, _ := json.MarshalIndent(stats, "", "  ")
 
 		var sb strings.Builder
-		conv, _ := a.Store.GetConversation(convID)
+		conv, _ := options.Reads.GetConversation(convID)
 		if conv != nil {
 			platform := conv.SourcePlatform
 			if platform == "" {
@@ -108,7 +110,8 @@ func generateStoryTool() mcp.Tool {
 	)
 }
 
-func generateStoryHandler(a *app.App) server.ToolHandlerFunc {
+func generateStoryHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		convID := strArg(args, "conversation_id")
@@ -118,7 +121,7 @@ func generateStoryHandler(a *app.App) server.ToolHandlerFunc {
 		style := strArg(args, "style")
 		apiKey := strArg(args, "api_key")
 
-		msgs, err := a.Store.GetMessagesByConversation(convID, 100000)
+		msgs, err := options.Reads.GetMessagesByConversation(convID, 100000)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get messages: %v", err)), nil
 		}
@@ -179,7 +182,8 @@ func personStatsTool() mcp.Tool {
 	)
 }
 
-func personStatsHandler(a *app.App) server.ToolHandlerFunc {
+func personStatsHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -187,7 +191,7 @@ func personStatsHandler(a *app.App) server.ToolHandlerFunc {
 			return errorResult("name is required"), nil
 		}
 
-		msgs, convNames, err := collectPersonMessages(a, name)
+		msgs, convNames, err := collectPersonMessages(options.Reads, name)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -256,7 +260,8 @@ func generatePersonStoryTool() mcp.Tool {
 	)
 }
 
-func generatePersonStoryHandler(a *app.App) server.ToolHandlerFunc {
+func generatePersonStoryHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -266,7 +271,7 @@ func generatePersonStoryHandler(a *app.App) server.ToolHandlerFunc {
 		style := strArg(args, "style")
 		apiKey := strArg(args, "api_key")
 
-		msgs, convNames, err := collectPersonMessages(a, name)
+		msgs, convNames, err := collectPersonMessages(options.Reads, name)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -331,7 +336,8 @@ func getPersonMessagesRangeTool() mcp.Tool {
 	)
 }
 
-func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
+func getPersonMessagesRangeHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -363,7 +369,7 @@ func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
 		beforeMS := beforeTime.UnixMilli()
 
 		// Find matching conversation IDs (reuse collectPersonMessages logic)
-		convIDs, convNames, err := findPersonConversations(a, name)
+		convIDs, convNames, err := findPersonConversations(options.Reads, name)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -371,7 +377,7 @@ func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
 			return textResult(fmt.Sprintf("No conversations found with '%s'.", name)), nil
 		}
 
-		msgs, err := a.Store.GetMessagesByConversationsRange(convIDs, afterMS, beforeMS, limit)
+		msgs, err := options.Reads.GetMessagesByConversationsRange(convIDs, afterMS, beforeMS, limit)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get messages: %v", err)), nil
 		}
@@ -405,8 +411,8 @@ func getPersonMessagesRangeHandler(a *app.App) server.ToolHandlerFunc {
 
 // findPersonConversations returns matching conversation IDs and display names
 // for a person. Extracted from collectPersonMessages for reuse.
-func findPersonConversations(a *app.App, name string) ([]string, []string, error) {
-	allConvs, err := a.Store.ListConversations(1000)
+func findPersonConversations(reads readsource.ReadSource, name string) ([]string, []string, error) {
+	allConvs, err := reads.ListConversations(1000)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list conversations: %v", err)
 	}
@@ -434,8 +440,8 @@ func findPersonConversations(a *app.App, name string) ([]string, []string, error
 // collectPersonMessages finds all 1:1 conversations matching the name, loads
 // all messages, deduplicates cross-platform duplicates, and returns them sorted
 // chronologically. Also returns conversation display names for context.
-func collectPersonMessages(a *app.App, name string) ([]*db.Message, []string, error) {
-	matchingConvIDs, convNames, err := findPersonConversations(a, name)
+func collectPersonMessages(reads readsource.ReadSource, name string) ([]*db.Message, []string, error) {
+	matchingConvIDs, convNames, err := findPersonConversations(reads, name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -443,7 +449,7 @@ func collectPersonMessages(a *app.App, name string) ([]*db.Message, []string, er
 		return nil, nil, nil
 	}
 
-	msgs, err := a.Store.GetMessagesByConversations(matchingConvIDs, 500000)
+	msgs, err := reads.GetMessagesByConversations(matchingConvIDs, 500000)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get messages: %v", err)
 	}

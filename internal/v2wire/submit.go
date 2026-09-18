@@ -41,6 +41,15 @@ type MediaInput struct {
 	NotBefore      time.Time
 }
 
+type ReactionInput struct {
+	ConversationID  string
+	TargetMessageID string
+	Emoji           string
+	Action          string
+	IdempotencyKey  string
+	NotBefore       time.Time
+}
+
 // SubmitText mirrors only the graph needed by the durable service, rejects
 // non-live/unwired accounts before enqueue, and forwards caller-controlled
 // idempotency and scheduling unchanged.

@@ -59,10 +59,13 @@ and **[docs/runbook/](docs/runbook/)** before touching anything. The traps that 
   `/api/search`, `/api/status`) — the daemon holds the WAL'd DB, so a direct
   `sqlite3` reader hits "unable to open database file (14)".
 - **Re-pairing Google Messages:** QR is dead for many accounts. Press `p` and
-  paste a `messages.google.com` curl (`Ctrl+V`); clear `session.json` to reach
-  the pairing screen; don't over-reconnect (it throttles the account).
+  paste a `messages.google.com` curl (`Ctrl+V`). If this PC is already paired,
+  that paste refreshes cookies with no phone tap. Clear `session.json` only
+  to force a full unpaired Gaia pair; don't over-reconnect (it throttles).
 - **One transport owner.** `serve --mcp-stdio` is transportless by default; a
-  second process with WhatsApp/Signal credentials logs the other out.
+ second process with WhatsApp/Signal credentials logs the other out.
+ Store-owning `serve` holds `<data-dir>/instance.lock` so backup/migrate/repair
+ and a second daemon refuse while it is up; MCP-stdio clients do not take it.
 - **macOS/Linux vault is not yet at parity.** Slack river credentials use
   Keychain (macOS) / Secret Service via `secret-tool` (Linux) when available;
   if the backing tool is missing, secrets refuse to store outside
@@ -82,6 +85,7 @@ go build -o om-tui .                       # om-tui.exe on Windows
 ```
 
 - Rivers: built-in `messages-default`, `whatsapp-default`, `signal-default`; extras are `whatsapp-2` / `signal-2` (`Ctrl+K` → `>add …`); Slack rivers are `slack-<team-id>`. Google Messages is one live river.
+- **v1 (`messages.db`) is frozen except critical bugs.** Slack interactive Block Kit: TUI `b`/`Ctrl+B` opens URL buttons and Slack-deep-links app-owned controls. Slack V2 migrate + outbox, leftover PRIMARY writes (drafts, tabs, contact CRM metadata, `/api/new-conversation`, send minting), GET `/api/conversations/{id}`, and Windows backup DSN/VACUUM fallback are wired. V2 is the serving default after `migrate` (or a fresh empty install); `OPENMESSAGES_V2_PRIMARY=0` keeps v1. Google contact **sync** and scheduled-send stay fail-closed. On Windows, Google paste against an existing session refreshes cookies (no phone tap unless the device was unlinked).
 - Credentials: `rivers/<id>/credentials.enc`, OS-backed sealing (see vault note above).
 - TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media; `p` pair the active river (Google paste / WhatsApp QR / Signal QR)
 - API daemon: `serve --api --no-web` exposes `/api/rivers`, `/api/conversations?river_id=…`.
@@ -141,7 +145,7 @@ See [docs/agent-runbook.md](docs/agent-runbook.md) ("MCP serving").
 - `send_message`, `send_to_conversation`, `send_media_to_conversation`, `send_group_message`
 - `react_to_message`, `draft_message`, `download_media`, `list_contacts`, `resolve_contact_routes`, `get_status`
 
-Person/story/viz tools are unavailable while V2 is the serving store.
+Person/story/viz tools, `list_contacts`, `resolve_contact_routes`, and `download_media` read through `v2read` when V2 is the serving store. `set_message_transcript` and `import_messages` write v2 (`message_extras` / incremental `SyncInto`) when primary. MCP `react_to_message` uses the v2 outbox when the daemon is primary. MCP `send_media_to_conversation` submits native v2 conversation IDs; `send_message` / `send_group_message` fail closed on PRIMARY. `draft_message` errors in v2-primary (legacy `messages.db` write).
 
 ### HTTP API (high-signal)
 

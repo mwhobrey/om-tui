@@ -654,6 +654,20 @@ func (l *instanceLock) Close() error {
 }
 
 func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {
+	err := vacuumIntoOnce(ctx, sourcePath, destinationPath)
+	if err == nil {
+		return nil
+	}
+	if !isVacuumMemoryError(err) {
+		return err
+	}
+	if copyErr := snapshotSQLiteByCopy(sourcePath, destinationPath); copyErr != nil {
+		return fmt.Errorf("VACUUM INTO: %w; file-copy fallback: %w", err, copyErr)
+	}
+	return nil
+}
+
+func vacuumIntoOnce(ctx context.Context, sourcePath, destinationPath string) error {
 	database, err := sql.Open("sqlite", sqliteReadOnlyDSN(sourcePath))
 	if err != nil {
 		return err
@@ -669,8 +683,54 @@ func vacuumInto(ctx context.Context, sourcePath, destinationPath string) error {
 	return database.Close()
 }
 
+func isVacuumMemoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "out of memory") || strings.Contains(lower, "sqlite_nomem")
+}
+
+func snapshotSQLiteByCopy(sourcePath, destinationPath string) error {
+	for _, leftover := range []string{destinationPath, destinationPath + "-wal", destinationPath + "-shm"} {
+		if err := os.Remove(leftover); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := copyPlainFile(sourcePath, destinationPath); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar := sourcePath + suffix
+		if _, err := os.Stat(sidecar); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := copyPlainFile(sidecar, destinationPath+suffix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func sqliteReadOnlyDSN(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	normalizedPath := strings.ReplaceAll(path, "\\", "/")
+	if isWindowsAbsolutePath(normalizedPath) {
+		normalizedPath = "/" + normalizedPath
+	}
+	return (&url.URL{Scheme: "file", Path: normalizedPath, RawQuery: "mode=ro"}).String()
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if len(path) < 3 {
+		return false
+	}
+	drive := path[0]
+	return ((drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')) &&
+		path[1] == ':' &&
+		path[2] == '/'
 }
 
 func sqliteQuickCheck(path string) (string, error) {

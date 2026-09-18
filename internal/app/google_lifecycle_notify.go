@@ -1,6 +1,10 @@
 package app
 
-import "errors"
+import (
+	"errors"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+)
 
 var errGoogleSendsRepeatedlyFailed = errors.New("Google sends repeatedly failed while the phone was responding")
 
@@ -16,12 +20,29 @@ type GoogleLifecycleNotifier interface {
 	ParkCurrent(error) bool
 }
 
+// GoogleHistoryIngest tees Google list/fetch history into the v2 ingest sink.
+// The Google bridge adapter implements this; a nil value means v1-only.
+type GoogleHistoryIngest interface {
+	IngestHistoryConversation(*gmproto.Conversation)
+	IngestHistoryMessage(*gmproto.Message)
+}
+
 // SetGoogleLifecycleNotifier installs the lifecycle owner notified by every
 // App Google send path. It is safe to replace or clear the notifier while send
 // operations are in flight.
 func (a *App) SetGoogleLifecycleNotifier(notifier GoogleLifecycleNotifier) {
 	a.googleLifecycleMu.Lock()
 	a.googleLifecycleNotifier = notifier
+	a.googleLifecycleMu.Unlock()
+}
+
+// SetGoogleHistoryIngest installs the v2 ingest tee for Google history
+// fetches (startup shallow backfill, deep backfill, phone backfill). Live
+// frames already go through the adapter sink; request/response FetchMessages
+// does not, so PRIMARY would otherwise leave that history in frozen v1.
+func (a *App) SetGoogleHistoryIngest(ingest GoogleHistoryIngest) {
+	a.googleLifecycleMu.Lock()
+	a.googleHistoryIngest = ingest
 	a.googleLifecycleMu.Unlock()
 }
 
@@ -45,4 +66,11 @@ func (a *App) markGoogleNeedsRepairAndPark(err error) {
 	if notifier := a.googleLifecycle(); notifier != nil {
 		notifier.ParkCurrent(err)
 	}
+}
+
+func (a *App) googleHistory() GoogleHistoryIngest {
+	a.googleLifecycleMu.RLock()
+	ingest := a.googleHistoryIngest
+	a.googleLifecycleMu.RUnlock()
+	return ingest
 }
