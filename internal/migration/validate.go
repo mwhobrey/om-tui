@@ -25,6 +25,7 @@ var targetCountTables = []string{
 
 const migration0010Checksum = "dfab4551335d92045cb895e5b2c781f4f57216bbc428a705fc26bbdd474db0b1"
 const migration0011Checksum = "4618fb5df370d62491bf709f4b79442e07cab7e345d4a08e7b606fbdc875e721"
+const migration0012Checksum = "8d0e550c9797b8c201b2fdcc1f9fe5a789899c9c8ecc270c91376c12ee526205"
 
 func checkpointAndSyncSQLite(ctx context.Context, path string) error {
 	database, err := sql.Open("sqlite", path)
@@ -154,9 +155,10 @@ func validateTarget(
 	countsMatched := countsMatch(dataset, state, report, actualHistory, actualScheduled, actualHistoryByPlatform)
 	report.Validation.CountsMatched = countsMatched
 	report.Validation.Passed = quick == "ok" &&
-		report.Target.SchemaVersion == 11 && len(report.Target.MigrationChecksums) == 11 &&
+		report.Target.SchemaVersion == 12 && len(report.Target.MigrationChecksums) == 12 &&
 		report.Target.MigrationChecksums[9] == migration0010Checksum &&
 		report.Target.MigrationChecksums[10] == migration0011Checksum &&
+		report.Target.MigrationChecksums[11] == migration0012Checksum &&
 		len(fkViolations) == 0 && orphanTotal(orphans) == 0 &&
 		countsMatched && report.Validation.SampledHashesMatched &&
 		report.Validation.BlobReferencesValid && report.Validation.SourceUnchanged &&

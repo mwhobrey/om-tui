@@ -74,12 +74,15 @@ func TestOpenInitializesBlankDatabase(t *testing.T) {
 	wantTables := []string{
 		"accounts",
 		"attachments",
+		"contact_meta",
 		"conversation_participants",
 		"conversations",
 		"devices",
+		"drafts",
 		"identities",
 		"inbox",
 		"message_attachments",
+		"message_extras",
 		"messages",
 		"outbox",
 		"outbox_attachments",
@@ -92,6 +95,7 @@ func TestOpenInitializesBlankDatabase(t *testing.T) {
 		"read_cursors",
 		"schema_migrations",
 		"store_metadata",
+		"tabs",
 	}
 	if !slices.Equal(tables, wantTables) {
 		t.Fatalf("user tables = %v, want %v", tables, wantTables)

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	moderncsqlite "modernc.org/sqlite"
 )
@@ -705,13 +704,17 @@ func (s *Store) SetConversationFavorite(conversationID string, favorite bool) er
 	if conversationID == "" {
 		return notFound("conversation", conversationID)
 	}
+	conversation, err := s.GetConversation(conversationID)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(
 		context.Background(),
 		`UPDATE conversations
 		 SET is_favorite = ?, updated_at_ms = ?
 		 WHERE conversation_id = ?`,
 		favorite,
-		time.Now().UnixMilli(),
+		conversationTouchMS(conversation),
 		conversationID,
 	)
 	if err != nil {
@@ -737,13 +740,17 @@ func (s *Store) SetConversationNotificationMode(conversationID string, mode Noti
 	default:
 		return fmt.Errorf("invalid notification mode %q", mode)
 	}
+	conversation, err := s.GetConversation(conversationID)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(
 		context.Background(),
 		`UPDATE conversations
 		 SET notification_mode = ?, updated_at_ms = ?
 		 WHERE conversation_id = ?`,
 		mode,
-		time.Now().UnixMilli(),
+		conversationTouchMS(conversation),
 		conversationID,
 	)
 	if err != nil {
