@@ -191,21 +191,30 @@ type River struct {
 
 // Message is one chat message from the conversations messages endpoint.
 type Message struct {
-	MessageID      string `json:"MessageID"`
-	ConversationID string `json:"ConversationID"`
-	SenderName     string `json:"SenderName"`
-	SenderNumber   string `json:"SenderNumber"`
-	Body           string `json:"Body"`
-	TimestampMS    int64  `json:"TimestampMS"`
-	Status         string `json:"Status"`
-	IsFromMe       bool   `json:"IsFromMe"`
-	MentionsMe     bool   `json:"mentions_me,omitempty"`
-	MediaID        string `json:"MediaID,omitempty"`
-	MimeType       string `json:"MimeType,omitempty"`
-	Reactions      string `json:"Reactions,omitempty"`
-	ReplyToID      string `json:"ReplyToID,omitempty"`
-	ReplyCount     int    `json:"reply_count,omitempty"`
-	SourcePlatform string `json:"source_platform,omitempty"`
+	MessageID      string          `json:"MessageID"`
+	ConversationID string          `json:"ConversationID"`
+	SenderName     string          `json:"SenderName"`
+	SenderNumber   string          `json:"SenderNumber"`
+	Body           string          `json:"Body"`
+	TimestampMS    int64           `json:"TimestampMS"`
+	Status         string          `json:"Status"`
+	IsFromMe       bool            `json:"IsFromMe"`
+	MentionsMe     bool            `json:"mentions_me,omitempty"`
+	MediaID        string          `json:"MediaID,omitempty"`
+	MimeType       string          `json:"MimeType,omitempty"`
+	Reactions      string          `json:"Reactions,omitempty"`
+	ReplyToID      string          `json:"ReplyToID,omitempty"`
+	ReplyCount     int             `json:"reply_count,omitempty"`
+	SourcePlatform string          `json:"source_platform,omitempty"`
+	BlockActions   []MessageAction `json:"block_actions,omitempty"`
+}
+
+// MessageAction is one Slack Block Kit control on a message.
+type MessageAction struct {
+	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Style string `json:"style,omitempty"`
 }
 
 // HasMedia reports whether the message should render as a media placeholder.
@@ -533,6 +542,23 @@ func (c *Client) React(ctx context.Context, conversationID, messageID, emoji, ac
 		Action         string `json:"action"`
 	}{conversationID, messageID, emoji, action}
 	return c.postJSON(ctx, "/api/react", payload, &map[string]any{})
+}
+
+// CreatedConversation is the subset of POST /api/new-conversation used to mint
+// a thread before a daemon-routed send_message.
+type CreatedConversation struct {
+	ConversationID string `json:"conversation_id"`
+	Name           string `json:"name"`
+}
+
+// CreateConversation asks the daemon to open or reuse a direct thread.
+func (c *Client) CreateConversation(ctx context.Context, phoneNumber, platform string) (CreatedConversation, error) {
+	var created CreatedConversation
+	err := c.postJSON(ctx, "/api/new-conversation", map[string]string{
+		"phone_number": phoneNumber,
+		"platform":     platform,
+	}, &created)
+	return created, err
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, payload any, target any) error {

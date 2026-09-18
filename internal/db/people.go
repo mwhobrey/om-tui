@@ -56,10 +56,26 @@ func (s *Store) ListMessagedPeople() ([]*Person, error) {
 	if err != nil {
 		return nil, err
 	}
+	people := MessagedPeopleFromConversations(convs)
+	if counts, err := s.realMessageCountsByConversation(); err == nil {
+		for _, p := range people {
+			total := 0
+			for _, cid := range p.ConversationIDs {
+				total += counts[cid]
+			}
+			p.MessageCount = total
+		}
+	}
+	return people, nil
+}
+
+// MessagedPeopleFromConversations groups 1:1 threads by normalized name.
+// MessageCount is left at zero; callers that have a message store fill it.
+func MessagedPeopleFromConversations(convs []*Conversation) []*Person {
 	byKey := map[string]*Person{}
 	var order []string
 	for _, c := range convs {
-		if c.IsGroup {
+		if c == nil || c.IsGroup {
 			continue
 		}
 		name := strings.TrimSpace(c.Name)
@@ -94,19 +110,20 @@ func (s *Store) ListMessagedPeople() ([]*Person, error) {
 	for _, k := range order {
 		people = append(people, byKey[k])
 	}
-	if counts, err := s.realMessageCountsByConversation(); err == nil {
-		for _, p := range people {
-			total := 0
-			for _, cid := range p.ConversationIDs {
-				total += counts[cid]
-			}
-			p.MessageCount = total
-		}
-	}
 	sort.SliceStable(people, func(i, j int) bool {
 		return people[i].LastContactedTS > people[j].LastContactedTS
 	})
-	return people, nil
+	return people
+}
+
+// PersonByKeyFrom lists the person with key, or nil if none match.
+func PersonByKeyFrom(people []*Person, key string) *Person {
+	for _, p := range people {
+		if p != nil && p.Key == key {
+			return p
+		}
+	}
+	return nil
 }
 
 // PersonByKey resolves a normalized person key back to the aggregated person.
@@ -115,12 +132,7 @@ func (s *Store) PersonByKey(key string) (*Person, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range people {
-		if p.Key == key {
-			return p, nil
-		}
-	}
-	return nil, nil
+	return PersonByKeyFrom(people, key), nil
 }
 
 // PersonMessages returns the deduplicated messages across a person's
@@ -133,7 +145,7 @@ func (s *Store) PersonMessages(conversationIDs []string) ([]*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dedupePersonMessages(msgs), nil
+	return DedupePersonMessages(msgs), nil
 }
 
 func participantNumbers(participantsJSON string) []string {
@@ -176,9 +188,9 @@ func appendUniqueStr(list []string, v string) []string {
 	return append(list, v)
 }
 
-// dedupePersonMessages removes near-duplicate cross-platform messages (same body
+// DedupePersonMessages removes near-duplicate cross-platform messages (same body
 // + sender within 2s), keeping the first occurrence.
-func dedupePersonMessages(msgs []*Message) []*Message {
+func DedupePersonMessages(msgs []*Message) []*Message {
 	if len(msgs) <= 1 {
 		return msgs
 	}

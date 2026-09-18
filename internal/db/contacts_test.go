@@ -373,3 +373,40 @@ func TestListContactsFromConversationsPrefilter(t *testing.T) {
 		}
 	})
 }
+
+func TestContactsFromConversationsSkipsSelfAndHonorsLimit(t *testing.T) {
+	convs := []*Conversation{
+		{ConversationID: "c1", Name: "Alice", Participants: `[{"name":"Alice","number":"+15551112222"},{"name":"Me","number":"+15550000000","is_me":true}]`, LastMessageTS: 300},
+		{ConversationID: "c2", Name: "Bob", Participants: `[{"name":"Bob","number":"+15553334444"}]`, LastMessageTS: 200},
+	}
+	got := ContactsFromConversations(convs, "", 10)
+	if len(got) != 2 {
+		t.Fatalf("got %d contacts, want 2: %+v", len(got), got)
+	}
+	if got[0].Name != "Alice" || got[1].Name != "Bob" {
+		t.Fatalf("order/names = %+v", got)
+	}
+	limited := ContactsFromConversations(convs, "", 1)
+	if len(limited) != 1 || limited[0].Name != "Alice" {
+		t.Fatalf("limit = %+v", limited)
+	}
+	query := ContactsFromConversations(convs, "bob", 10)
+	if len(query) != 1 || query[0].Name != "Bob" {
+		t.Fatalf("query = %+v", query)
+	}
+}
+
+func TestConversationsMatchingQuery(t *testing.T) {
+	convs := []*Conversation{
+		{ConversationID: "slack:T:C1", Name: "eng", Participants: `[{"name":"Alice","number":"U1"}]`, LastMessageTS: 2},
+		{ConversationID: "c2", Name: "Bob", Participants: `[{"name":"Bob","number":"+15553334444"}]`, LastMessageTS: 1},
+	}
+	got := ConversationsMatchingQuery(convs, "Alice", 10)
+	if len(got) != 1 || got[0].ConversationID != "slack:T:C1" {
+		t.Fatalf("name/participant match = %+v", got)
+	}
+	got = ConversationsMatchingQuery(convs, "c2", 10)
+	if len(got) != 1 || got[0].Name != "Bob" {
+		t.Fatalf("id match = %+v", got)
+	}
+}

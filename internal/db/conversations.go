@@ -387,6 +387,38 @@ func (s *Store) SearchConversationsByMetadata(query string, limit int) ([]*Conve
 	return s.SearchConversationsByMetadataRiver(query, "", limit)
 }
 
+// ConversationsMatchingQuery filters already-loaded conversations by ID, name,
+// or participants JSON. Unlike SearchConversationsByMetadata it does not scan
+// message senders — that table is frozen on V2 primary.
+func ConversationsMatchingQuery(convs []*Conversation, query string, limit int) []*Conversation {
+	query = strings.TrimSpace(query)
+	var out []*Conversation
+	for _, conv := range convs {
+		if conv == nil || !conversationMatchesQuery(conv, query) {
+			continue
+		}
+		out = append(out, conv)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func conversationMatchesQuery(conv *Conversation, query string) bool {
+	if query == "" {
+		return true
+	}
+	q := strings.ToLower(query)
+	if containsInsensitive(conv.ConversationID, q) {
+		return true
+	}
+	if containsInsensitive(conv.Name, q) {
+		return true
+	}
+	return containsInsensitive(conv.Participants, q)
+}
+
 func (s *Store) SearchConversationsByMetadataRiver(query, riverID string, limit int) ([]*Conversation, error) {
 	riverClause := ""
 	args := []any{"%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%", "%" + query + "%"}

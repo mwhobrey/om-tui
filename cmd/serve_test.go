@@ -87,6 +87,11 @@ func TestRunServeV2PrimaryFailsFast(t *testing.T) {
 			// Keep the client shape's daemon probe hermetic: never reach a
 			// real daemon that may be running on the test machine.
 			t.Setenv("OPENMESSAGES_PORT", "0")
+			if tt.name == "migrated store absent" {
+				if err := os.WriteFile(filepath.Join(dataDir, "messages.db"), []byte("legacy-inbox"), 0o600); err != nil {
+					t.Fatalf("seed legacy inbox: %v", err)
+				}
+			}
 
 			err := RunServe(zerolog.Nop(), tt.args...)
 			if err == nil {
@@ -102,9 +107,6 @@ func TestRunServeV2PrimaryFailsFast(t *testing.T) {
 				}
 				if _, statErr := os.Stat(filepath.Join(dataDir, "v2")); !os.IsNotExist(statErr) {
 					t.Fatalf("absent-store refusal created v2 state: %v", statErr)
-				}
-				if _, statErr := os.Stat(filepath.Join(dataDir, "messages.db")); !os.IsNotExist(statErr) {
-					t.Fatalf("absent-store refusal touched the legacy store: %v", statErr)
 				}
 			}
 		})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -12,6 +13,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/importer"
+	"github.com/maxghenis/openmessage/internal/migration"
 )
 
 var (
@@ -38,7 +40,8 @@ func importMessagesTool() mcp.Tool {
 	)
 }
 
-func importMessagesHandler(a *app.App) server.ToolHandlerFunc {
+func importMessagesHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		source := strArg(args, "source")
@@ -47,14 +50,20 @@ func importMessagesHandler(a *app.App) server.ToolHandlerFunc {
 		name := strArg(args, "name")
 		address := strArg(args, "address")
 
+		if options.V2Primary && v2WriteStore(options) == nil {
+			return errorResult("import_messages: v2 store is unavailable"), nil
+		}
+
 		var result *importer.ImportResult
 		var err error
+		platform := ""
 
 		switch source {
 		case "gchat":
 			if path == "" {
 				return errorResult("path is required for gchat import (Google Chat Takeout Groups directory)"), nil
 			}
+			platform = "gchat"
 			result, err = importGChatDirectory(a.Store, path, email)
 
 		case "gchat_conversation":
@@ -66,10 +75,12 @@ func importMessagesHandler(a *app.App) server.ToolHandlerFunc {
 				return errorResult(fmt.Sprintf("open file: %v", ferr)), nil
 			}
 			defer f.Close()
+			platform = "gchat"
 			imp := &importer.GChat{MyEmail: email}
 			result, err = imp.Import(a.Store, f)
 
 		case "imessage":
+			platform = "imessage"
 			imp := &importer.IMessage{DBPath: path, MyName: name}
 			result, err = imp.ImportFromDB(a.Store)
 
@@ -82,10 +93,12 @@ func importMessagesHandler(a *app.App) server.ToolHandlerFunc {
 				return errorResult(fmt.Sprintf("open file: %v", ferr)), nil
 			}
 			defer f.Close()
+			platform = "whatsapp"
 			imp := &importer.WhatsApp{MyName: name}
 			result, err = imp.Import(a.Store, f)
 
 		case "signal":
+			platform = "signal"
 			result, err = importSignalDesktop(a.Store, path, name, address)
 
 		default:
@@ -94,6 +107,12 @@ func importMessagesHandler(a *app.App) server.ToolHandlerFunc {
 
 		if err != nil {
 			return errorResult(fmt.Sprintf("import failed: %v", err)), nil
+		}
+		if store := v2WriteStore(options); store != nil && platform != "" {
+			sourcePath := filepath.Join(a.DataDir, "messages.db")
+			if err := migration.SyncInto(ctx, sourcePath, store, platform); err != nil {
+				return errorResult(fmt.Sprintf("import wrote v1 but v2 sync failed: %v", err)), nil
+			}
 		}
 
 		var sb strings.Builder

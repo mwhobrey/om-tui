@@ -37,7 +37,8 @@ func generateVizTool() mcp.Tool {
 	)
 }
 
-func generateVizHandler(a *app.App) server.ToolHandlerFunc {
+func generateVizHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := strArg(args, "name")
@@ -54,7 +55,7 @@ func generateVizHandler(a *app.App) server.ToolHandlerFunc {
 		}
 
 		// Collect messages across all platforms
-		msgs, convNames, err := collectPersonMessages(a, name)
+		msgs, convNames, err := collectPersonMessages(options.Reads, name)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}

@@ -20,6 +20,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/storage/blob"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
+	"github.com/maxghenis/openmessage/internal/v2read"
 )
 
 type routingReadSource struct {
@@ -38,6 +39,7 @@ func (s *routingReadSource) ListConversations(limit int) ([]*db.Conversation, er
 		Name:           "V2 Alice",
 		LastMessageTS:  200,
 		SourcePlatform: "sms",
+		Participants:   `[{"name":"V2 Alice","number":"+15550001111"}]`,
 	}}, nil
 }
 
@@ -111,6 +113,25 @@ func (s *routingReadSource) LatestTimestamp(sourcePlatform string) (int64, error
 func (s *routingReadSource) LatestConversationPreviews(ids []string) (map[string]string, error) {
 	s.calls["previews"]++
 	return map[string]string{"v2-conversation": "preview from v2"}, nil
+}
+
+func (s *routingReadSource) GetMessagesByConversations(conversationIDs []string, limit int) ([]*db.Message, error) {
+	s.calls["by_conversations"]++
+	return []*db.Message{routingMessage("latest from v2")}, nil
+}
+
+func (s *routingReadSource) GetMessagesByConversationsRange(conversationIDs []string, afterMS, beforeMS int64, limit int) ([]*db.Message, error) {
+	s.calls["by_conversations_range"]++
+	return []*db.Message{routingMessage("latest from v2")}, nil
+}
+
+func (s *routingReadSource) GetMessageByID(messageID string) (*db.Message, error) {
+	s.calls["message"]++
+	msg := routingMessage("latest from v2")
+	msg.MessageID = messageID
+	msg.MediaID = "v2msg:" + messageID + ":1"
+	msg.MimeType = "image/png"
+	return msg, nil
 }
 
 func routingMessage(body string) *db.Message {
@@ -191,6 +212,205 @@ func TestR5CanonicalReadRoutesUseConfiguredSource(t *testing.T) {
 	}
 }
 
+func TestR5ConversationPlatformFilterDoesNotReadLegacyInV2Primary(t *testing.T) {
+	legacy, err := db.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if err := legacy.UpsertConversation(&db.Conversation{
+		ConversationID: "legacy-slack",
+		Name:           "Legacy Slack",
+		SourcePlatform: "slack",
+		LastMessageTS:  100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reads := newRoutingReadSource()
+	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{
+		Reads:     reads,
+		V2Primary: true,
+	})
+
+	sms := httptest.NewRecorder()
+	handler.ServeHTTP(sms, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/conversations?source_platform=sms", nil))
+	if sms.Code != http.StatusOK {
+		t.Fatalf("sms status = %d, body=%s", sms.Code, sms.Body.String())
+	}
+	if !strings.Contains(sms.Body.String(), "V2 Alice") {
+		t.Fatalf("sms body = %s, want v2 conversation", sms.Body.String())
+	}
+	if strings.Contains(strings.ToLower(sms.Body.String()), "legacy") {
+		t.Fatalf("sms filter leaked legacy data: %s", sms.Body.String())
+	}
+	if reads.calls["list"] == 0 {
+		t.Fatal("sms platform filter did not use configured read source")
+	}
+
+	slack := httptest.NewRecorder()
+	handler.ServeHTTP(slack, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/conversations?source_platform=slack", nil))
+	if slack.Code != http.StatusOK {
+		t.Fatalf("slack status = %d, body=%s", slack.Code, slack.Body.String())
+	}
+	if strings.Contains(slack.Body.String(), "Legacy Slack") {
+		t.Fatal("platform filter leaked legacy slack conversations")
+	}
+	if strings.Contains(slack.Body.String(), "V2 Alice") {
+		t.Fatal("sms conversation included in slack filter")
+	}
+}
+
+func TestR5SearchIncludesConversationNameHitsInV2Primary(t *testing.T) {
+	v2, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2.UpsertAccount(sqlite.Account{
+		AccountID:   "google-primary",
+		BridgeKey:   "google_messages",
+		DisplayName: "Google",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "v2-nathan",
+		AccountID:            "google-primary",
+		RemoteConversationID: "remote-nathan",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Nathan",
+		NotificationMode:     sqlite.NotificationModeAll,
+		LastMessageAtMS:      nowMS,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := db.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if err := legacy.UpsertConversation(&db.Conversation{
+		ConversationID: "legacy-nathan",
+		Name:           "Nathan Legacy",
+		LastMessageTS:  100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{
+		Reads:     v2read.New(v2),
+		V2Primary: true,
+	})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/search?q=Nathan", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "v2-nathan") {
+		t.Fatalf("body = %s, want v2 conversation name hit", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "legacy-nathan") {
+		t.Fatalf("search leaked legacy conversation: %s", recorder.Body.String())
+	}
+}
+
+func TestR5FavoriteAndMutePersistInV2Primary(t *testing.T) {
+	v2, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v2.Close() })
+	nowMS := time.Now().UnixMilli()
+	if err := v2.UpsertAccount(sqlite.Account{
+		AccountID:   "google-primary",
+		BridgeKey:   "google_messages",
+		DisplayName: "Google",
+		Mode:        sqlite.AccountModeLive,
+		Enabled:     true,
+		ConfigJSON:  "{}",
+		CreatedAtMS: nowMS,
+		UpdatedAtMS: nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v2.UpsertConversation(sqlite.Conversation{
+		ConversationID:       "v2-flags",
+		AccountID:            "google-primary",
+		RemoteConversationID: "remote-v2-flags",
+		Kind:                 sqlite.ConversationKindDirect,
+		Title:                "Flags",
+		NotificationMode:     sqlite.NotificationModeAll,
+		LastMessageAtMS:      nowMS,
+		MetadataJSON:         "{}",
+		CreatedAtMS:          nowMS,
+		UpdatedAtMS:          nowMS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := db.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if err := legacy.UpsertConversation(&db.Conversation{
+		ConversationID: "v2-flags",
+		Name:           "Legacy Flags",
+		LastMessageTS:  100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{
+		Reads:     v2read.New(v2),
+		V2Primary: true,
+		V2:        &V2Options{V2Store: v2},
+	})
+
+	fav := httptest.NewRecorder()
+	handler.ServeHTTP(fav, httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/conversations/v2-flags/favorite", strings.NewReader(`{"favorite":true}`)))
+	if fav.Code != http.StatusOK {
+		t.Fatalf("favorite status = %d, body=%s", fav.Code, fav.Body.String())
+	}
+	if !strings.Contains(fav.Body.String(), `"is_favorite":true`) {
+		t.Fatalf("favorite body = %s", fav.Body.String())
+	}
+	got, err := v2.GetConversation("v2-flags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsFavorite {
+		t.Fatal("v2 conversation favorite was not persisted")
+	}
+	legacyConv, _ := legacy.GetConversation("v2-flags")
+	if legacyConv != nil && legacyConv.IsFavorite {
+		t.Fatal("favorite leaked into the legacy store")
+	}
+
+	mute := httptest.NewRecorder()
+	handler.ServeHTTP(mute, httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/conversations/v2-flags/notification-mode", strings.NewReader(`{"notification_mode":"muted"}`)))
+	if mute.Code != http.StatusOK {
+		t.Fatalf("mute status = %d, body=%s", mute.Code, mute.Body.String())
+	}
+	got, err = v2.GetConversation("v2-flags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NotificationMode != sqlite.NotificationModeMuted {
+		t.Fatalf("notification mode = %q, want muted", got.NotificationMode)
+	}
+}
+
 func TestR5LegacySendEndpointsQuiescedInV2Primary(t *testing.T) {
 	legacy, err := db.New(":memory:")
 	if err != nil {
@@ -199,7 +419,7 @@ func TestR5LegacySendEndpointsQuiescedInV2Primary(t *testing.T) {
 	t.Cleanup(func() { _ = legacy.Close() })
 	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{V2Primary: true})
 
-	for _, path := range []string{"/api/send", "/api/send-media", "/api/send-gif", "/api/drafts/send"} {
+	for _, path := range []string{"/api/send", "/api/send-media", "/api/send-gif"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader("{}")))
@@ -412,23 +632,72 @@ func TestR5StatusCountsRouteToConfiguredSourceInV2Primary(t *testing.T) {
 	}
 }
 
-func TestR5StatsAndStoryUnavailableInV2Primary(t *testing.T) {
+func TestR5StatsAndStoryUseConfiguredSourceInV2Primary(t *testing.T) {
 	legacy, err := db.New(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = legacy.Close() })
+	reads := newRoutingReadSource()
 	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{
-		Reads:     newRoutingReadSource(),
+		Reads:     reads,
 		V2Primary: true,
 	})
 
-	for _, path := range []string{"http://127.0.0.1/api/stats/v2-conversation", "http://127.0.0.1/api/story/v2-conversation"} {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if got := recorder.Result().StatusCode; got != http.StatusConflict {
-			t.Fatalf("%s status = %d, want 409 (unavailable in v2-primary)", path, got)
-		}
+	statsRec := httptest.NewRecorder()
+	handler.ServeHTTP(statsRec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/stats/v2-conversation", nil))
+	if got := statsRec.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("/api/stats status = %d, want 200", got)
+	}
+	if reads.calls["messages"] == 0 {
+		t.Fatalf("stats did not consult configured source: calls=%v", reads.calls)
+	}
+
+	storyRec := httptest.NewRecorder()
+	handler.ServeHTTP(storyRec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/story/v2-conversation", nil))
+	if got := storyRec.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("/api/story status = %d body=%s, want 200", got, storyRec.Body.String())
+	}
+
+	contactsRec := httptest.NewRecorder()
+	handler.ServeHTTP(contactsRec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/contacts", nil))
+	if got := contactsRec.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("/api/contacts status = %d, want 200", got)
+	}
+	var contacts []*db.Contact
+	if err := json.NewDecoder(contactsRec.Result().Body).Decode(&contacts); err != nil {
+		t.Fatalf("decode contacts: %v", err)
+	}
+	if len(contacts) != 1 || contacts[0].Name != "V2 Alice" {
+		t.Fatalf("contacts = %+v, want V2 Alice from v2 source", contacts)
+	}
+
+	peopleRec := httptest.NewRecorder()
+	handler.ServeHTTP(peopleRec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/people", nil))
+	if got := peopleRec.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("/api/people status = %d, want 200", got)
+	}
+	var people []map[string]any
+	if err := json.NewDecoder(peopleRec.Result().Body).Decode(&people); err != nil {
+		t.Fatalf("decode people: %v", err)
+	}
+	if len(people) != 1 || people[0]["name"] != "V2 Alice" {
+		t.Fatalf("people = %#v, want V2 Alice from v2 source", people)
+	}
+
+	syncRec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/contacts/sync", nil)
+	handler.ServeHTTP(syncRec, req)
+	if got := syncRec.Result().StatusCode; got != http.StatusConflict {
+		t.Fatalf("/api/contacts/sync status = %d, want 409", got)
+	}
+
+	draftSend := httptest.NewRecorder()
+	sendReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/drafts/send", strings.NewReader(`{"draft_id":"d1","body":"x"}`))
+	sendReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(draftSend, sendReq)
+	if got := draftSend.Result().StatusCode; got != http.StatusServiceUnavailable {
+		t.Fatalf("/api/drafts/send status = %d, want 503 without a v2 outbox", got)
 	}
 }
 
@@ -454,8 +723,8 @@ func TestPRAScheduleAndStatusInV2Primary(t *testing.T) {
 		t.Fatalf("status v2_primary = %#v, want true", status["v2_primary"])
 	}
 
-	// The scheduled-send black hole is closed: writing routes must 409 in
-	// v2-primary rather than silently persist a legacy row nothing drains.
+	// Schedule writes stay 409 in v2-primary. New-conversation, tabs, and
+	// drafts now live on v2 when a store is configured.
 	for _, tc := range []struct {
 		method, path, body, ctype string
 	}{

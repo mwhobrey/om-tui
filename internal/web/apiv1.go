@@ -19,8 +19,10 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/media"
 	"github.com/maxghenis/openmessage/internal/messaging"
+	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/blob"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
+	"github.com/maxghenis/openmessage/internal/v2keys"
 	"github.com/maxghenis/openmessage/internal/v2wire"
 )
 
@@ -581,6 +583,95 @@ func mirrorV2ReadCursor(
 		return fmt.Errorf("v2 store is not configured")
 	}
 	return v2wire.MirrorReadCursor(ctx, legacy, v2, conversationID, atMS)
+}
+
+func resolveSlackLiveIDs(opts APIOptions, conversationID, rootMessageID string) (string, string) {
+	conversationID = strings.TrimSpace(conversationID)
+	rootMessageID = strings.TrimSpace(rootMessageID)
+	if !opts.V2Primary || opts.V2 == nil || opts.V2.V2Store == nil || conversationID == "" {
+		return conversationID, rootMessageID
+	}
+	if _, _, ok := river.ParseSlackConversationID(conversationID); ok {
+		return conversationID, rootMessageID
+	}
+	conversation, err := opts.V2.V2Store.GetConversation(conversationID)
+	if err != nil || !strings.HasPrefix(conversation.AccountID, "slack-") {
+		return conversationID, rootMessageID
+	}
+	teamID := strings.TrimPrefix(conversation.AccountID, "slack-")
+	liveConversationID := river.SlackConversationID(teamID, conversation.RemoteConversationID)
+	if rootMessageID == "" {
+		return liveConversationID, rootMessageID
+	}
+	if ts := slackMessageTS(rootMessageID); ts != "" {
+		return liveConversationID, fmt.Sprintf("slack:%s:%s", conversation.RemoteConversationID, ts)
+	}
+	repository, err := sqlite.NewMessageRepository(opts.V2.V2Store, time.Now)
+	if err != nil {
+		return liveConversationID, fmt.Sprintf("slack:%s:%s", conversation.RemoteConversationID, rootMessageID)
+	}
+	message, err := repository.GetMessage(context.Background(), rootMessageID)
+	if err != nil {
+		return liveConversationID, fmt.Sprintf("slack:%s:%s", conversation.RemoteConversationID, rootMessageID)
+	}
+	remoteID := strings.TrimSpace(message.RemoteMessageID)
+	if remoteID == "" {
+		return liveConversationID, rootMessageID
+	}
+	return liveConversationID, fmt.Sprintf("slack:%s:%s", conversation.RemoteConversationID, remoteID)
+}
+
+func slackMessageTS(messageID string) string {
+	parts := strings.SplitN(strings.TrimSpace(messageID), ":", 3)
+	if len(parts) != 3 || parts[0] != "slack" || parts[2] == "" {
+		return ""
+	}
+	return parts[2]
+}
+
+func mapSlackLiveMessagesToV2(opts APIOptions, requestedConversationID string, messages []*db.Message) []*db.Message {
+	requestedConversationID = strings.TrimSpace(requestedConversationID)
+	if !opts.V2Primary || opts.V2 == nil || opts.V2.V2Store == nil || requestedConversationID == "" {
+		return messages
+	}
+	if _, _, ok := river.ParseSlackConversationID(requestedConversationID); ok {
+		return messages
+	}
+	conversation, err := opts.V2.V2Store.GetConversation(requestedConversationID)
+	if err != nil || !strings.HasPrefix(conversation.AccountID, "slack-") {
+		return messages
+	}
+	remoteConv := strings.TrimSpace(conversation.RemoteConversationID)
+	if remoteConv == "" {
+		return messages
+	}
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		message.ConversationID = requestedConversationID
+		if ts := slackLiveRemoteTS(message.MessageID, message.SourceID); ts != "" {
+			message.MessageID = v2keys.MessageID(conversation.AccountID, remoteConv, ts)
+		}
+		if replyTS := slackLiveRemoteTS(message.ReplyToID, ""); replyTS != "" {
+			message.ReplyToID = v2keys.MessageID(conversation.AccountID, remoteConv, replyTS)
+		}
+	}
+	return messages
+}
+
+func slackLiveRemoteTS(messageID, sourceID string) string {
+	if ts := slackMessageTS(messageID); ts != "" {
+		return ts
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return ""
+	}
+	if _, ts, ok := strings.Cut(sourceID, ":"); ok && ts != "" {
+		return ts
+	}
+	return sourceID
 }
 
 func writeDescriptorMediaResponse(w http.ResponseWriter, reader io.Reader, descriptor media.Descriptor) {

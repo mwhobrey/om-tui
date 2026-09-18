@@ -21,7 +21,8 @@ func downloadMediaTool() mcp.Tool {
 	)
 }
 
-func downloadMediaHandler(a *app.App) server.ToolHandlerFunc {
+func downloadMediaHandler(a *app.App, configured ...Options) server.ToolHandlerFunc {
+	options := resolvedOptions(a, configured)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		msgID := strArg(args, "message_id")
@@ -29,7 +30,7 @@ func downloadMediaHandler(a *app.App) server.ToolHandlerFunc {
 			return errorResult("message_id is required"), nil
 		}
 
-		msg, err := a.Store.GetMessageByID(msgID)
+		msg, err := options.Reads.GetMessageByID(msgID)
 		if err != nil {
 			return errorResult(fmt.Sprintf("get message: %v", err)), nil
 		}

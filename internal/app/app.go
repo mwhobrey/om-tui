@@ -139,6 +139,13 @@ type App struct {
 	OnWhatsAppStatusChange func()
 	OnSignalStatusChange   func()
 	OnSlackStatusChange    func()
+	// OnSlackClientReady runs after a Slack live client is constructed and
+	// before Start/sync, so V2 account registration can precede dual-write.
+	OnSlackClientReady func(riverID string, client *slacklive.Client)
+	// OnExtraWhatsAppRiverReady / OnExtraSignalRiverReady run after an extra
+	// live bridge is constructed so V2 can register a per-river account.
+	OnExtraWhatsAppRiverReady func(riverID string, host *whatsapplive.Bridge)
+	OnExtraSignalRiverReady   func(riverID string, host *signallive.Bridge)
 
 	// gmClient is used by backfill methods. If nil, it's derived from Client.GM.
 	// Set this field directly in tests to inject a mock.
@@ -175,6 +182,7 @@ type App struct {
 	googlePhoneRespondingSeen atomic.Bool
 	googleLifecycleMu         sync.RWMutex
 	googleLifecycleNotifier   GoogleLifecycleNotifier
+	googleHistoryIngest       GoogleHistoryIngest
 	googleRepairPaceMu        sync.RWMutex
 	googleRepairPaceCount     func() uint64
 	signalLifecycleMu         sync.RWMutex
