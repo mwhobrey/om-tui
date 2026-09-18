@@ -1256,6 +1256,45 @@ func TestBackfillPopulatesDB(t *testing.T) {
 	}
 }
 
+type recordingHistoryIngest struct {
+	mu    sync.Mutex
+	convs []*gmproto.Conversation
+	msgs  []*gmproto.Message
+}
+
+func (r *recordingHistoryIngest) IngestHistoryConversation(conv *gmproto.Conversation) {
+	r.mu.Lock()
+	r.convs = append(r.convs, conv)
+	r.mu.Unlock()
+}
+
+func (r *recordingHistoryIngest) IngestHistoryMessage(msg *gmproto.Message) {
+	r.mu.Lock()
+	r.msgs = append(r.msgs, msg)
+	r.mu.Unlock()
+}
+
+func TestStoreConversationAndMessageTeeHistoryIngest(t *testing.T) {
+	a := newTestApp(t, nil)
+	ingest := &recordingHistoryIngest{}
+	a.SetGoogleHistoryIngest(ingest)
+
+	conv := makeConv("c1", "Alice")
+	if err := a.storeConversation(conv); err != nil {
+		t.Fatal(err)
+	}
+	msg := makeMsg("m1", "c1", "offline gap", 100)
+	a.storeMessage(msg)
+	a.storeMessage(makeMsg("stub", "c1", "", 101))
+
+	if len(ingest.convs) != 1 || ingest.convs[0] != conv {
+		t.Fatalf("history conversations = %d, want the stored proto", len(ingest.convs))
+	}
+	if len(ingest.msgs) != 1 || ingest.msgs[0] != msg {
+		t.Fatalf("history messages = %d, want the non-stub stored proto", len(ingest.msgs))
+	}
+}
+
 func TestOrphanContactDiscoveryEnabled(t *testing.T) {
 	cases := []struct {
 		name string

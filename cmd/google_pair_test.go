@@ -358,3 +358,154 @@ func TestStartGoogleAccountPairRejectedDuringUnpair(t *testing.T) {
 		t.Fatalf("StopAndUnpair(): %v", err)
 	}
 }
+
+func TestSessionHasPairedAuth(t *testing.T) {
+	dir := t.TempDir()
+	missing := dir + "/missing.json"
+	if sessionHasPairedAuth(missing) {
+		t.Fatal("missing session must not look paired")
+	}
+	junk := dir + "/junk.json"
+	if err := os.WriteFile(junk, []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sessionHasPairedAuth(junk) {
+		t.Fatal("session without auth_data cookies must not look paired")
+	}
+	paired := dir + "/paired.json"
+	if err := os.WriteFile(paired, []byte(`{"auth_data":{"cookies":{"SID":"old"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionHasPairedAuth(paired) {
+		t.Fatal("session with auth_data cookies should look paired")
+	}
+}
+
+func TestGoogleAccountPairRefreshesExistingSessionWithoutGaia(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath, []byte(`{"auth_data":{"cookies":{"SID":"old"},"keep":"device"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &googleRepairTestLifecycle{}
+	newSupervisor := func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			lifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}
+	first, err := newSupervisor()
+	if err != nil {
+		t.Fatalf("NewSupervisor(): %v", err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, newSupervisor, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+	control.startGaia = func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error) {
+		t.Fatal("existing paired session must not start Gaia pairing")
+		return googleGaiaAttempt{}, errors.New("gaia must not run")
+	}
+
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "fresh-sid"}); err != nil {
+		t.Fatalf("StartGoogleAccountPair(): %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if control.PairingSnapshot() == nil {
+			raw, err := os.ReadFile(sessionPath)
+			if err != nil {
+				t.Fatalf("read session: %v", err)
+			}
+			got := string(raw)
+			if !strings.Contains(got, "fresh-sid") {
+				t.Fatalf("session cookies not refreshed: %s", got)
+			}
+			if !strings.Contains(got, `"keep":"device"`) {
+				t.Fatalf("device fields dropped: %s", got)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pairing still active: %#v", control.PairingSnapshot())
+}
+
+func TestGoogleAccountPairFallsBackToGaiaWhenCookieReconnectFails(t *testing.T) {
+	sessionPath := t.TempDir() + "/session.json"
+	if err := os.WriteFile(sessionPath, []byte(`{"auth_data":{"cookies":{"SID":"old"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	okLifecycle := &googleRepairTestLifecycle{}
+	failLifecycle := &googleFailStartLifecycle{}
+	first, err := bridge.NewSupervisor(
+		googleAccountID,
+		bridge.PlatformGoogle,
+		okLifecycle,
+		googleSupervisorPolicy(),
+		googleWallClock{},
+		googleRandom{},
+	)
+	if err != nil {
+		t.Fatalf("NewSupervisor(): %v", err)
+	}
+	control := newGoogleSupervisorControl(first, sessionPath, func() (*bridge.Supervisor, error) {
+		return bridge.NewSupervisor(
+			googleAccountID,
+			bridge.PlatformGoogle,
+			failLifecycle,
+			googleSupervisorPolicy(),
+			googleWallClock{},
+			googleRandom{},
+		)
+	}, zerolog.Nop(), nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = control.Stop(ctx)
+	})
+
+	control.startGaia = func(ctx context.Context, cookies map[string]string) (googleGaiaAttempt, error) {
+		if cookies["SID"] != "fresh-sid" {
+			t.Fatalf("cookies = %#v", cookies)
+		}
+		return googleGaiaAttempt{
+			Emoji: "🦊",
+			Finish: func(ctx context.Context) (*client.SessionData, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			Disconnect: func() {},
+		}, nil
+	}
+
+	if err := control.StartGoogleAccountPair(map[string]string{"SID": "fresh-sid"}); err != nil {
+		t.Fatalf("StartGoogleAccountPair(): %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := control.PairingSnapshot()
+		if snap != nil && snap.Phase == googlePairPhaseWaitingConfirm && snap.Emoji == "🦊" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pairing = %#v, want Gaia waiting_confirm after failed cookie reconnect", control.PairingSnapshot())
+}
+
+type googleFailStartLifecycle struct{}
+
+func (googleFailStartLifecycle) Start(
+	context.Context,
+	bridge.StartRequest,
+	bridge.ConnectionSink,
+) (bridge.Run, error) {
+	return nil, errors.New("forced connect fail")
+}

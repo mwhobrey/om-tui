@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,12 +10,14 @@ import (
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/bridge"
 	"github.com/maxghenis/openmessage/internal/client"
+	"github.com/maxghenis/openmessage/internal/googlecookies"
 )
 
 const (
 	googlePairPhaseStarting       = "starting"
 	googlePairPhaseReadingChrome  = "reading_chrome"
 	googlePairPhaseWaitingBrowser = "waiting_browser"
+	googlePairPhaseRefreshing     = "refreshing_cookies"
 	googlePairPhaseWaitingConfirm = "waiting_confirm"
 	googlePairPhaseFinishing      = "finishing"
 	googlePairPhaseFailed         = "failed"
@@ -127,6 +130,22 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 		fail(fmt.Errorf("park Google Messages: %w", err))
 		return
 	}
+
+	if sessionHasPairedAuth(c.sessionPath) {
+		c.setPairing(googlePairPhaseRefreshing, "", "")
+		if err := googlecookies.UpdateSessionCookies(c.sessionPath, cookies); err != nil {
+			c.logger.Warn().Err(err).Msg("Google cookie paste could not rewrite the existing session")
+		} else if err := c.reconnectAfterPair(); err != nil {
+			c.logger.Warn().Err(err).Msg("Google cookie paste reconnect failed; falling back to account pairing")
+		} else {
+			c.mu.Lock()
+			c.pairing = nil
+			c.mu.Unlock()
+			c.notifyPairingChange()
+			return
+		}
+	}
+
 	createdBackup, err := backupAndRemoveSession(c.sessionPath)
 	if err != nil {
 		fail(err)
@@ -254,6 +273,23 @@ func (c *googleSupervisorControl) notifyPairingChange() {
 	if c.onChange != nil {
 		c.onChange()
 	}
+}
+
+func sessionHasPairedAuth(sessionPath string) bool {
+	raw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return false
+	}
+	var data map[string]any
+	if json.Unmarshal(raw, &data) != nil {
+		return false
+	}
+	auth, ok := data["auth_data"].(map[string]any)
+	if !ok || len(auth) == 0 {
+		return false
+	}
+	cookies, _ := auth["cookies"].(map[string]any)
+	return len(cookies) > 0
 }
 
 func backupAndRemoveSession(sessionPath string) (created bool, err error) {

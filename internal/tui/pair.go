@@ -148,7 +148,7 @@ func (m Model) pairPhase() string {
 				return "starting"
 			}
 			return p.Phase
-		case "starting", "reading_chrome", "waiting_browser", "waiting_confirm", "finishing":
+		case "starting", "reading_chrome", "waiting_browser", "waiting_confirm", "finishing", "refreshing_cookies":
 			return p.Phase
 		}
 	}
@@ -224,7 +224,7 @@ func (m Model) pairBusy() bool {
 		return false
 	}
 	switch pairing.Phase {
-	case "starting", "reading_chrome", "waiting_browser", "waiting_confirm", "finishing":
+	case "starting", "reading_chrome", "waiting_browser", "waiting_confirm", "finishing", "refreshing_cookies":
 		return true
 	default:
 		return false
@@ -407,6 +407,8 @@ func pairStepIndex(phase string, submitting bool) int {
 		return 2
 	case "finishing":
 		return 3
+	case "refreshing_cookies":
+		return 3
 	default:
 		if submitting {
 			return 0
@@ -439,14 +441,18 @@ func renderPairStepLine(innerW, current int, spin string) string {
 	return line
 }
 
-func pairPasteInstructionLines(innerW int) []string {
+func pairPasteInstructionLines(innerW int, refreshExisting bool) []string {
 	intro := "Chrome encrypts Google cookies on this PC, so paste them instead."
 	steps := []string{
 		"1. Open messages.google.com signed in",
 		"2. F12, Network, reload the page",
 		"3. Click a messages.google.com request",
 		"4. Copy as cURL, then ctrl+v here",
-		"5. Tap the emoji on your phone",
+	}
+	if refreshExisting {
+		intro = "Cookies expired. Paste a fresh curl to revive this PC's link — no phone tap unless Google unlinked it."
+	} else {
+		steps = append(steps, "5. Tap the emoji on your phone")
 	}
 	var rows []string
 	for _, line := range wrapLines(intro, innerW) {
@@ -485,7 +491,12 @@ func (m Model) renderPairOverlay() string {
 	pairing := m.pairingFromDaemon()
 	phase := m.pairPhase()
 	step := pairStepIndex(phase, m.pair.submitting)
-	title := paintLine(accentBoldStyle, "Pair Google Messages", innerW)
+	refreshExisting := m.status.Google.Paired
+	titleText := "Pair Google Messages"
+	if refreshExisting {
+		titleText = "Refresh Google Messages"
+	}
+	title := paintLine(accentBoldStyle, titleText, innerW)
 	var rows []string
 	rows = append(rows, title)
 
@@ -524,6 +535,15 @@ func (m Model) renderPairOverlay() string {
 			"",
 			paintCenteredLine(okStyle, "Phone confirmed", innerW),
 			paintCenteredLine(mutedStyle, m.pair.spinner()+" Connecting to Google Messages…", innerW),
+			"",
+			paintLine(mutedStyle, "esc cancel    q close", innerW),
+		)
+	case phase == "refreshing_cookies":
+		rows = append(rows, m.pairProgressHeader(innerW, step)...)
+		rows = append(rows,
+			"",
+			paintCenteredLine(mutedStyle, m.pair.spinner()+" Refreshing cookies…", innerW),
+			paintCenteredLine(mutedStyle, "No phone tap unless this PC was unlinked.", innerW),
 			"",
 			paintLine(mutedStyle, "esc cancel    q close", innerW),
 		)
@@ -567,10 +587,10 @@ func (m Model) renderPairOverlay() string {
 		} else {
 			rows = append(rows, paintCenteredLine(warnStyle, "Pairing failed", innerW), "")
 		}
-		rows = append(rows, pairPasteInstructionLines(innerW)...)
+		rows = append(rows, pairPasteInstructionLines(innerW, refreshExisting)...)
 		rows = append(rows, "", paintLine(mutedStyle, "ctrl+v paste    esc close", innerW))
 	default:
-		rows = append(rows, pairPasteInstructionLines(innerW)...)
+		rows = append(rows, pairPasteInstructionLines(innerW, refreshExisting)...)
 		if m.pair.pasteErr != "" {
 			rows = append(rows, "")
 			for _, line := range wrapLines(m.pair.pasteErr, innerW) {

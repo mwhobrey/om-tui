@@ -82,8 +82,40 @@ func TestRenderPairOverlayIdleShowsPasteSteps(t *testing.T) {
 	if !strings.Contains(got, "Copy as cURL") || !strings.Contains(got, "messages.google.com") {
 		t.Fatalf("idle overlay missing paste steps:\n%s", got)
 	}
+	if !strings.Contains(got, "Tap the emoji") {
+		t.Fatalf("unpaired overlay must still mention the phone tap:\n%s", got)
+	}
 	if strings.Contains(got, "pair from Chrome") {
 		t.Fatalf("idle overlay still offers Chrome auto-read:\n%s", got)
+	}
+}
+
+func TestRenderPairOverlayRefreshSkipsPhoneTap(t *testing.T) {
+	m := Model{width: 80, height: 24, pair: pairOverlay{open: true}}
+	m.status.Google.Paired = true
+	m.status.Google.NeedsRepair = true
+	got := m.renderPairOverlay()
+	if !strings.Contains(got, "Refresh Google Messages") {
+		t.Fatalf("paired overlay title:\n%s", got)
+	}
+	if !strings.Contains(got, "no phone tap") {
+		t.Fatalf("refresh overlay missing no-phone copy:\n%s", got)
+	}
+	if strings.Contains(got, "Tap the emoji") {
+		t.Fatalf("refresh overlay still asks for a phone tap:\n%s", got)
+	}
+}
+
+func TestRenderPairOverlayRefreshingCookies(t *testing.T) {
+	m := Model{width: 80, height: 24, pair: pairOverlay{open: true}}
+	m.status.Google.Paired = true
+	m.status.Google.Pairing = &localapi.GooglePairingStatus{Phase: "refreshing_cookies"}
+	got := m.renderPairOverlay()
+	if !strings.Contains(got, "Refreshing cookies") {
+		t.Fatalf("overlay missing cookie refresh progress:\n%s", got)
+	}
+	if strings.Contains(got, "Tap this emoji") {
+		t.Fatalf("cookie refresh still shows the phone prompt:\n%s", got)
 	}
 }
 
