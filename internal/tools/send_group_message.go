@@ -52,19 +52,13 @@ func sendGroupMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.To
 	v2 := activeV2(v2Options)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
-		phonesRaw := strArg(args, "phone_numbers")
 		message := strArg(args, "message")
-
-		if phonesRaw == "" {
-			return errorResult("phone_numbers is required"), nil
-		}
 		if message == "" {
 			return errorResult("message is required"), nil
 		}
-
-		var phones []string
-		if err := json.Unmarshal([]byte(phonesRaw), &phones); err != nil {
-			return errorResult(fmt.Sprintf("phone_numbers must be a JSON array of strings: %v", err)), nil
+		phones, err := parsePhoneNumbersArg(args)
+		if err != nil {
+			return errorResult(err.Error()), nil
 		}
 		if len(phones) < 2 {
 			return errorResult("phone_numbers must contain at least 2 numbers for a group message"), nil
@@ -149,5 +143,37 @@ func sendGroupMessageHandler(a *app.App, v2Options ...*V2Dependencies) server.To
 		}
 
 		return textResult(fmt.Sprintf("Group message sent to %s: %s", strings.Join(phones, ", "), message)), nil
+	}
+}
+
+func parsePhoneNumbersArg(args map[string]any) ([]string, error) {
+	raw, ok := args["phone_numbers"]
+	if !ok || raw == nil {
+		return nil, fmt.Errorf("phone_numbers is required")
+	}
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, fmt.Errorf("phone_numbers is required")
+		}
+		var phones []string
+		if err := json.Unmarshal([]byte(v), &phones); err != nil {
+			return nil, fmt.Errorf("phone_numbers must be a JSON array of strings: %v", err)
+		}
+		return phones, nil
+	case []string:
+		return v, nil
+	case []any:
+		phones := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("phone_numbers must be a JSON array of strings")
+			}
+			phones = append(phones, s)
+		}
+		return phones, nil
+	default:
+		return nil, fmt.Errorf("phone_numbers must be a JSON array of strings")
 	}
 }

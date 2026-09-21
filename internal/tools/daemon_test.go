@@ -418,17 +418,80 @@ func TestDaemonSendMessageResolvesPlatformsWithoutTransports(t *testing.T) {
 	})
 }
 
-func TestDaemonSendGroupMessageAlwaysDirectsToApp(t *testing.T) {
-	handler := daemonSendGroupMessageHandler()
-	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"phone_numbers": []any{"+15551", "+15552"}, "message": "hi"}
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected group creation to be refused in client mode")
-	}
+func TestDaemonSendGroupMessageMintsAndSends(t *testing.T) {
+	t.Run("v2 outbox", func(t *testing.T) {
+		var minted []string
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"v2_send": true, "v2_primary": true, "connected": true})
+		})
+		mux.HandleFunc("/api/new-conversation", func(w http.ResponseWriter, r *http.Request) {
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode new-conversation: %v", err)
+			}
+			raw, _ := request["phone_numbers"].([]any)
+			for _, item := range raw {
+				s, _ := item.(string)
+				minted = append(minted, s)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"conversation_id": "group-v2", "name": "Group"})
+		})
+		mux.HandleFunc("/api/v1/outbox/messages", func(w http.ResponseWriter, r *http.Request) {
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode submission: %v", err)
+			}
+			if request["conversation_id"] != "group-v2" {
+				t.Errorf("submitted conversation_id = %v, want group-v2", request["conversation_id"])
+			}
+			json.NewEncoder(w).Encode(map[string]any{"outbox_id": "out-1", "state": "queued"})
+		})
+		mux.HandleFunc("/api/v1/outbox/out-1", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"outbox_id":         "out-1",
+				"state":             "confirmed",
+				"remote_message_id": "remote-9",
+			})
+		})
+		options := Options{Daemon: daemonClientFor(t, mux)}
+		handler := daemonSendGroupMessageHandler(options)
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = map[string]any{
+			"phone_numbers": []any{"+15551234567", "+15559876543"},
+			"message":       "hi group",
+		}
+		result, err := handler(context.Background(), req)
+		if err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected success, got %+v", result)
+		}
+		if got, want := strings.Join(minted, ","), "+15551234567,+15559876543"; got != want {
+			t.Fatalf("minted phones = %q, want %q", got, want)
+		}
+		payload := structuredMap(t, result)
+		if payload["ok"] != true || payload["outbox_id"] != "out-1" {
+			t.Fatalf("payload = %v", payload)
+		}
+	})
+
+	t.Run("refuses fewer than two numbers", func(t *testing.T) {
+		handler := daemonSendGroupMessageHandler(Options{Daemon: deadDaemonClient()})
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = map[string]any{
+			"phone_numbers": []any{"+15551234567"},
+			"message":       "hi",
+		}
+		result, err := handler(context.Background(), req)
+		if err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+		if !result.IsError {
+			t.Fatal("expected error for a single number")
+		}
+	})
 }
 
 func TestDaemonReactToMessage(t *testing.T) {

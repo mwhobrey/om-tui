@@ -82,6 +82,18 @@ func allActions() []tuiAction {
 			Run: func(m Model) (tea.Model, tea.Cmd) { return m.startJumpFilter() },
 		},
 		{
+			ID:       "new-chat",
+			Label:    "New chat",
+			Keys:     []string{"n"},
+			Keywords: []string{"new", "dm", "compose", "phone", "contact", "sms"},
+			Group:    "list",
+			InHelp:   true,
+			When: func(m Model) bool {
+				return m.canStartNewChat() && (m.focus == focusList || m.palette.open)
+			},
+			Run: func(m Model) (tea.Model, tea.Cmd) { return m.openNewChatOverlay() },
+		},
+		{
 			ID:       "search",
 			Label:    "Search messages",
 			Keys:     []string{"ctrl+f"},
@@ -535,7 +547,7 @@ func contextHelpParts(m Model) []helpPart {
 
 	// Stable order for footer readability (not registry order alone).
 	order := []string{
-		"quit", "pair", "back", "river", "jump", "broadcast-toggle", "open-conversation",
+		"quit", "pair", "back", "river", "jump", "new-chat", "broadcast-toggle", "open-conversation",
 		"send", "slack-thread", "react", "block-kit", "slack-older", "open-media", "search",
 	}
 	byID := make(map[string]tuiAction, len(helpActions))
@@ -573,6 +585,8 @@ func contextHelpParts(m Model) []helpPart {
 			label = "media"
 		case "jump":
 			label = "jump"
+		case "new-chat":
+			label = "new"
 		case "search":
 			label = "msgs"
 		case "pair":

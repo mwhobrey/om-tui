@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,7 +20,11 @@ import (
 func buildTestBinary(t *testing.T) (binary, dataDir string) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	binary = filepath.Join(tmpDir, "openmessage")
+	name := "openmessage"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	binary = filepath.Join(tmpDir, name)
 	build := exec.Command("go", "build", "-o", binary, "..")
 	build.Dir = filepath.Join(".")
 	if out, err := build.CombinedOutput(); err != nil {

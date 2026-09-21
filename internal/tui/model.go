@@ -154,6 +154,7 @@ type Model struct {
 	customCmds          []customCommand
 	customCmdsModTime   time.Time
 	pair                pairOverlay
+	newChat             newChatOverlay
 
 	sseCancel context.CancelFunc
 	events    <-chan localapi.StreamEvent
@@ -246,8 +247,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 
+	case newChatContactsMsg:
+		return m.applyNewChatContacts(msg)
+	case newChatCreatedMsg:
+		return m.applyNewChatCreated(msg)
+
 	case statusMsg:
 		m.status = localapi.DaemonStatus(msg)
+		if m.googleSessionHealthy() && !m.pair.open {
+			m.pair.dismissed = false
+		}
 		return m.syncPairOverlayFromStatus()
 
 	case pairTickMsg:
@@ -569,6 +578,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pair.open {
 			return m.updatePairKeys(msg)
 		}
+		if m.newChat.open {
+			return m.updateNewChatKeys(msg)
+		}
 		if m.palette.open {
 			return m.updatePaletteKeys(msg)
 		}
@@ -602,6 +614,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r", "ctrl+r":
 			m.info = "Reconnecting…"
 			return m, m.reconnectCmd()
+		case "n":
+			if m.canStartNewChat() {
+				return m.openNewChatOverlay()
+			}
 		case "p":
 			if m.riverNeedsPair() {
 				return m.openPairOverlay()
@@ -1304,6 +1320,9 @@ func (m Model) View() string {
 	if m.palette.open {
 		placed = overlayCenter(placed, m.renderPaletteOverlay(), m.width, m.height)
 	}
+	if m.newChat.open {
+		placed = overlayCenter(placed, m.renderNewChatOverlay(), m.width, m.height)
+	}
 	if m.pair.open {
 		placed = overlayCenter(placed, m.renderPairOverlay(), m.width, m.height)
 	}
@@ -1527,6 +1546,9 @@ func (m Model) sendBlockedReason() string {
 	case river.ProviderSlack:
 		return "Slack is not connected"
 	default:
+		if m.status.Google.NeedsRepair || m.status.Google.AuthExpired {
+			return "Google cookies expired — press p to paste a messages.google.com curl"
+		}
 		return "Google Messages is not connected — press p to pair or r to reconnect"
 	}
 }
@@ -2327,10 +2349,8 @@ func (m Model) riverStatusChip() (name, state string, style lipgloss.Style, dot 
 		switch {
 		case g.NeedsPairing || (!g.Paired && !m.status.Connected):
 			state = "unpaired — press p to pair"
-		case g.NeedsRepair:
-			state = "needs repair — press p to re-pair"
-		case g.AuthExpired:
-			state = "auth expired"
+		case g.NeedsRepair, g.AuthExpired:
+			state = "cookies expired — press p to paste"
 		case g.Connected || m.status.Connected:
 			state = "connected"
 			style = okStyle

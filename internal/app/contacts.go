@@ -7,6 +7,29 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 )
 
+// AddressBookWriter persists Google address-book rows into the serving v2 store.
+type AddressBookWriter interface {
+	UpsertAddressBookContact(phone, name string) error
+}
+
+func (a *App) SetAddressBook(book AddressBookWriter) {
+	if a == nil {
+		return
+	}
+	a.addressBookMu.Lock()
+	a.addressBook = book
+	a.addressBookMu.Unlock()
+}
+
+func (a *App) addressBookWriter() AddressBookWriter {
+	if a == nil {
+		return nil
+	}
+	a.addressBookMu.RLock()
+	defer a.addressBookMu.RUnlock()
+	return a.addressBook
+}
+
 func (a *App) StartGoogleContactSync() {
 	if a == nil || !googleAvatarSyncEnabled() {
 		return
@@ -49,13 +72,23 @@ func (a *App) SyncGoogleContacts() (int, error) {
 		if number == "" && name == "" {
 			continue
 		}
-		contactID := strings.TrimSpace(c.GetContactID())
-		if contactID == "" {
-			contactID = "gm:" + number
-		}
-		if err := a.Store.UpsertContact(&db.Contact{ContactID: contactID, Name: name, Number: number}); err != nil {
-			a.Logger.Warn().Err(err).Msg("Failed to cache Google contact")
-			continue
+		if book := a.addressBookWriter(); book != nil {
+			if number == "" {
+				continue
+			}
+			if err := book.UpsertAddressBookContact(number, name); err != nil {
+				a.Logger.Warn().Err(err).Msg("Failed to cache Google contact in v2")
+				continue
+			}
+		} else {
+			contactID := strings.TrimSpace(c.GetContactID())
+			if contactID == "" {
+				contactID = "gm:" + number
+			}
+			if err := a.Store.UpsertContact(&db.Contact{ContactID: contactID, Name: name, Number: number}); err != nil {
+				a.Logger.Warn().Err(err).Msg("Failed to cache Google contact")
+				continue
+			}
 		}
 		count++
 		avatarCandidates = append(avatarCandidates, db.ContactAvatarCandidate{

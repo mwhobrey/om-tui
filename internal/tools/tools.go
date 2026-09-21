@@ -108,7 +108,7 @@ func RegisterWithOptions(s *server.MCPServer, a *app.App, options Options) {
 	s.AddTool(renderStoryTool(), renderStoryHandler(a, options))
 	switch {
 	case options.Daemon != nil:
-		s.AddTool(sendGroupMessageTool(true), daemonSendGroupMessageHandler())
+		s.AddTool(sendGroupMessageTool(true), daemonSendGroupMessageHandler(options))
 	case configuredV2 == nil:
 		s.AddTool(sendGroupMessageTool(), sendGroupMessageHandler(a))
 	default:

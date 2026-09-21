@@ -34,7 +34,21 @@ func listContactsHandler(a *app.App, configured ...Options) server.ToolHandlerFu
 		var contacts []*db.Contact
 		var err error
 		if options.V2Primary {
-			contacts, err = conversationContacts(options.Reads, query, limit)
+			if v2 := v2WriteStore(options); v2 != nil {
+				book, bookErr := v2.ListAddressBookContacts("", 1)
+				if bookErr == nil && len(book) == 0 {
+					if options.Daemon != nil {
+						if _, syncErr := options.Daemon.SyncGoogleContacts(ctx); syncErr != nil {
+							a.Logger.Debug().Err(syncErr).Msg("Google contact sync skipped")
+						}
+					} else if a.GetClient() != nil {
+						if _, syncErr := a.SyncGoogleContacts(); syncErr != nil {
+							a.Logger.Warn().Err(syncErr).Msg("Failed to fetch contacts from phone")
+						}
+					}
+				}
+			}
+			contacts, err = primaryContacts(options, query, limit)
 			if err != nil {
 				return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 			}
@@ -123,4 +137,51 @@ func conversationContacts(reads readsource.ReadSource, query string, limit int) 
 		return nil, err
 	}
 	return db.ContactsFromConversations(convs, query, limit), nil
+}
+
+func primaryContacts(options Options, query string, limit int) ([]*db.Contact, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	fromConvos, err := conversationContacts(options.Reads, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	var fromBook []*db.Contact
+	if v2 := v2WriteStore(options); v2 != nil {
+		listed, bookErr := v2.ListAddressBookContacts(query, limit)
+		if bookErr != nil {
+			return nil, bookErr
+		}
+		fromBook = listed
+	}
+	return mergePrimaryContacts(fromBook, fromConvos, limit), nil
+}
+
+func mergePrimaryContacts(book, convos []*db.Contact, limit int) []*db.Contact {
+	const maxContacts = 100
+	if limit <= 0 || limit > maxContacts {
+		limit = 50
+	}
+	seen := map[string]bool{}
+	out := make([]*db.Contact, 0, maxContacts)
+	appendUnique := func(list []*db.Contact) {
+		for _, c := range list {
+			if c == nil {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(c.Name)) + "|" + digitsOnly(c.Number)
+			if key == "|" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, c)
+			if len(out) >= limit {
+				return
+			}
+		}
+	}
+	appendUnique(book)
+	appendUnique(convos)
+	return out
 }

@@ -688,8 +688,8 @@ func TestR5StatsAndStoryUseConfiguredSourceInV2Primary(t *testing.T) {
 	syncRec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/contacts/sync", nil)
 	handler.ServeHTTP(syncRec, req)
-	if got := syncRec.Result().StatusCode; got != http.StatusConflict {
-		t.Fatalf("/api/contacts/sync status = %d, want 409", got)
+	if got := syncRec.Result().StatusCode; got != http.StatusNotImplemented {
+		t.Fatalf("/api/contacts/sync status = %d, want 501 without a sync callback", got)
 	}
 
 	draftSend := httptest.NewRecorder()
@@ -698,6 +698,30 @@ func TestR5StatsAndStoryUseConfiguredSourceInV2Primary(t *testing.T) {
 	handler.ServeHTTP(draftSend, sendReq)
 	if got := draftSend.Result().StatusCode; got != http.StatusServiceUnavailable {
 		t.Fatalf("/api/drafts/send status = %d, want 503 without a v2 outbox", got)
+	}
+}
+
+func TestContactsSyncRunsInV2Primary(t *testing.T) {
+	legacy, err := db.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	synced := 0
+	handler := APIHandlerWithOptions(legacy, nil, zerolog.Nop(), nil, APIOptions{
+		V2Primary: true,
+		SyncGoogleContacts: func() (int, error) {
+			synced = 4
+			return 4, nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/contacts/sync", nil))
+	if got := rec.Result().StatusCode; got != http.StatusOK {
+		t.Fatalf("/api/contacts/sync status = %d body=%s, want 200", got, rec.Body.String())
+	}
+	if synced != 4 {
+		t.Fatalf("synced callback = %d, want 4", synced)
 	}
 }
 

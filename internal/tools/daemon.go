@@ -364,11 +364,36 @@ func daemonSendMediaToConversationHandler(options Options) server.ToolHandlerFun
 	}
 }
 
-func daemonSendGroupMessageHandler() server.ToolHandlerFunc {
+func daemonSendGroupMessageHandler(options Options) server.ToolHandlerFunc {
+	daemon := options.Daemon
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return errorResult(
-			"creating a group conversation requires the OpenMessage app's live Google Messages connection, which transportless client mode does not hold. Send the first group message from the app; replies to existing groups work here via send_to_conversation.",
-		), nil
+		args := req.GetArguments()
+		message := strArg(args, "message")
+		if message == "" {
+			return errorResult("message is required"), nil
+		}
+		phones, err := parsePhoneNumbersArg(args)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		if len(phones) < 2 {
+			return errorResult("phone_numbers must contain at least 2 numbers for a group message"), nil
+		}
+		status, failure := daemonStatusOrResult(ctx, daemon)
+		if failure != nil {
+			return failure, nil
+		}
+		created, err := daemon.CreateGroupConversation(ctx, phones)
+		if err != nil {
+			return errorResult(fmt.Sprintf("create group conversation: %v", err)), nil
+		}
+		if strings.TrimSpace(created.ConversationID) == "" {
+			return errorResult("create group conversation: app returned an empty conversation_id"), nil
+		}
+		if status.SendsViaOutbox() {
+			return daemonSubmitTextAndWait(ctx, daemon, args, created.ConversationID, message), nil
+		}
+		return daemonLegacySendText(ctx, daemon, args, created.ConversationID, message), nil
 	}
 }
 
