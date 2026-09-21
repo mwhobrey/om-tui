@@ -18,6 +18,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/importer"
 	"github.com/maxghenis/openmessage/internal/signallive"
+	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -1122,6 +1123,39 @@ func TestListContacts(t *testing.T) {
 	text := result.Content[0].(mcp.TextContent).Text
 	if !strings.Contains(text, "Alice") {
 		t.Errorf("expected Alice, got: %s", text)
+	}
+}
+
+func TestListContactsPrimaryMergesAddressBook(t *testing.T) {
+	a := testApp(t)
+	if err := a.Store.UpsertConversation(&db.Conversation{
+		ConversationID: "c-thread",
+		Name:           "Thread Alice",
+		Participants:   `[{"name":"Thread Alice","number":"+15551234567"}]`,
+		SourcePlatform: "sms",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v2Store, err := sqlite.Open(filepath.Join(t.TempDir(), "v2.sqlite3"))
+	if err != nil {
+		t.Fatalf("sqlite.Open(): %v", err)
+	}
+	t.Cleanup(func() { _ = v2Store.Close() })
+	if err := v2Store.UpsertAddressBookContact("+15550001111", "Never Messaged"); err != nil {
+		t.Fatal(err)
+	}
+	options := Options{
+		Reads:     a.Store,
+		V2Primary: true,
+		V2:        &V2Dependencies{V2Store: v2Store, V2Primary: true},
+	}
+	result, err := listContactsHandler(a, options)(context.Background(), mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	text := result.Content[0].(mcp.TextContent).Text
+	if result.IsError || !strings.Contains(text, "Never Messaged") || !strings.Contains(text, "Thread Alice") {
+		t.Fatalf("result = %q", text)
 	}
 }
 

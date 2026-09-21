@@ -1450,7 +1450,16 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "contacts: "+err.Error(), 500)
 				return
 			}
-			contacts = fromConvos
+			var fromBook []*db.Contact
+			if opts.V2 != nil && opts.V2.V2Store != nil {
+				listed, err := opts.V2.V2Store.ListAddressBookContacts(q, limit)
+				if err != nil {
+					httpError(w, "contacts: "+err.Error(), 500)
+					return
+				}
+				fromBook = listed
+			}
+			contacts = mergeContactLists(fromBook, fromConvos, limit)
 		} else {
 			listed, err := store.ListContacts(q, limit)
 			if err != nil {
@@ -1491,10 +1500,6 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	mux.HandleFunc("/api/contacts/sync", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			httpError(w, "method not allowed", 405)
-			return
-		}
-		if opts.V2Primary {
-			httpError(w, "google contact sync is unavailable in v2-primary mode", http.StatusConflict)
 			return
 		}
 		if opts.SyncGoogleContacts == nil {
@@ -2644,14 +2649,24 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		var req struct {
-			PhoneNumber string `json:"phone_number"`
-			Platform    string `json:"platform"`
+			PhoneNumber  string   `json:"phone_number"`
+			PhoneNumbers []string `json:"phone_numbers"`
+			Platform     string   `json:"platform"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpError(w, "invalid JSON: "+err.Error(), 400)
 			return
 		}
-		if req.PhoneNumber == "" {
+		phones := make([]string, 0, len(req.PhoneNumbers)+1)
+		for _, n := range req.PhoneNumbers {
+			if trimmed := strings.TrimSpace(n); trimmed != "" {
+				phones = append(phones, trimmed)
+			}
+		}
+		if strings.TrimSpace(req.PhoneNumber) != "" && len(phones) == 0 {
+			phones = []string{strings.TrimSpace(req.PhoneNumber)}
+		}
+		if len(phones) == 0 {
 			httpError(w, "phone_number is required", 400)
 			return
 		}
@@ -2659,9 +2674,13 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		if platform == "" {
 			platform = "sms"
 		}
+		if len(phones) >= 2 && platform != "sms" {
+			httpError(w, "group conversations are only supported on sms", 400)
+			return
+		}
 
 		if platform == "whatsapp" || platform == "signal" {
-			number, err := normalizeInternationalNumber(req.PhoneNumber)
+			number, err := normalizeInternationalNumber(phones[0])
 			if err != nil {
 				httpError(w, err.Error(), 400)
 				return
@@ -2728,7 +2747,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 
 		convResp, err := cli.GM.GetOrCreateConversation(&gmproto.GetOrCreateConversationRequest{
-			Numbers: app.NewContactNumbers([]string{req.PhoneNumber}),
+			Numbers: app.NewContactNumbers(phones),
 		})
 		if err != nil {
 			if !markGoogleAuthExpired(err) {
@@ -2744,20 +2763,11 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 
 		convoID := conv.GetConversationID()
-		name := req.PhoneNumber
-		for _, p := range conv.GetParticipants() {
-			if !p.GetIsMe() {
-				if fn := p.GetFormattedNumber(); fn != "" {
-					name = fn
-				}
-				if cn := p.GetFullName(); cn != "" {
-					name = cn
-				}
-			}
-		}
+		name := googleConversationTitle(conv, phones)
+		group := conv.GetIsGroupChat() || len(phones) >= 2
 
 		if opts.V2Primary {
-			minted, err := mintV2Conversation(opts, "sms", convoID, name, conv.GetIsGroupChat())
+			minted, err := mintV2Conversation(opts, "sms", convoID, name, group)
 			if err != nil {
 				httpError(w, "create conversation: "+err.Error(), 500)
 				return
@@ -4413,6 +4423,33 @@ func isGoogleNetworkError(err error) bool {
 	return false
 }
 
+func mergeContactLists(primary, extra []*db.Contact, limit int) []*db.Contact {
+	if limit <= 0 {
+		limit = 20
+	}
+	seen := map[string]bool{}
+	out := make([]*db.Contact, 0, limit)
+	appendUnique := func(list []*db.Contact) {
+		for _, c := range list {
+			if c == nil {
+				continue
+			}
+			key := normalizeContactKey(c.Name, c.Number)
+			if key == "|" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, c)
+			if len(out) >= limit {
+				return
+			}
+		}
+	}
+	appendUnique(primary)
+	appendUnique(extra)
+	return out
+}
+
 func conversationContactsFromReads(reads readsource.ReadSource, query string, limit int) ([]*db.Contact, error) {
 	convs, err := reads.ListConversations(math.MaxInt)
 	if err != nil {
@@ -4506,6 +4543,29 @@ func daysBehind(older, newer int64) int {
 		return 0
 	}
 	return int(time.UnixMilli(newer).Sub(time.UnixMilli(older)).Hours() / 24)
+}
+
+func googleConversationTitle(conv *gmproto.Conversation, phones []string) string {
+	if conv != nil {
+		if name := strings.TrimSpace(conv.GetName()); name != "" {
+			return name
+		}
+		for _, p := range conv.GetParticipants() {
+			if p.GetIsMe() {
+				continue
+			}
+			if cn := strings.TrimSpace(p.GetFullName()); cn != "" {
+				return cn
+			}
+			if fn := strings.TrimSpace(p.GetFormattedNumber()); fn != "" {
+				return fn
+			}
+		}
+	}
+	if len(phones) == 1 {
+		return phones[0]
+	}
+	return strings.Join(phones, ", ")
 }
 
 func mintV2Conversation(opts APIOptions, platform, remoteID, title string, group bool) (sqlite.Conversation, error) {

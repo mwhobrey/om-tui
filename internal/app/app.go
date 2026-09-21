@@ -159,6 +159,8 @@ type App struct {
 	avatarSyncClosed          bool
 	avatarSyncQueue           chan db.ContactAvatarCandidate
 	avatarSyncStop            chan struct{}
+	addressBookMu             sync.RWMutex
+	addressBook               AddressBookWriter
 	whatsAppMu                sync.Mutex
 	WhatsApp                  *whatsapplive.Bridge
 	WhatsAppRivers            map[string]*whatsapplive.Bridge

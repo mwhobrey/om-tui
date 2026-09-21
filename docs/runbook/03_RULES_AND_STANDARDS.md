@@ -24,7 +24,7 @@
 2. **One transport owner.** Daemon owns Google/WA/Signal/(Slack). MCP stdio is transportless by default.
 3. **`app.New` vs `app.NewClient`:** only store-owning processes run repair sweeps.
 4. **Do not sqlite3 the live DB** while the daemon holds WAL — use HTTP API.
-5. **V2 primary reads through `v2read`**, including contacts/people/stats/story. Do not "fix" empty PRIMARY surfaces by reading frozen `messages.db` after cutover. Transcripts and imports write v2 (`message_extras` / `SyncInto`). Favorite/mute persist on the v2 conversation row. Drafts, tabs, contact CRM metadata, `/api/new-conversation`, and PRIMARY `send_message` / `send_group_message` minting write v2. Remaining fail-closed writes are Google contact **sync** and scheduled-send — do not persist those into v1.
+5. **V2 primary reads through `v2read`**, including contacts/people/stats/story. Do not "fix" empty PRIMARY surfaces by reading frozen `messages.db` after cutover. Transcripts and imports write v2 (`message_extras` / `SyncInto`). Favorite/mute persist on the v2 conversation row. Drafts, tabs, contact CRM metadata, `/api/new-conversation` (including SMS groups), PRIMARY `send_message` / `send_group_message` minting, and Google contact **sync** (v2 identities, provenance `address_book`) write v2. Remaining fail-closed write is scheduled-send — do not persist that into v1.
 6. **Windows vault is DPAPI-bound** to user/machine — backups of `credentials.enc` are useless on another box without re-pair.
 
 ## Environment variables (high-signal)
@@ -81,13 +81,13 @@ treat these as the baseline and compare against it rather than against green:
 | `VACUUM INTO ... SQL logic error: out of memory (1)` | backup/migrate tests against Windows paths |
 | `mode ... = 0777, want 0700` | Unix permission-bit assertions (`v2/`, blobs, control token) |
 | `sync <dir>: Access is denied` | directory fsync on publish/rollback |
-| `executable file not found in %PATH%` | binary tests build `openmessage` without `.exe` |
 | `%1 is not a valid Win32 application` | tests exec a `.sh` cookie-refresh script |
 | static asset / link preview / media resolve failures | path separator and mode assumptions |
 
-Packages that **do** pass on Windows and should stay passing: `internal/app`, `db`,
-`river`, `vault`, `tui`, `localapi`, `bridge`, `bridgeadapters/*`, `importer`, `story`,
-`viz`, `v2read`, `v2keys`, `notify`, `telemetry`, `googlecookies`.
+Packages that **do** pass on Windows and should stay passing: `cmd` binary tests,
+`internal/app`, `db`, `river`, `vault`, `tui`, `localapi`, `bridge`,
+`bridgeadapters/*`, `importer`, `story`, `viz`, `v2read`, `v2keys`, `notify`,
+`telemetry`, `googlecookies`.
 
 CI runs on `ubuntu-latest`, so the real gate is green there. `main` is
 branch-protected: PRs required, `Go Test` and `Go Race` must pass and be
@@ -138,4 +138,4 @@ Registered in `internal/tools/tools.go` → `RegisterWithOptions`:
 
 `get_messages`, `get_conversation`, `search_messages`, `send_message`, `send_to_conversation`, `send_media_to_conversation`, `react_to_message`, `set_message_transcript`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `get_status`, `draft_message`, `download_media`, `import_messages`, `get_person_messages`, `conversation_stats`, `generate_story`, `person_stats`, `generate_person_story`, `generate_viz`, `get_person_messages_range`, `render_story`, `send_group_message`
 
-Canonical read tools (`get_messages`, `get_conversation`, `search_messages`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `download_media`, person/story/viz) read through `v2read` when V2 is the serving store. `set_message_transcript` writes v2 `message_extras` when primary. `import_messages` still fills v1 then `SyncInto`s that platform into the opened v2 store. `send_media_to_conversation` submits native v2 IDs; `send_message` / `send_group_message` mint or reuse a v2 thread. `draft_message` writes the v2 `drafts` table when primary. Message-content results prepend an untrusted-content warning.
+Canonical read tools (`get_messages`, `get_conversation`, `search_messages`, `list_conversations`, `list_contacts`, `resolve_contact_routes`, `download_media`, person/story/viz) read through `v2read` when V2 is the serving store. `set_message_transcript` writes v2 `message_extras` when primary. `import_messages` still fills v1 then `SyncInto`s that platform into the opened v2 store. `send_media_to_conversation` submits native v2 IDs; `send_message` / `send_group_message` mint or reuse a v2 thread (MCP stdio goes through the daemon's `/api/new-conversation` + outbox). `list_contacts` merges conversation participants with Google address-book identities. `draft_message` writes the v2 `drafts` table when primary. Message-content results prepend an untrusted-content warning.

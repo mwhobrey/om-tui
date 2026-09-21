@@ -243,6 +243,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 			if err != nil {
 				return fmt.Errorf("init v2 stack: %w", err)
 			}
+			if v2Primary {
+				a.SetAddressBook(stack.Store)
+			}
 			stopV2Stack = func() {
 				if err := stack.Store.Close(); err != nil {
 					logger.Warn().Err(err).Msg("Failed to close unstarted v2 message store")

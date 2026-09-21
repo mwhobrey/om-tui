@@ -85,7 +85,7 @@ go build -o om-tui .                       # om-tui.exe on Windows
 ```
 
 - Rivers: built-in `messages-default`, `whatsapp-default`, `signal-default`; extras are `whatsapp-2` / `signal-2` (`Ctrl+K` → `>add …`); Slack rivers are `slack-<team-id>`. Google Messages is one live river.
-- **v1 (`messages.db`) is frozen except critical bugs.** Slack interactive Block Kit: TUI `b`/`Ctrl+B` opens URL buttons and Slack-deep-links app-owned controls. Slack V2 migrate + outbox, leftover PRIMARY writes (drafts, tabs, contact CRM metadata, `/api/new-conversation`, send minting), GET `/api/conversations/{id}`, and Windows backup DSN/VACUUM fallback are wired. V2 is the serving default after `migrate` (or a fresh empty install); `OPENMESSAGES_V2_PRIMARY=0` keeps v1. Google contact **sync** and scheduled-send stay fail-closed. On Windows, Google paste against an existing session refreshes cookies (no phone tap unless the device was unlinked).
+- **v1 (`messages.db`) is frozen except critical bugs.** Slack interactive Block Kit: TUI `b`/`Ctrl+B` opens URL buttons and Slack-deep-links app-owned controls. Slack V2 migrate + outbox, leftover PRIMARY writes (drafts, tabs, contact CRM metadata, `/api/new-conversation`, send minting), GET `/api/conversations/{id}`, and Windows backup DSN/VACUUM fallback are wired. V2 is the serving default after `migrate` (or a fresh empty install); `OPENMESSAGES_V2_PRIMARY=0` keeps v1. Google contact **sync** writes v2 identities (`/api/contacts/sync`); scheduled-send stays fail-closed. On Windows, Google paste against an existing session refreshes cookies (no phone tap unless the device was unlinked).
 - Credentials: `rivers/<id>/credentials.enc`, OS-backed sealing (see vault note above).
 - TUI: `[` / `]` switch river; `/` jump filter; `Ctrl+F` message search; `o`/`s` open/save media; `p` pair the active river (Google paste / WhatsApp QR / Signal QR)
 - API daemon: `serve --api --no-web` exposes `/api/rivers`, `/api/conversations?river_id=…`.
@@ -145,7 +145,7 @@ See [docs/agent-runbook.md](docs/agent-runbook.md) ("MCP serving").
 - `send_message`, `send_to_conversation`, `send_media_to_conversation`, `send_group_message`
 - `react_to_message`, `draft_message`, `download_media`, `list_contacts`, `resolve_contact_routes`, `get_status`
 
-Person/story/viz tools, `list_contacts`, `resolve_contact_routes`, and `download_media` read through `v2read` when V2 is the serving store. `set_message_transcript` and `import_messages` write v2 (`message_extras` / incremental `SyncInto`) when primary. MCP `react_to_message` uses the v2 outbox when the daemon is primary. MCP `send_media_to_conversation` submits native v2 conversation IDs; `send_message` / `send_group_message` fail closed on PRIMARY. `draft_message` errors in v2-primary (legacy `messages.db` write).
+Person/story/viz tools, `list_contacts`, `resolve_contact_routes`, and `download_media` read through `v2read` when V2 is the serving store. `set_message_transcript` and `import_messages` write v2 (`message_extras` / incremental `SyncInto`) when primary. MCP `react_to_message` uses the v2 outbox when the daemon is primary. MCP `send_media_to_conversation` submits native v2 conversation IDs. MCP stdio `send_message` / `send_group_message` mint via the daemon (`/api/new-conversation` + outbox). `list_contacts` merges conversation participants with the Google address book (daemon `POST /api/contacts/sync` writes v2 identities). `draft_message` writes the v2 `drafts` table when primary.
 
 ### HTTP API (high-signal)
 

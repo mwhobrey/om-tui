@@ -4111,6 +4111,8 @@ func TestNewConversationPlatformValidation(t *testing.T) {
 		{"garbage number", `{"phone_number":"+not-a-number","platform":"signal"}`, 400, "phone number"},
 		{"unsupported platform", `{"phone_number":"+14155550123","platform":"telegram"}`, 400, "unsupported platform"},
 		{"sms without google client", `{"phone_number":"4155550123"}`, 503, ""},
+		{"sms group without google client", `{"phone_numbers":["+15551234567","+15559876543"]}`, 503, ""},
+		{"whatsapp group unsupported", `{"phone_numbers":["+15551234567","+15559876543"],"platform":"whatsapp"}`, 400, "sms"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
