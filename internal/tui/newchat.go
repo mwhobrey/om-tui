@@ -31,6 +31,7 @@ type newChatOverlay struct {
 
 type newChatContactsMsg struct {
 	contacts []localapi.Contact
+	query    string
 	err      error
 }
 
@@ -136,19 +137,23 @@ func contactMatchesQuery(c localapi.Contact, lq string) bool {
 }
 
 func (m Model) loadNewChatContactsCmd() tea.Cmd {
+	query := strings.TrimSpace(m.newChat.input.Value())
 	return func() tea.Msg {
 		if m.session == nil || m.session.Client == nil {
-			return newChatContactsMsg{}
+			return newChatContactsMsg{query: query}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		contacts, err := m.session.Client.ListContacts(ctx, "", 40)
-		return newChatContactsMsg{contacts: contacts, err: err}
+		contacts, err := m.session.Client.ListContacts(ctx, query, 40)
+		return newChatContactsMsg{contacts: contacts, query: query, err: err}
 	}
 }
 
 func (m Model) applyNewChatContacts(msg newChatContactsMsg) (Model, tea.Cmd) {
 	if !m.newChat.open {
+		return m, nil
+	}
+	if msg.query != strings.TrimSpace(m.newChat.input.Value()) {
 		return m, nil
 	}
 	if msg.err != nil {
@@ -188,9 +193,14 @@ func (m Model) updateNewChatKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	prev := strings.TrimSpace(m.newChat.input.Value())
 	var cmd tea.Cmd
 	m.newChat.input, cmd = m.newChat.input.Update(msg)
 	m.newChat.syncMatches()
+	next := strings.TrimSpace(m.newChat.input.Value())
+	if next != prev {
+		return m, tea.Batch(cmd, m.loadNewChatContactsCmd())
+	}
 	return m, cmd
 }
 

@@ -144,6 +144,7 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `[` / `]` | Switch river (Messages, WhatsApp, Signal, Slack workspaces, …) — list focus |
 | `j` / `k` / arrows | Move in the conversation list; in **thread** focus, select a message |
 | mouse wheel | Scroll the pane under the cursor (list or thread) |
+| `/` | Jump: filter by name / `#channel` / contact / id. Slack also accepts `type:dm`, `type:channel`, `is:unread`, and combinations such as `type:dm is:unread alice`. |
 | `n` | New chat (Messages / WhatsApp / Signal) — type a name or number; Enter mints or reuses the thread |
 | `Ctrl+F` | Search message text (works from list / thread / composer) |
 | `Space` | Multi-select conversations for broadcast (`*` mark) — list focus |

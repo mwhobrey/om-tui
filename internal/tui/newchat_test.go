@@ -80,6 +80,33 @@ func TestNewChatPhoneMatchIsSelectable(t *testing.T) {
 	}
 }
 
+func TestApplyNewChatContactsIgnoresStaleQuery(t *testing.T) {
+	m := Model{width: 80, height: 24}
+	next, _ := m.openNewChatOverlay()
+	got := next.(Model)
+	got.newChat.input.SetValue("bob")
+	got, _ = got.applyNewChatContacts(newChatContactsMsg{
+		query: "alice",
+		contacts: []localapi.Contact{{
+			Name:   "Alice",
+			Number: "+15550001111",
+		}},
+	})
+	if len(got.newChat.contacts) != 0 {
+		t.Fatalf("stale contacts applied: %+v", got.newChat.contacts)
+	}
+	got, _ = got.applyNewChatContacts(newChatContactsMsg{
+		query: "bob",
+		contacts: []localapi.Contact{{
+			Name:   "Bob",
+			Number: "+15550002222",
+		}},
+	})
+	if len(got.newChat.contacts) != 1 || got.newChat.contacts[0].Name != "Bob" {
+		t.Fatalf("contacts = %+v", got.newChat.contacts)
+	}
+}
+
 func TestNewChatPicksContactNumber(t *testing.T) {
 	m := Model{width: 80, height: 24}
 	next, _ := m.openNewChatOverlay()

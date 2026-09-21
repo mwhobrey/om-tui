@@ -424,6 +424,17 @@ func TestAuthExpiredAutoOpensRefreshOverlay(t *testing.T) {
 	}
 }
 
+func TestAuthExpiredDoesNotAutoOpenWhileComposingDraft(t *testing.T) {
+	m := Model{width: 80, height: 24, focus: focusCompose, compose: textarea.New()}
+	m.compose.SetValue("halfway through a reply")
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	got, _ := m.syncPairOverlayFromStatus()
+	if got.pair.open {
+		t.Fatal("cookie expiry must not steal focus while the composer has a draft")
+	}
+}
+
 func TestAuthExpiredDismissedStaysClosedUntilHealthy(t *testing.T) {
 	m := Model{width: 80, height: 24}
 	m.status.Google.Paired = true

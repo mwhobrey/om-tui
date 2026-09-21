@@ -283,7 +283,8 @@ func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 		m.pair.successUntil = time.Now().Add(1500 * time.Millisecond)
 		return m.armPairTick()
 	}
-	if !m.pair.open && m.googleNeedsCookieRefresh() && !m.palette.open && !m.newChat.open && m.focus != focusSearch {
+	drafting := m.focus == focusCompose && strings.TrimSpace(m.compose.Value()) != ""
+	if !m.pair.open && m.googleNeedsCookieRefresh() && !m.palette.open && !m.newChat.open && m.focus != focusSearch && !drafting {
 		opened, cmd := m.openPairOverlay()
 		got, ok := opened.(Model)
 		if !ok {
