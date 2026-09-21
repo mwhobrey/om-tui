@@ -4429,7 +4429,8 @@ func mergeContactLists(primary, extra []*db.Contact, limit int) []*db.Contact {
 		limit = 20
 	}
 	seen := map[string]bool{}
-	out := make([]*db.Contact, 0, limit)
+	// Capacity is a compile-time constant so CodeQL cannot treat it as user-controlled.
+	out := make([]*db.Contact, 0, maxContacts)
 	appendUnique := func(list []*db.Contact) {
 		for _, c := range list {
 			if c == nil {

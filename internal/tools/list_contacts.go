@@ -164,7 +164,7 @@ func mergePrimaryContacts(book, convos []*db.Contact, limit int) []*db.Contact {
 		limit = 50
 	}
 	seen := map[string]bool{}
-	out := make([]*db.Contact, 0, limit)
+	out := make([]*db.Contact, 0, maxContacts)
 	appendUnique := func(list []*db.Contact) {
 		for _, c := range list {
 			if c == nil {
