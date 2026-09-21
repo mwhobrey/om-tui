@@ -16,7 +16,7 @@ func TestRenderContextHelpList(t *testing.T) {
 	m := NewModel(nil)
 	m.focus = focusList
 	help := renderContextHelp(m)
-	for _, want := range []string{"q quit", "[ ] river", "/ jump", "ctrl+k commands"} {
+	for _, want := range []string{"q quit", "[ ] river", "/ jump", "n new", "ctrl+k commands"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("list help missing %q in %q", want, help)
 		}

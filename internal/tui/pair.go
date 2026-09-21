@@ -62,7 +62,20 @@ type pairTickMsg struct{}
 
 func (m Model) googleNeedsPair() bool {
 	g := m.status.Google
-	return g.NeedsPairing || !g.Paired || g.NeedsRepair
+	return g.NeedsPairing || !g.Paired || g.NeedsRepair || g.AuthExpired
+}
+
+func (m Model) googleNeedsCookieRefresh() bool {
+	g := m.status.Google
+	return g.Paired && (g.AuthExpired || g.NeedsRepair)
+}
+
+func (m Model) googleSessionHealthy() bool {
+	g := m.status.Google
+	if !g.Paired || g.NeedsPairing || g.NeedsRepair || g.AuthExpired {
+		return false
+	}
+	return g.Connected || m.status.Connected
 }
 
 func extraLiveRiverID(id string) bool {
@@ -269,6 +282,14 @@ func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 	if m.pair.open && !m.pair.submitting && m.status.Google.Paired && m.status.Google.Connected && m.pair.successUntil.IsZero() {
 		m.pair.successUntil = time.Now().Add(1500 * time.Millisecond)
 		return m.armPairTick()
+	}
+	if !m.pair.open && m.googleNeedsCookieRefresh() && !m.palette.open && !m.newChat.open && m.focus != focusSearch {
+		opened, cmd := m.openPairOverlay()
+		got, ok := opened.(Model)
+		if !ok {
+			return m, cmd
+		}
+		return got, cmd
 	}
 	return m, nil
 }

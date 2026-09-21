@@ -561,6 +561,51 @@ func (c *Client) CreateConversation(ctx context.Context, phoneNumber, platform s
 	return created, err
 }
 
+// CreateGroupConversation mints or reuses an SMS/MMS group via POST /api/new-conversation.
+func (c *Client) CreateGroupConversation(ctx context.Context, phones []string) (CreatedConversation, error) {
+	var created CreatedConversation
+	err := c.postJSON(ctx, "/api/new-conversation", map[string]any{
+		"phone_numbers": phones,
+		"platform":      "sms",
+	}, &created)
+	return created, err
+}
+
+// Contact is one row from GET /api/contacts.
+type Contact struct {
+	ContactID string `json:"ContactID"`
+	Name      string `json:"Name"`
+	Number    string `json:"Number"`
+}
+
+// ListContacts fetches GET /api/contacts.
+func (c *Client) ListContacts(ctx context.Context, query string, limit int) ([]Contact, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 40
+	}
+	path := fmt.Sprintf("/api/contacts?limit=%d", limit)
+	if q := strings.TrimSpace(query); q != "" {
+		path += "&q=" + url.QueryEscape(q)
+	}
+	var out []Contact
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Contact{}
+	}
+	return out, nil
+}
+
+// SyncGoogleContacts POSTs /api/contacts/sync on the running daemon.
+func (c *Client) SyncGoogleContacts(ctx context.Context) (int, error) {
+	var out struct {
+		Synced int `json:"synced"`
+	}
+	err := c.postJSON(ctx, "/api/contacts/sync", map[string]any{}, &out)
+	return out.Synced, err
+}
+
 func (c *Client) postJSON(ctx context.Context, path string, payload any, target any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {

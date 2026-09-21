@@ -25,6 +25,14 @@ func TestGoogleNeedsPair(t *testing.T) {
 	if !m.googleNeedsPair() {
 		t.Fatal("needs_repair should offer re-pair")
 	}
+	m.status.Google.NeedsRepair = false
+	m.status.Google.AuthExpired = true
+	if !m.googleNeedsPair() {
+		t.Fatal("auth_expired should offer paste refresh")
+	}
+	if !m.googleNeedsCookieRefresh() {
+		t.Fatal("paired + auth_expired is a cookie refresh")
+	}
 }
 
 func TestEmptyComposePOpensPairOverlay(t *testing.T) {
@@ -396,5 +404,92 @@ func TestPairTickAdvancesFrame(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("busy overlay should keep ticking")
+	}
+}
+
+func TestAuthExpiredAutoOpensRefreshOverlay(t *testing.T) {
+	m := Model{width: 80, height: 24}
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	got, _ := m.syncPairOverlayFromStatus()
+	if !got.pair.open {
+		t.Fatal("auth_expired should auto-open the paste overlay")
+	}
+	view := got.renderPairOverlay()
+	if !strings.Contains(view, "Refresh Google Messages") {
+		t.Fatalf("auto overlay title:\n%s", view)
+	}
+	if strings.Contains(view, "Tap the emoji") {
+		t.Fatalf("cookie refresh overlay still asks for a phone tap:\n%s", view)
+	}
+}
+
+func TestAuthExpiredDismissedStaysClosedUntilHealthy(t *testing.T) {
+	m := Model{width: 80, height: 24}
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	opened, _ := m.syncPairOverlayFromStatus()
+	next, _ := opened.updatePairKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	closed, ok := next.(Model)
+	if !ok {
+		t.Fatalf("next type %T", next)
+	}
+	if closed.pair.open {
+		t.Fatal("esc should close the overlay")
+	}
+	closed, _ = closed.syncPairOverlayFromStatus()
+	if closed.pair.open {
+		t.Fatal("dismissed overlay must not reopen on the same expiry")
+	}
+
+	closed.status.Google.AuthExpired = false
+	closed.status.Google.Connected = true
+	healthy, _ := closed.Update(statusMsg(closed.status))
+	h, ok := healthy.(Model)
+	if !ok {
+		t.Fatalf("healthy type %T", healthy)
+	}
+	if h.pair.dismissed {
+		t.Fatal("healthy status should clear dismissed so the next expiry can prompt")
+	}
+	h.status.Google.AuthExpired = true
+	h.status.Google.Connected = false
+	reopened, _ := h.syncPairOverlayFromStatus()
+	if !reopened.pair.open {
+		t.Fatal("next expiry should open the overlay again")
+	}
+}
+
+func TestEmptyComposePOpensOnAuthExpired(t *testing.T) {
+	m := Model{width: 80, height: 24, focus: focusCompose, compose: textarea.New()}
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	next, _ := m.updateComposeKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("next type %T", next)
+	}
+	if !got.pair.open {
+		t.Fatal("p should open paste overlay when cookies expired")
+	}
+}
+
+func TestRiverStatusChipAuthExpiredAsksToPaste(t *testing.T) {
+	m := Model{}
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	_, state, _, _ := m.riverStatusChip()
+	if !strings.Contains(state, "press p to paste") {
+		t.Fatalf("state = %q", state)
+	}
+}
+
+func TestSendBlockedReasonCookiesExpired(t *testing.T) {
+	m := Model{}
+	m.status.Google.Paired = true
+	m.status.Google.AuthExpired = true
+	got := m.sendBlockedReason()
+	if !strings.Contains(got, "paste") {
+		t.Fatalf("reason = %q", got)
 	}
 }
