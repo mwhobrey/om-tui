@@ -159,7 +159,8 @@ func primaryContacts(options Options, query string, limit int) ([]*db.Contact, e
 }
 
 func mergePrimaryContacts(book, convos []*db.Contact, limit int) []*db.Contact {
-	if limit <= 0 {
+	const maxContacts = 100
+	if limit <= 0 || limit > maxContacts {
 		limit = 50
 	}
 	seen := map[string]bool{}

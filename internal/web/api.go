@@ -4424,7 +4424,8 @@ func isGoogleNetworkError(err error) bool {
 }
 
 func mergeContactLists(primary, extra []*db.Contact, limit int) []*db.Contact {
-	if limit <= 0 {
+	const maxContacts = 100
+	if limit <= 0 || limit > maxContacts {
 		limit = 20
 	}
 	seen := map[string]bool{}
