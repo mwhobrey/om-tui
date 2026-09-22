@@ -215,9 +215,7 @@ func downloadGIFMedia(ctx context.Context, rawURL string, limit int64) ([]byte, 
 	if err != nil {
 		return nil, "", "", err
 	}
-	// Host allowlisted to *.klipy.com in validateKlipyMediaURL; URL rebuilt there.
-	// codeql[go/request-forgery]
-	resp, err := gifHTTPClient.Do(req)
+	resp, err := gifHTTPClient.Do(req) // codeql[go/request-forgery]: host allowlisted to *.klipy.com; URL rebuilt in validateKlipyMediaURL
 	if err != nil {
 		return nil, "", "", fmt.Errorf("download GIF: %w", err)
 	}

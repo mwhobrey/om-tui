@@ -145,9 +145,7 @@ func (s *LinkPreviewService) Fetch(ctx context.Context, rawURL string) (*LinkPre
 	req.Header.Set("User-Agent", "OpenMessage/1.0 (+https://openmessage.ai)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	// Public-host check above + DialContext rejects private IPs (incl. redirects).
-	// codeql[go/request-forgery]
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) // codeql[go/request-forgery]: public-host check + DialContext rejects private IPs (incl. redirects)
 	if err != nil {
 		return nil, fmt.Errorf("fetch link preview: %w", err)
 	}
@@ -210,9 +208,7 @@ func (s *LinkPreviewService) FetchImage(ctx context.Context, rawURL string) ([]b
 	req.Header.Set("User-Agent", "OpenMessage/1.0 (+https://openmessage.ai)")
 	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,*/*;q=0.8")
 
-	// Public-host check above + DialContext rejects private IPs (incl. redirects).
-	// codeql[go/request-forgery]
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) // codeql[go/request-forgery]: public-host check + DialContext rejects private IPs (incl. redirects)
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch link preview image: %w", err)
 	}
