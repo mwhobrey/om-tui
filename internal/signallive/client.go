@@ -43,6 +43,9 @@ const (
 	postLinkProbeTimeout  = 5 * time.Second
 	versionProbeTimeout   = 5 * time.Second
 	historySyncQuietAfter = 45 * time.Second
+	// Match WhatsApp: only toast messages that arrived in the last couple of
+	// minutes. History catch-up and delayed sync envelopes stay silent.
+	recentIncomingNotifyWindow = 2 * time.Minute
 	signalLinkDeviceName  = "om-tui"
 
 	// receiveAccountInvalidLimit is how many consecutive receive attempts must
@@ -2706,7 +2709,7 @@ func (b *Bridge) handleDataMessage(account string, env *signalEnvelope) error {
 		}
 	}
 	b.recordHistorySyncProgress(existing == nil, existingMsg == nil)
-	if existingMsg == nil && b.callbacks.OnIncomingMessage != nil {
+	if existingMsg == nil && b.shouldNotifyIncoming(timestamp) && b.callbacks.OnIncomingMessage != nil {
 		b.callbacks.OnIncomingMessage(msg)
 	}
 	if b.callbacks.OnMessagesChange != nil {
@@ -3227,6 +3230,27 @@ func (b *Bridge) beginHistorySync() {
 	b.historySync.lastImportAt = 0
 	b.historySync.importedConversations = 0
 	b.historySync.importedMessages = 0
+}
+
+// shouldNotifyIncoming reports whether a newly-upserted inbound Signal message
+// should raise a desktop notification. History-sync / catch-up imports must
+// stay quiet — otherwise a reconnect replays the whole inbox as toasts.
+func (b *Bridge) shouldNotifyIncoming(timestampMS int64) bool {
+	if b.historySyncRunning() {
+		return false
+	}
+	if timestampMS <= 0 {
+		return false
+	}
+	age := time.Since(time.UnixMilli(timestampMS))
+	return age >= 0 && age <= recentIncomingNotifyWindow
+}
+
+func (b *Bridge) historySyncRunning() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	snap := b.historySyncSnapshotLocked()
+	return snap != nil && snap.Running
 }
 
 func (b *Bridge) recordHistorySyncProgress(newConversation, newMessage bool) {

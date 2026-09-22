@@ -4,11 +4,27 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maxghenis/openmessage/internal/db"
 )
 
 const notificationHistoryCap = 256
+
+// freshIncomingNotifyWindow matches WhatsApp/Signal live filters: catch-up
+// and history replay must not raise desktop toasts.
+const freshIncomingNotifyWindow = 2 * time.Minute
+
+func messageFreshForNotification(message *db.Message) bool {
+	if message == nil {
+		return false
+	}
+	if message.TimestampMS <= 0 {
+		return true
+	}
+	age := time.Since(time.UnixMilli(message.TimestampMS))
+	return age >= 0 && age <= freshIncomingNotifyWindow
+}
 
 type idHistory struct {
 	mu    sync.Mutex
