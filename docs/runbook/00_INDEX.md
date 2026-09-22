@@ -32,6 +32,7 @@ NOTICE.md — so upstream diffs stay easy to compare and port).
 | [02_COMPONENTS_AND_FILES.md](./02_COMPONENTS_AND_FILES.md) | Where code lives and package responsibilities |
 | [03_RULES_AND_STANDARDS.md](./03_RULES_AND_STANDARDS.md) | Conventions, env vars, tests/CI, gotchas |
 | [04_CURRENT_STATE.md](./04_CURRENT_STATE.md) | What works, WIP, next steps |
+| [05_CHROME_COOKIE_BRIDGE.md](./05_CHROME_COOKIE_BRIDGE.md) | Chrome MV3 + native host Google cookie auto-refresh |
 
 ## Related operational docs (do not ignore)
 

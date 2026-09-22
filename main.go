@@ -23,7 +23,7 @@ func main() {
 		With().Timestamp().Logger().Level(level)
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status>")
+		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status|chrome-cookie-host>")
 		fmt.Fprintln(os.Stderr, "  pair [--google|--google-file path]       - Pair with your phone via QR or Google account cookies")
 		fmt.Fprintln(os.Stderr, "  pair slack [--token xoxp-...] [--name N] - Pair a Slack workspace (river) via user token")
 		fmt.Fprintln(os.Stderr, "  serve [--demo] [--web|--no-web] [--api|--no-api] [--mcp-sse|--no-mcp-sse] [--mcp-stdio] - Start explicit web/API/MCP transports")
@@ -42,6 +42,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  import imessage [db-path]                 - Import iMessage (needs Full Disk Access)")
 		fmt.Fprintln(os.Stderr, "  import whatsapp <chat.txt> [--name You]   - Import WhatsApp text export")
 		fmt.Fprintln(os.Stderr, "  import signal [support-dir]               - Import Signal Desktop history")
+		fmt.Fprintln(os.Stderr, "  chrome-cookie-host [--install]            - Chrome native messaging host for cookie auto-refresh")
 		os.Exit(1)
 	}
 
@@ -131,9 +132,18 @@ func main() {
 			os.Exit(1)
 		}
 		err = cmd.RunDebugMedia(logger, os.Args[2])
+	case "chrome-cookie-host":
+		err = cmd.RunChromeCookieHost(logger, os.Args[2:]...)
 	default:
+		// Chrome native messaging launches the host as:
+		//   om-tui.exe chrome-extension://<id>/ [--parent-window=HWND]
+		// (or with --parent-window first on very old Chrome).
+		if isChromeNativeHostLaunch(os.Args[1:]) {
+			err = cmd.RunChromeCookieHost(logger, os.Args[1:]...)
+			break
+		}
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|tui|backup|migrate|read|thread|threads|send|import|status>")
+		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|tui|backup|migrate|read|thread|threads|send|import|status|chrome-cookie-host>")
 		os.Exit(1)
 	}
 
@@ -147,4 +157,16 @@ func main() {
 		}
 		logger.Fatal().Err(err).Msg("Fatal error")
 	}
+}
+
+func isChromeNativeHostLaunch(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "chrome-extension://") {
+			return true
+		}
+		if arg == "--parent-window" || strings.HasPrefix(arg, "--parent-window=") {
+			return true
+		}
+	}
+	return false
 }

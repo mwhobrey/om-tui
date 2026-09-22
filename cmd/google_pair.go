@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/bridge"
@@ -201,6 +202,24 @@ func (c *googleSupervisorControl) runGoogleAccountPair(
 }
 
 func (c *googleSupervisorControl) reconnectAfterPair() error {
+	if err := c.startSupervisorFromSession(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	supervisor := c.supervisor
+	c.mu.Unlock()
+	if supervisor == nil {
+		return errors.New("Google Messages supervisor missing after restart")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), googleSupervisorPolicy().ConnectTimeout)
+	defer cancel()
+	return waitForGoogleOnline(ctx, supervisor)
+}
+
+// startSupervisorFromSession rebuilds the supervisor from session.json and
+// admits Start without waiting for Online. Cookie-bridge reconnects use this
+// so a wedged Google connect cannot pin a goroutine for the full ConnectTimeout.
+func (c *googleSupervisorControl) startSupervisorFromSession() error {
 	fingerprint, err := googleSessionFingerprint(c.sessionPath)
 	if err != nil {
 		return err
@@ -224,12 +243,69 @@ func (c *googleSupervisorControl) reconnectAfterPair() error {
 	c.supervisorStopped = false
 	c.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), googleSupervisorPolicy().ConnectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := supervisor.Start(ctx, bridge.StartRequest{}); err != nil && !errors.Is(err, bridge.ErrSupervisorBusy) {
 		return err
 	}
-	return waitForGoogleOnline(ctx, supervisor)
+	return nil
+}
+
+// ApplySessionCookies rewrites Gaia cookies in session.json and starts a fresh
+// supervisor generation from disk. It must not call InputsChanged: for a
+// credentials-expired Blocked state that re-enters paced credential repair
+// (90s floor) instead of loading the cookies we just wrote.
+//
+// Reconnect runs asynchronously so the Chrome native host is not held inside
+// /api/google/cookie-bridge/push (that deadlocks RequestCookies).
+func (c *googleSupervisorControl) ApplySessionCookies(cookies map[string]string) error {
+	if err := googlecookies.UpdateSessionCookies(c.sessionPath, cookies); err != nil {
+		return err
+	}
+	c.startCookieReconnectAsync()
+	return nil
+}
+
+// RebuildAfterSessionChange starts a fresh generation after session.json was
+// rewritten out-of-band (e.g. refreshGoogleSessionCookies).
+func (c *googleSupervisorControl) RebuildAfterSessionChange() error {
+	c.startCookieReconnectAsync()
+	return nil
+}
+
+func (c *googleSupervisorControl) startCookieReconnectAsync() {
+	c.cookieReconnectMu.Lock()
+	if c.cookieReconnectQueued {
+		c.cookieReconnectMu.Unlock()
+		return
+	}
+	// Coalesce bursts (extension push + repair refresh) but never drop a
+	// cookie write for 30s — that left session.json updated while the
+	// supervisor kept running on the previous generation.
+	if time.Since(c.lastCookieReconnect) < 2*time.Second {
+		c.cookieReconnectMu.Unlock()
+		return
+	}
+	c.cookieReconnectQueued = true
+	c.lastCookieReconnect = time.Now()
+	c.cookieReconnectMu.Unlock()
+
+	go func() {
+		defer func() {
+			c.cookieReconnectMu.Lock()
+			c.cookieReconnectQueued = false
+			c.cookieReconnectMu.Unlock()
+		}()
+		if err := c.parkSupervisor(); err != nil {
+			c.logger.Warn().Err(err).Msg("park Google supervisor before cookie reconnect failed")
+		}
+		// Admit Start only — never waitForGoogleOnline here. A hung Google
+		// connect used to pin this goroutine for minutes and stack parks from
+		// repeated bridge pushes until the daemon looked wedged.
+		if err := c.startSupervisorFromSession(); err != nil {
+			c.logger.Warn().Err(err).Msg("Google cookie reconnect failed")
+		}
+	}()
 }
 
 func (c *googleSupervisorControl) startLiveGaia(

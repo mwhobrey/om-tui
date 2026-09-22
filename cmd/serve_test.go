@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 
+	"github.com/maxghenis/openmessage/internal/cookiebridge"
 	"github.com/maxghenis/openmessage/internal/whatsapplive"
 )
 
@@ -351,7 +353,132 @@ func TestRefreshGoogleSessionCookiesSkipsWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestRefreshGoogleSessionCookiesUsesExtensionBridge(t *testing.T) {
+	t.Setenv("OPENMESSAGE_COOKIE_REFRESH_SCRIPT", "")
+	t.Setenv("OPENMESSAGE_CHROME_PROFILE", t.TempDir())
+	clearGoogleBridgeExhaustion()
+	t.Cleanup(clearGoogleBridgeExhaustion)
+
+	sessionDir := t.TempDir()
+	sessionPath := filepath.Join(sessionDir, "session.json")
+	if err := os.WriteFile(sessionPath, []byte(`{"auth_data":{"cookies":{"SID":"old"}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	prev := googleCookieBridge
+	googleCookieBridge = cookiebridge.New()
+	t.Cleanup(func() { googleCookieBridge = prev })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	waitErr := make(chan error, 1)
+	go func() {
+		req, err := googleCookieBridge.Wait(ctx, time.Second)
+		if err != nil {
+			waitErr <- err
+			return
+		}
+		waitErr <- googleCookieBridge.Reply(req.ID, map[string]string{
+			"SID": "s", "HSID": "h", "SSID": "ss", "APISID": "a", "SAPISID": "sa", "OSID": "o",
+		}, nil)
+	}()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for !canRefreshGoogleCookies() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !canRefreshGoogleCookies() {
+		t.Fatal("expected canRefreshGoogleCookies when bridge online")
+	}
+
+	if err := refreshGoogleSessionCookies(ctx, sessionPath); err != nil {
+		t.Fatalf("refreshGoogleSessionCookies(): %v", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("bridge wait/reply: %v", err)
+	}
+
+	raw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if !strings.Contains(string(raw), `"SID":"s"`) {
+		t.Fatalf("session cookies not updated: %s", raw)
+	}
+}
+
+func TestRefreshGoogleSessionCookiesExhaustsIdenticalBridgeCookies(t *testing.T) {
+	t.Setenv("OPENMESSAGE_COOKIE_REFRESH_SCRIPT", "")
+	t.Setenv("OPENMESSAGE_CHROME_PROFILE", t.TempDir())
+	clearGoogleBridgeExhaustion()
+	t.Cleanup(clearGoogleBridgeExhaustion)
+
+	sessionDir := t.TempDir()
+	sessionPath := filepath.Join(sessionDir, "session.json")
+	if err := os.WriteFile(sessionPath, []byte(`{"auth_data":{"cookies":{"SID":"old"}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	prev := googleCookieBridge
+	googleCookieBridge = cookiebridge.New()
+	t.Cleanup(func() { googleCookieBridge = prev })
+
+	cookies := map[string]string{
+		"SID": "s", "HSID": "h", "SSID": "ss", "APISID": "a", "SAPISID": "sa", "OSID": "o",
+	}
+	serveOnce := func(ctx context.Context) error {
+		req, err := googleCookieBridge.Wait(ctx, time.Second)
+		if err != nil {
+			return err
+		}
+		return googleCookieBridge.Reply(req.ID, cookies, nil)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- serveOnce(ctx) }()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for !canRefreshGoogleCookies() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := refreshGoogleSessionCookies(ctx, sessionPath); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("first bridge reply: %v", err)
+	}
+	if googleBridgeExhausted.Load() {
+		t.Fatal("expected exhaustion unset after first identical set")
+	}
+
+	waitErr = make(chan error, 1)
+	go func() { waitErr <- serveOnce(ctx) }()
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for !googleCookieBridge.Online() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	err := refreshGoogleSessionCookies(ctx, sessionPath)
+	if err == nil || !strings.Contains(err.Error(), "still rejects") {
+		t.Fatalf("second refresh error = %v, want still-rejects exhaustion", err)
+	}
+	if err := <-waitErr; err != nil {
+		t.Fatalf("second bridge reply: %v", err)
+	}
+	if !googleBridgeExhausted.Load() {
+		t.Fatal("expected bridge exhausted after second identical set")
+	}
+	if canRefreshGoogleCookies() {
+		t.Fatal("expected canRefresh false after bridge exhaustion")
+	}
+}
+
 func TestRefreshGoogleSessionCookiesUsesEnvScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env refresh script is a POSIX shell stub")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "refresh.sh")
 	argsPath := filepath.Join(dir, "args")
