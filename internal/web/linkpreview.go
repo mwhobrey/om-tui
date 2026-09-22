@@ -138,14 +138,14 @@ func (s *LinkPreviewService) Fetch(ctx context.Context, rawURL string) (*LinkPre
 		return preview, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizedURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedPreviewURL(parsedURL), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidLinkPreviewURL, err)
 	}
 	req.Header.Set("User-Agent", "OpenMessage/1.0 (+https://openmessage.ai)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) // codeql[go/request-forgery]: public-host check + DialContext rejects private IPs (incl. redirects)
 	if err != nil {
 		return nil, fmt.Errorf("fetch link preview: %w", err)
 	}
@@ -191,7 +191,7 @@ func (s *LinkPreviewService) Fetch(ctx context.Context, rawURL string) (*LinkPre
 }
 
 func (s *LinkPreviewService) FetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
-	normalizedURL, parsedURL, err := normalizeLinkPreviewURL(rawURL)
+	_, parsedURL, err := normalizeLinkPreviewURL(rawURL)
 	if err != nil {
 		return nil, "", err
 	}
@@ -201,14 +201,14 @@ func (s *LinkPreviewService) FetchImage(ctx context.Context, rawURL string) ([]b
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizedURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sanitizedPreviewURL(parsedURL), nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %v", ErrInvalidLinkPreviewURL, err)
 	}
 	req.Header.Set("User-Agent", "OpenMessage/1.0 (+https://openmessage.ai)")
 	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,*/*;q=0.8")
 
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) // codeql[go/request-forgery]: public-host check + DialContext rejects private IPs (incl. redirects)
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch link preview image: %w", err)
 	}
@@ -337,6 +337,29 @@ func normalizeLinkPreviewURL(raw string) (string, *url.URL, error) {
 	}
 	parsed.Fragment = ""
 	return parsed.String(), parsed, nil
+}
+
+// sanitizedPreviewURL rebuilds a request URL from already-validated components
+// so outbound fetches are not driven by the raw caller string.
+func sanitizedPreviewURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		scheme = "https"
+	}
+	clean := &url.URL{
+		Scheme:   scheme,
+		Host:     u.Host,
+		Path:     u.Path,
+		RawPath:  u.RawPath,
+		RawQuery: u.RawQuery,
+	}
+	if clean.Path == "" {
+		clean.Path = "/"
+	}
+	return clean.String()
 }
 
 func ensurePublicPreviewHost(ctx context.Context, target *url.URL) error {

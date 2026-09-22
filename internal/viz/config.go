@@ -15,7 +15,8 @@ type VizConfig struct {
 	// Timezone for heatmap display
 	Timezone string // e.g. "America/New_York"
 
-	// Password (SHA-256 hash for client-side gate, empty = no gate)
+	// Password (PBKDF2-SHA256 token for client-side gate, empty = no gate).
+	// Format: v1$<iterations>$<salt_hex>$<dk_hex>
 	PasswordHash string
 
 	// Section ordering (default order used if empty)

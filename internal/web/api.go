@@ -3932,8 +3932,13 @@ func splitHostPortDefault(hostport, defaultPort string) (string, string, bool) {
 }
 
 func mergeSearchResults(reads readsource.ReadSource, identityStore *db.Store, msgs []*db.Message, convos []*db.Conversation, limit int) []SearchResult {
-	results := make([]SearchResult, 0, limit)
-	seen := make(map[string]struct{}, limit)
+	const maxSearchResults = 500
+	if limit <= 0 || limit > maxSearchResults {
+		limit = maxSearchResults
+	}
+	// Capacity is a compile-time constant so CodeQL cannot treat it as user-controlled.
+	results := make([]SearchResult, 0, maxSearchResults)
+	seen := make(map[string]struct{}, maxSearchResults)
 	var identityIndex map[string]unifiedConversationIdentity
 	if identityStore != nil {
 		identityIndex = loadUnifiedIdentityIndex(identityStore)

@@ -134,7 +134,12 @@ func marshalSignalJSONRPCFrame(
 	if err != nil {
 		return nil, fmt.Errorf("encode Signal ingress resolved destination: %w", err)
 	}
-	payload := make([]byte, 0, len(encodedAccount)+len(line)+len(encodedSource)+len(encodedDestination)+64)
+	const maxSignalIngressPayload = 8 << 20
+	needed := len(encodedAccount) + len(line) + len(encodedSource) + len(encodedDestination) + 64
+	if needed < 64 || needed > maxSignalIngressPayload {
+		return nil, fmt.Errorf("encode Signal ingress: payload size %d out of range", needed)
+	}
+	payload := make([]byte, 0, needed)
 	payload = append(payload, `{"account":`...)
 	payload = append(payload, encodedAccount...)
 	payload = append(payload, `,"line":`...)

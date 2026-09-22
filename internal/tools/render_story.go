@@ -24,7 +24,7 @@ func renderStoryTool() mcp.Tool {
 		mcp.WithString("person1", mcp.Description("First person's display name (default: 'Max')")),
 		mcp.WithString("person2", mcp.Description("Second person's display name (default: matched name)")),
 		mcp.WithString("timezone", mcp.Description("Timezone for heatmap and dates (default: America/New_York)")),
-		mcp.WithString("password", mcp.Description("Password to protect the viz (SHA-256 hashed client-side). Empty = no gate.")),
+		mcp.WithString("password", mcp.Description("Password to protect the viz (PBKDF2-hashed client-side). Empty = no gate.")),
 		mcp.WithString("primary_color", mcp.Description("Primary CSS color for person2 (e.g. '#be123c')")),
 		mcp.WithString("secondary_color", mcp.Description("Secondary CSS color for person1 (e.g. '#d97706')")),
 		mcp.WithString("accent_color", mcp.Description("Accent CSS color (e.g. '#fbbf24')")),

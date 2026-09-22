@@ -216,7 +216,14 @@ func (a *ControlAuth) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "bootstrap code is invalid or already used", http.StatusGone)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: ControlCookieName, Value: a.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{
+		Name:     ControlCookieName,
+		Value:    a.token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true, // Safe on localhost http in Chromium; required off-loopback.
+		SameSite: http.SameSiteStrictMode,
+	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
