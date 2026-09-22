@@ -163,7 +163,7 @@ If the bridge is offline and `/api/status` still shows `google.paired=true` (eve
 
 ### Re-pair recipe (only when cookie refresh cannot revive the link)
 
-**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Chrome on Windows encrypts Gaia cookies (v20 / app-bound), so the overlay does **not** read Chrome. Paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone only if the overlay asks for it (unpaired, or cookie reconnect already failed). `Esc` cancels pairing; `q` closes the overlay without cancelling. `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
+**Preferred (TUI, daemon stays up):** press `p` (or `Ctrl+K` → Pair Google Messages). Prefer the Chrome cookie bridge when installed ([runbook/05_CHROME_COOKIE_BRIDGE.md](runbook/05_CHROME_COOKIE_BRIDGE.md)) — auth expiry self-heals while Chrome is open. If the bridge is offline, paste: DevTools on `messages.google.com` → Network → copy a request as cURL → `Ctrl+V` in the overlay. Tap the emoji on the phone only if the overlay asks for it (unpaired, or cookie reconnect already failed). `Esc` cancels pairing; `q` closes the overlay without cancelling. `Ctrl+C` quits. Do not start a second `pair` CLI process while the daemon is running. Dogfood from this checkout with `.\om-tui.exe tui`.
 
 **CLI (daemon down):**
 
@@ -212,23 +212,19 @@ usually cannot decrypt; re-pair via the TUI paste overlay (`p`).
 `canRefreshGoogleCookies()` is true when the script is set, the bridge is
 online, or native decrypt is supported.
 
-**Cookie requirements (the 2026-07-20 fix):** a Google-account libgm session
-authenticates with the five `.google.com` account cookies
-(SID/HSID/SSID/APISID/SAPISID) + SAPISIDHASH — proven live against both
-`/web/config` and the RegisterRefresh RPC. A `messages.google.com:OSID`
-service cookie exists **only** if the user has opened Messages-for-web in that
-Chrome profile; it is preferred when present but **never required**. (Before
-the fix, refresh hard-required it, so on profiles that never visited
-messages.google.com every repair failed with a missing-OSID error
-and the app looped in `needs_repair` forever — a
-re-pair bought minutes, then died again.) Self-heal (not TUI pairing) still
-picks Chrome's **signed-in profile**, not blindly `profile.last_used`. Chrome's
-last-used profile is often an empty `Default` while Google account cookies
-(SID and friends) live in `Profile 1` / `Profile 2`. It prefers last-used when
-that profile has the five Gaia cookies, then `last_active_profiles`, then
-the signed-in profile whose cookie DB was written most recently.
-`OPENMESSAGE_CHROME_PROFILE` still overrides. TUI pairing does not read
-Chrome; paste a `messages.google.com` curl instead.
+**Cookie requirements:** a Google-account libgm session authenticates with the
+five `.google.com` account cookies (SID/HSID/SSID/APISID/SAPISID) + SAPISIDHASH.
+The Chrome cookie bridge also requires `messages.google.com` **OSID** (mautrix
+login fields) — open Messages for web once in that Chrome profile so it exists.
+Native DB decrypt still treats OSID as optional when present. Self-heal (not
+TUI pairing) still picks Chrome's **signed-in profile**, not blindly
+`profile.last_used`. Chrome's last-used profile is often an empty `Default`
+while Google account cookies (SID and friends) live in `Profile 1` / `Profile 2`.
+It prefers last-used when that profile has the five Gaia cookies, then
+`last_active_profiles`, then the signed-in profile whose cookie DB was written
+most recently. `OPENMESSAGE_CHROME_PROFILE` still overrides. TUI pairing does
+not read Chrome's cookie DB; the bridge pulls via `chrome.cookies`, otherwise
+paste a `messages.google.com` curl.
 
 **Expected steady-state — check WHICH BINARY first.** Before diagnosing any
 latched `needs_repair`, confirm the running daemon is the build you think it

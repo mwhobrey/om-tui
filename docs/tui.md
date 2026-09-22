@@ -40,6 +40,18 @@ go build -o om-tui .        # om-tui.exe on Windows
 ./om-tui tui                # unpaired: press p, paste a messages.google.com curl with ctrl+v, tap the emoji
 ```
 
+**Windows cookie auto-refresh (recommended once paired):** register the native
+host, then load the unpacked extension:
+
+```powershell
+.\om-tui.exe chrome-cookie-host --install
+# Chrome → chrome://extensions → Developer mode → Load unpacked → extensions/google-cookies/
+# Open https://messages.google.com once; keep Chrome signed in
+```
+
+Details: [runbook/05_CHROME_COOKIE_BRIDGE.md](runbook/05_CHROME_COOKIE_BRIDGE.md).
+Paste remains the fallback when the bridge is offline.
+
 CLI pairing still works: `Get-Clipboard | ./om-tui pair --google` (Windows) or `pbpaste | ./om-tui pair --google`.
 
 ### Slack river
@@ -157,7 +169,7 @@ focus / river / Slack-thread / react-palette state) and always ends with
 | `Ctrl+E` | React: open emoji palette on the selected message, then `1`–`9` to add/remove (composer or thread; bare `e` only in thread focus) |
 | `Ctrl+B` | Slack Block Kit: open URL buttons in the browser, or the Slack desktop deep link for app-owned controls (composer or thread; bare `b` only in thread focus). Footer shows `ctrl+b blocks` when the selected message has actions. |
 | `Ctrl+A` | Attach file (OS file picker on Windows; drop a path elsewhere). Composer text becomes the caption. Bare `a` works from list/thread only. |
-| `p` | Pair the active river when unpaired (Messages: paste a `messages.google.com` curl; WhatsApp/Signal: scan the overlay QR). `Esc` closes, `q` closes the overlay |
+| `p` | Pair / refresh the active river when needed (Messages: cookie bridge auto-refresh when online, else paste a `messages.google.com` curl; WhatsApp/Signal: scan the overlay QR). `Esc` closes, `q` closes the overlay |
 | `Ctrl+V` | Pair overlay: paste cookies. Otherwise paste media from the OS clipboard and send; falls back to pasting text into the composer |
 | `Ctrl+O` | Open latest media (or the selected message in thread focus) with the OS default app (`open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows). Bare `o` works from list/thread only — in the composer letters always type. |
 | `Ctrl+S` | Save media (same focus rules as open) |
@@ -277,7 +289,8 @@ that only have flattened body text have nothing to activate.
 4. `./om-tui tui` attaches ("Attached to local API daemon…")
 5. Quit TUI — standalone daemon still running
 6. Stop daemon; run `tui` alone — it spawns `serve --api` and shows conversations once paired
-7. Press `p` when unpaired to pair the active river: Messages = paste a `messages.google.com` curl; WhatsApp/Signal = scan the QR from Linked devices; `Esc` cancels/closes, `q` closes the overlay; `r` reconnects an existing session
+7. Press `p` when unpaired to pair the active river: Messages = paste a `messages.google.com` curl (or install the Chrome cookie bridge first — see above); WhatsApp/Signal = scan the QR from Linked devices; `Esc` cancels/closes, `q` closes the overlay; `r` reconnects an existing session
+7b. (Windows) After pairing: `chrome-cookie-host --install` + load `extensions/google-cookies/` → `/api/status` shows `cookie_bridge_online: true`; expire cookies and confirm reconnect without paste
 8. In a thread with an image: `o` opens the OS default viewer; `s` writes under the export dir's `media/` folder
 9. Attach: `Ctrl+A`, paste a path and Enter, or copy a file/screenshot and `Ctrl+V`
 10. Reactions: with a message selected, `Ctrl+E` then `1` reacts; same digit again removes

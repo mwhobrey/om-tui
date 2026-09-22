@@ -83,7 +83,9 @@ TUI + rivers, on any OS. Full keys and smoke checklist:
 # Go is mise-managed on this box — see docs/runbook/03_RULES_AND_STANDARDS.md
 go build -o om-tui .                       # om-tui.exe on Windows
 ./om-tui tui                               # unpaired: press p, paste a messages.google.com curl
-./om-tui chrome-cookie-host --install      # Windows: register Chrome native host for cookie auto-refresh
+./om-tui chrome-cookie-host --install      # Windows: register Chrome native host
+# then Chrome → chrome://extensions → Load unpacked → extensions/google-cookies/
+# full steps: docs/runbook/05_CHROME_COOKIE_BRIDGE.md
 ./om-tui pair slack --token xoxp-... --name "Acme"
 ```
 

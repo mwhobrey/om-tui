@@ -40,10 +40,33 @@ go build -o om-tui .          # om-tui.exe on Windows
 In the TUI, `[` / `]` switches rivers. On WhatsApp or Signal, press `p` and scan
 the QR from Linked devices on your phone.
 
+### Google Messages: Chrome cookie bridge (Windows, recommended)
+
+Chrome on Windows encrypts Gaia cookies so om-tui cannot read them from disk.
+Install the optional MV3 extension + native host so the daemon can pull live
+cookies while Chrome is open — that replaces the every-few-hours DevTools paste
+ritual for an already-paired PC:
+
+```powershell
+.\om-tui.exe chrome-cookie-host --install
+```
+
+Then Chrome → `chrome://extensions` → Developer mode → **Load unpacked** →
+`extensions/google-cookies/` (reload after updates; accept the apex
+`https://google.com/` host permission if prompted). Open
+`https://messages.google.com` once in the signed-in profile so `OSID` exists
+alongside the Gaia cookies. Keep `serve` / the TUI running; confirm
+`/api/status` shows `google.cookie_bridge_online: true`.
+
+Full install, timings, and failure modes:
+[docs/runbook/05_CHROME_COOKIE_BRIDGE.md](docs/runbook/05_CHROME_COOKIE_BRIDGE.md).
+
+### Google Messages: paste / Gaia pairing
+
 Google Account pairing is the path that works for most accounts. In the TUI,
-press `p` on the Messages river, then paste a `curl` / Cookie header from `messages.google.com`
-(`Ctrl+V`). Chrome auto-read is parked: current Chrome encrypts those cookies.
-CLI paste still works when the daemon is down:
+press `p` on the Messages river, then paste a `curl` / Cookie header from
+`messages.google.com` (`Ctrl+V`). Use paste when the cookie bridge is offline,
+or for the first pair. CLI paste still works when the daemon is down:
 
 ```bash
 pbpaste | ./om-tui pair --google      # macOS
@@ -54,8 +77,10 @@ wl-paste | ./om-tui pair --google     # Linux Wayland (or: xclip -o)
 Get-Clipboard | .\om-tui.exe pair --google   # Windows
 ```
 
-The CLI accepts either a JSON cookie object or a full `curl` command, then
-prompts you to confirm an emoji on your phone.
+The CLI accepts either a JSON cookie object or a full `curl` command. If this
+PC is already paired, paste refreshes cookies and reconnects (no phone tap).
+Full Gaia pairing prompts an emoji on your phone only when unpaired or the
+cookie reconnect fails.
 
 QR pairing still works on some accounts: `./om-tui pair` prints a QR code
 to scan under **Google Messages > Settings > Device pairing > Pair a device**.
@@ -154,7 +179,7 @@ Full keys and a smoke checklist: [docs/tui.md](docs/tui.md).
 | `OPENMESSAGES_MY_NAME` | system user name | Display name for outgoing imported iMessage/WhatsApp messages |
 | `OPENMESSAGES_STARTUP_BACKFILL` | `auto` | Startup history sync mode: `auto`, `shallow`, `deep`, or `off` |
 | `OPENMESSAGES_BACKFILL_DISCOVER_ORPHANS` | `0` | Opt in to deep backfill's Phase C (contact-based orphan discovery). **Off by default** because it creates an empty SMS thread on your phone for each contact without prior message history. Enable with `1`/`true`/`yes`/`on` only if you understand the side effect. |
-| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` | unset | Optional command run before reconnect when Google session cookies expire. If unset, om-tui backs off and prompts for manual re-pair instead of hammering Google's auth endpoint. |
+| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` | unset | Optional command run before reconnect when Google session cookies expire. If unset, om-tui tries the Chrome MV3 cookie bridge when online, then native decrypt where supported; otherwise it surfaces paste / re-pair instead of hammering Google's auth endpoint. See [docs/runbook/05_CHROME_COOKIE_BRIDGE.md](docs/runbook/05_CHROME_COOKIE_BRIDGE.md). |
 | `OPENMESSAGES_WINDOWS_NOTIFICATIONS` | on for Windows `serve` | Enable/disable Windows toast notifications for fresh inbound live messages (`1`/`0`). Daemon-side (including `serve --api` / TUI-spawned daemon). Respects conversation mute / mentions mode. |
 | `OPENMESSAGES_WINDOWS_TOAST_APP_ID` | PowerShell's registered AUMID | Windows toast AppUserModelID. Unregistered IDs often show nothing; default uses PowerShell's AUMID so toasts actually appear (branded as PowerShell). |
 | `OPENMESSAGES_SIGNAL_TMP_SWEEP` | enabled | Set to `0` to disable the cleanup of stale signal-cli temp directories (run dirs plus `libsignal*` dirs older than 24h that pre-v0.2.10 builds leaked into the system temp dir). |
@@ -184,7 +209,9 @@ the local API and MCP endpoints are meant for same-origin/local clients.
 - Scheduled messages live in SQLite, are claimed atomically by the background scheduler, and retry when the target platform is temporarily disconnected
 - MCP tool handlers read from SQLite for queries and route sends through the same local runtime
 - MCP HTTP transport supports both Streamable HTTP at `/mcp` and SSE at `/mcp/sse` when enabled with `--mcp-sse`; stdio is available with `--mcp-stdio`
-- Auth tokens auto-refresh and persist to `session.json`; expired Google cookies can be refreshed by an optional script or surfaced as a guided re-pair flow
+- Auth tokens auto-refresh and persist to `session.json`; expired Google cookies
+  self-heal via the Chrome cookie bridge (when installed), an optional refresh
+  script, native decrypt where supported, or a guided paste / re-pair flow
 
 ## Development
 

@@ -29,7 +29,7 @@ Snapshot for this checkout (`mwhobrey/om-tui` fork of `MaxGhenis/openmessage`). 
 | Slack realtime | Optional Socket Mode; polling remains startup/reconnect fallback |
 | Bridge Slack adapter | Thin registry entry; text-send + reactions + media download/send; V2 account bootstrap per `slack-<team>` when ingest is on |
 | TUI Google Account pairing (`p`, paste curl, emoji confirm) | Shipped this branch; Chrome auto-read parked (v20). A paste against an existing `session.json` refreshes cookies and reconnects first; Gaia + phone emoji is the unpaired / reconnect-failed fallback. `Esc` cancels, `q` closes the overlay |
-| Chrome MV3 cookie bridge (native messaging) | Shipped this branch (Windows dogfood). Extension + `chrome-cookie-host --install` keeps a bridge online so credential repair / TUI can pull Gaia cookies without paste. See [05_CHROME_COOKIE_BRIDGE.md](./05_CHROME_COOKIE_BRIDGE.md) |
+| Chrome MV3 cookie bridge (native messaging) | Shipped in **v0.7.0** (Windows dogfood). Extension + `chrome-cookie-host --install` keeps a bridge online so credential repair / TUI can pull Gaia + Messages `OSID` cookies without paste. See [05_CHROME_COOKIE_BRIDGE.md](./05_CHROME_COOKIE_BRIDGE.md) |
 | TUI-owned daemon dies with the TUI (Windows job object) | Shipped this branch; closing the terminal no longer leaves `om-tui.exe` serving |
 | Daemon holds `instance.lock` | Store-owning `serve` acquires `<data-dir>/instance.lock` before `app.New`. MCP-stdio clients and `--demo` do not. `backup` / `migrate` / `repair --apply` / a second serve refuse while it is held |
 | API: `/api/rivers`, conversation `river_id` filter | Shipped |

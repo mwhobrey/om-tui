@@ -18,6 +18,7 @@ Use this before tagging a release build.
 ## 3. Messaging Dogfood Matrix
 
 - Google Messages: pairing, reconnect, SMS send/receive, RCS attribution, image receive, notifications, and read receipts.
+- Google cookie bridge (Windows): `chrome-cookie-host --install` + load `extensions/google-cookies/`; `/api/status` shows `cookie_bridge_online`; auth expiry self-heals without paste (see [runbook/05_CHROME_COOKIE_BRIDGE.md](runbook/05_CHROME_COOKIE_BRIDGE.md)).
 - WhatsApp: pairing, reconnect, text send, image plus caption send, reaction send/receive, group leave, group names, and avatar loading.
 - Signal: pairing, history/backfill, group names, image receive, reactions, and stale connection recovery.
 - Slack rivers: pairing, channel/DM sync, unread counts, reply threads, text send, and (if configured) Socket Mode realtime.
@@ -25,7 +26,7 @@ Use this before tagging a release build.
 
 ## 4. Diagnostics
 
-- Confirm `GET /api/status` reports each platform/river's connection state correctly after a clean launch.
+- Notifications: fresh inbound only. History sync / catch-up must not toast-spam (Signal history sync + 2-minute age gate on Windows/macOS notifiers).
 - Attach relevant `serve` log output to issues when investigating crashes, backend exits, dropped connections, stale media, or missing notifications.
 - Do not paste message bodies, contact exports, or database dumps into public issues.
 

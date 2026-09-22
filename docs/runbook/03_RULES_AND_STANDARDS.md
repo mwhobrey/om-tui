@@ -38,7 +38,7 @@
 | `OPENMESSAGES_V2_SEND` / `_INGEST` / `_PRIMARY` | Staged V2 enablement. PRIMARY defaults **on**; set `OPENMESSAGES_V2_PRIMARY=0` to serve v1. PRIMARY implies send+ingest unless those are explicitly `0` (rejected). |
 | `OPENMESSAGES_SIGNAL_CLI` | signal-cli binary path |
 | `OPENMESSAGES_JAVA_HOME` | JDK 25+ for signal-cli (else auto-discovered) |
-| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` / `OPENMESSAGE_CHROME_PROFILE` | Google self-heal |
+| `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` / `OPENMESSAGE_CHROME_PROFILE` | Google self-heal. Prefer the Chrome MV3 cookie bridge on Windows ([05_CHROME_COOKIE_BRIDGE.md](./05_CHROME_COOKIE_BRIDGE.md)); script overrides bridge when set |
 | `OPENMESSAGE_REPAIR_MIN_INTERVAL` | Pace Google repair |
 | `OPENMESSAGES_EXPORT_DIR` / `OPENMESSAGES_ALLOW_ANY_EXPORT_PATH` | Viz/export path policy |
 | `OPENMESSAGES_VAULT_INSECURE` | Non-Windows test-only vault |
