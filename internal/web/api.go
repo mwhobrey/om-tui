@@ -27,6 +27,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/client"
+	"github.com/maxghenis/openmessage/internal/cookiebridge"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/ingest"
 	"github.com/maxghenis/openmessage/internal/media"
@@ -152,6 +153,16 @@ type APIOptions struct {
 	BackfillStatus         func() any         // returns a JSON-serializable backfill progress snapshot
 	BackfillPhone          func(string) error // targeted backfill for a single phone number
 	SyncGoogleContacts     func() (int, error)
+	// CookieBridge is the optional Chrome native-messaging cookie refresh
+	// registry. When set, /api/google/cookie-bridge/* serves the host and
+	// status reports cookie_bridge_online.
+	CookieBridge           *cookiebridge.Registry
+	// ApplyGoogleCookies rewrites session cookies and reconnects (pair-refresh
+	// path). Used by the bridge push/refresh endpoints.
+	ApplyGoogleCookies     func(cookies map[string]string) error
+	// RefreshGoogleCookies triggers the same self-heal path as credential
+	// repair (script → bridge → native decrypt).
+	RefreshGoogleCookies   func(ctx context.Context) error
 }
 
 type SearchResult struct {
@@ -3365,6 +3376,116 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		opts.CancelGooglePair()
+		publishStatus(currentConnected())
+		writeJSON(w, statusPayload(currentConnected()))
+	})
+
+	mux.HandleFunc("/api/google/cookie-bridge/wait", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.CookieBridge == nil {
+			httpError(w, "cookie bridge unavailable", 501)
+			return
+		}
+		timeout := 25 * time.Second
+		if raw := strings.TrimSpace(r.URL.Query().Get("timeout_ms")); raw != "" {
+			ms, err := strconv.Atoi(raw)
+			if err != nil || ms < 1000 || ms > 60000 {
+				httpError(w, "timeout_ms must be between 1000 and 60000", 400)
+				return
+			}
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+		req, err := opts.CookieBridge.Wait(r.Context(), timeout)
+		if errors.Is(err, cookiebridge.ErrWaitIdle) {
+			writeJSON(w, map[string]string{"op": "idle"})
+			return
+		}
+		if err != nil {
+			httpError(w, "cookie bridge wait: "+err.Error(), 500)
+			return
+		}
+		writeJSON(w, req)
+	})
+
+	mux.HandleFunc("/api/google/cookie-bridge/reply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.CookieBridge == nil {
+			httpError(w, "cookie bridge unavailable", 501)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var body struct {
+			ID      string            `json:"id"`
+			Cookies map[string]string `json:"cookies"`
+			Error   string            `json:"error"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			httpError(w, "invalid request body", 400)
+			return
+		}
+		var replyErr error
+		if strings.TrimSpace(body.Error) != "" {
+			replyErr = errors.New(strings.TrimSpace(body.Error))
+		}
+		if err := opts.CookieBridge.Reply(body.ID, body.Cookies, replyErr); err != nil {
+			httpError(w, err.Error(), 400)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("/api/google/cookie-bridge/push", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.ApplyGoogleCookies == nil {
+			httpError(w, "cookie bridge push unavailable", 501)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var body struct {
+			Cookies map[string]string `json:"cookies"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			httpError(w, "invalid request body", 400)
+			return
+		}
+		if err := cookiebridge.ValidateCookies(body.Cookies); err != nil {
+			httpError(w, err.Error(), 400)
+			return
+		}
+		if err := opts.ApplyGoogleCookies(body.Cookies); err != nil {
+			// Don't remap through googleAPIErrorMessage — this endpoint *is* the
+			// cookie refresh. A friendly "try again in a few seconds" here is a lie.
+			httpError(w, "apply google cookies: "+err.Error(), 502)
+			return
+		}
+		publishStatus(currentConnected())
+		writeJSON(w, statusPayload(currentConnected()))
+	})
+
+	mux.HandleFunc("/api/google/cookie-refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			httpError(w, "method not allowed", 405)
+			return
+		}
+		if opts.RefreshGoogleCookies == nil {
+			httpError(w, "google cookie refresh unavailable", 501)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := opts.RefreshGoogleCookies(ctx); err != nil {
+			httpError(w, googleAPIErrorMessage("refresh google cookies", err), 502)
+			return
+		}
 		publishStatus(currentConnected())
 		writeJSON(w, statusPayload(currentConnected()))
 	})

@@ -23,7 +23,7 @@ func TestMacOSNotifierDedupesByMessageID(t *testing.T) {
 		MessageID:      "m1",
 		SenderName:     "Alice",
 		Body:           "Hello",
-		TimestampMS:    100,
+		TimestampMS:    time.Now().UnixMilli(),
 		IsFromMe:       false,
 		ConversationID: "c1",
 	}

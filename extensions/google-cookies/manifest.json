@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "om-tui Google Cookies",
+	"version": "1.0.4",
+  "description": "Keeps a native-messaging bridge open so om-tui can refresh Google Messages session cookies without DevTools paste.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAueK5fPy0yRS7DaYa9xVzWheI8NtLi+bWM7cL19e0idScPosBhH8m5fz5yC2198JbLLj/dOcjtuhtqKKWY60S3q01+XxurBg7VsxLRQfF3LmHTWzNuDi2xOalWwpwtZbFc2BiUKzaTgYpb6IZUP4U5amWopl4WZqsp/2M1qeCW/djyBVmgu0ego5PSLkEnaaLfzIxDCP5nYZeqQUWnl3z9JG6s+9mv5qZ+d0DgTQuPmPZavNDvRrPBA3HTtoKCKKAlApsc3As2qyy5KJZaK1WB7xQxtOYj/OBhiSerx4bQjYCRW83lzDou2zybUNPQ+Dwu6yt92xTwDf4EZ+/f7dnFQIDAQAB",
+  "permissions": ["alarms", "cookies", "nativeMessaging", "storage"],
+  "host_permissions": [
+    "https://google.com/",
+    "https://*.google.com/",
+    "http://google.com/",
+    "http://*.google.com/"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "om-tui: push Google cookies now",
+    "default_popup": "popup.html"
+  }
+}

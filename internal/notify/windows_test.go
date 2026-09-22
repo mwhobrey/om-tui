@@ -23,7 +23,7 @@ func TestWindowsNotifierDedupesByMessageID(t *testing.T) {
 		MessageID:      "m1",
 		SenderName:     "Alice",
 		Body:           "Hello",
-		TimestampMS:    100,
+		TimestampMS:    time.Now().UnixMilli(),
 		IsFromMe:       false,
 		ConversationID: "c1",
 	}
@@ -64,6 +64,24 @@ func TestWindowsNotifierSkipsOutgoingMessages(t *testing.T) {
 
 	if called {
 		t.Fatal("notifier should not run for outgoing messages")
+	}
+}
+
+func TestWindowsNotifierSkipsStaleMessages(t *testing.T) {
+	notifier := NewWindowsNotifier(zerolog.Nop(), true, nil, "")
+	called := false
+	notifier.run = func(appID, title, body, script string) error {
+		called = true
+		return nil
+	}
+	notifier.NotifyIncomingMessage(&db.Message{
+		MessageID:   "old",
+		Body:        "from last week",
+		TimestampMS: time.Now().Add(-24 * time.Hour).UnixMilli(),
+	})
+	time.Sleep(50 * time.Millisecond)
+	if called {
+		t.Fatal("notifier should not toast stale catch-up messages")
 	}
 }
 

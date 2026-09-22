@@ -5,6 +5,7 @@
 ```
 cmd/                 CLI commands + serve composition + V2 stack wiring
 internal/            Application implementation (all product logic)
+extensions/          Optional browser extensions (Google cookie bridge)
 docs/                Operational docs + this runbook/
 scripts/             Support scripts (cookie watchdog, etc.)
 .github/workflows/   test, release, gmessages-fork-drift
@@ -40,6 +41,7 @@ Authoritative usage strings live in `main.go`.
 | `river/` | River identity model (`messages-default`, `whatsapp-default`, `signal-default`, extra WhatsApp/Signal `*-N`, `slack-<team>`); scoped conversation IDs |
 | `vault/` | Encrypted per-river credentials (DPAPI on Windows, Keychain on macOS, Secret Service via `secret-tool` on Linux; insecure test-only path via `OPENMESSAGES_VAULT_INSECURE=1`) |
 | `googlecookies/` | Native Chrome cookie decrypt for Google **self-heal** (keychain/DPAPI + CDP). Pairing is paste-only: current Chrome v20 cookies cannot be unwrapped. CDP, if used, runs against a temp copy only — never the live User Data dir. |
+| `cookiebridge/` | Chrome MV3 native-messaging relay so the daemon can pull live Gaia cookies when the extension host is online (Windows dogfood; paste remains fallback) |
 | `notify/` | macOS / Windows notifications |
 
 ### Storage

@@ -47,6 +47,8 @@ type pairOverlay struct {
 	qrPayload         string
 	qrUpdatedAt       int64
 	gfx               pairGraphicsKind
+	bridgeRefreshing  bool
+	bridgeTriedAt     time.Time
 }
 
 func (p pairOverlay) ignoringStaleFailed() bool {
@@ -285,12 +287,61 @@ func (m Model) syncPairOverlayFromStatus() (Model, tea.Cmd) {
 	}
 	drafting := m.focus == focusCompose && strings.TrimSpace(m.compose.Value()) != ""
 	if !m.pair.open && m.googleNeedsCookieRefresh() && !m.palette.open && !m.newChat.open && m.focus != focusSearch && !drafting {
+		// Only auto-pull via Chrome while the daemon can still refresh.
+		// NeedsRepair means bridge/script already failed — open paste.
+		if m.status.Google.CookieBridgeOnline && !m.status.Google.NeedsRepair && !m.pair.bridgeRefreshing {
+			// Supervisor repair already paces at 90s; don't hammer the bridge
+			// from the TUI every status tick.
+			retryAfter := 60 * time.Second
+			if m.pair.bridgeTriedAt.IsZero() || time.Since(m.pair.bridgeTriedAt) >= retryAfter {
+				m.pair.bridgeRefreshing = true
+				m.pair.bridgeTriedAt = time.Now()
+				return m, m.refreshGoogleCookiesCmd()
+			}
+		}
+		if m.pair.bridgeRefreshing {
+			return m, nil
+		}
 		opened, cmd := m.openPairOverlay()
 		got, ok := opened.(Model)
 		if !ok {
 			return m, cmd
 		}
 		return got, cmd
+	}
+	return m, nil
+}
+
+type googleCookieRefreshMsg struct {
+	err    error
+	status localapi.DaemonStatus
+}
+
+func (m Model) refreshGoogleCookiesCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.session == nil || m.session.Client == nil {
+			return googleCookieRefreshMsg{err: fmt.Errorf("not attached to the local API daemon")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		status, err := m.session.Client.RefreshGoogleCookies(ctx)
+		return googleCookieRefreshMsg{err: err, status: status}
+	}
+}
+
+func (m Model) handleGoogleCookieRefreshMsg(msg googleCookieRefreshMsg) (tea.Model, tea.Cmd) {
+	m.pair.bridgeRefreshing = false
+	if msg.err == nil {
+		m.status = msg.status
+		if m.googleSessionHealthy() {
+			m.pair.dismissed = false
+			m.pair.bridgeTriedAt = time.Time{}
+			return m, nil
+		}
+	}
+	// Bridge refresh failed or session still sick — fall through to paste overlay.
+	if m.googleNeedsCookieRefresh() && !m.pair.open && !m.pair.dismissed {
+		return m.openPairOverlay()
 	}
 	return m, nil
 }

@@ -296,6 +296,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, tick := m.armPairTick()
 		return m, tea.Batch(m.refreshStatusCmd(), tick)
 
+	case googleCookieRefreshMsg:
+		return m.handleGoogleCookieRefreshMsg(msg)
+
 	case riversMsg:
 		m.rivers = msg
 		if m.activeRiverID == "" && len(msg) > 0 {
@@ -1509,7 +1512,7 @@ func (m Model) canSend() bool {
 		if g.NeedsRepair || g.AuthExpired {
 			return false
 		}
-		return g.Connected || m.status.Connected
+		return g.Connected
 	}
 }
 
@@ -1546,7 +1549,13 @@ func (m Model) sendBlockedReason() string {
 	case river.ProviderSlack:
 		return "Slack is not connected"
 	default:
-		if m.status.Google.NeedsRepair || m.status.Google.AuthExpired {
+		if m.status.Google.NeedsRepair {
+			return "Google cookies expired — press p to paste a messages.google.com curl"
+		}
+		if m.status.Google.AuthExpired {
+			if m.status.Google.CookieBridgeOnline {
+				return "Google cookies expired — Chrome bridge is refreshing"
+			}
 			return "Google cookies expired — press p to paste a messages.google.com curl"
 		}
 		return "Google Messages is not connected — press p to pair or r to reconnect"
@@ -2347,11 +2356,17 @@ func (m Model) riverStatusChip() (name, state string, style lipgloss.Style, dot 
 		name = "Google Messages"
 		g := m.status.Google
 		switch {
-		case g.NeedsPairing || (!g.Paired && !m.status.Connected):
+		case g.NeedsPairing || !g.Paired:
 			state = "unpaired — press p to pair"
-		case g.NeedsRepair, g.AuthExpired:
+		case g.NeedsRepair:
 			state = "cookies expired — press p to paste"
-		case g.Connected || m.status.Connected:
+		case g.AuthExpired:
+			if g.CookieBridgeOnline {
+				state = "cookies expired — refreshing via Chrome…"
+			} else {
+				state = "cookies expired — press p to paste"
+			}
+		case g.Connected:
 			state = "connected"
 			style = okStyle
 			dot = "●"
@@ -2360,6 +2375,10 @@ func (m Model) riverStatusChip() (name, state string, style lipgloss.Style, dot 
 				style = warnStyle
 				dot = "○"
 			}
+		default:
+			state = "disconnected"
+			style = warnStyle
+			dot = "○"
 		}
 	}
 	return name, state, style, dot

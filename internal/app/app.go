@@ -192,6 +192,7 @@ type App struct {
 	tempDataDir               string
 	pendingMediaMu            sync.Mutex
 	pendingMedia              map[string]struct{}
+	onGoogleReady             func()
 }
 
 type GoogleStatusSnapshot struct {
@@ -216,6 +217,9 @@ type GoogleStatusSnapshot struct {
 	RepairsPaced uint64 `json:"repairs_paced,omitempty"`
 	// Pairing is set while the daemon owns an in-progress Google Account pair.
 	Pairing *GooglePairingSnapshot `json:"pairing,omitempty"`
+	// CookieBridgeOnline is true when the Chrome native-messaging host is
+	// connected and waiting for cookie requests.
+	CookieBridgeOnline bool `json:"cookie_bridge_online,omitempty"`
 }
 
 // ErrGooglePairingInProgress is returned when a second Google Account pair
@@ -271,6 +275,15 @@ func (a *App) ClearGoogleRepairFlag() {
 	a.googleNeedsRepair.Store(false)
 }
 
+// NoteGoogleSessionCookiesUpdated records that session.json was rewritten and
+// a reconnect was admitted. It does NOT clear auth_expired / needs_repair —
+// only a real Ready event may do that. Clearing early made the TUI flash
+// "connected" (via overall Connected from WA/Signal) between auth failures.
+func (a *App) NoteGoogleSessionCookiesUpdated() {
+	a.setGoogleLastError("Google Messages cookies updated; reconnecting…")
+	a.emitStatusChange(a.Connected.Load())
+}
+
 // FlagGoogleNeedsRepair marks the Google Messages session as needing a manual
 // re-pair (cookies expired and no automated refresh is available), so the
 // reconnect watchdog stops retrying and the UI surfaces a "Re-pair" banner. The
@@ -278,6 +291,7 @@ func (a *App) ClearGoogleRepairFlag() {
 // re-arming the watchdog in a loop.
 func (a *App) FlagGoogleNeedsRepair() {
 	if a.googleNeedsRepair.CompareAndSwap(false, true) {
+		a.setGoogleLastError("Google Messages cookies expired — press p to paste a messages.google.com curl")
 		a.emitStatusChange(a.Connected.Load())
 	}
 }

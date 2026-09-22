@@ -58,8 +58,10 @@ and **[docs/runbook/](docs/runbook/)** before touching anything. The traps that 
 - **Read live messages via the HTTP API** (`/api/conversations/<id>/messages`,
   `/api/search`, `/api/status`) — the daemon holds the WAL'd DB, so a direct
   `sqlite3` reader hits "unable to open database file (14)".
-- **Re-pairing Google Messages:** QR is dead for many accounts. Press `p` and
-  paste a `messages.google.com` curl (`Ctrl+V`). If this PC is already paired,
+- **Re-pairing Google Messages:** Prefer the Chrome cookie bridge when installed
+  ([docs/runbook/05_CHROME_COOKIE_BRIDGE.md](docs/runbook/05_CHROME_COOKIE_BRIDGE.md)).
+  QR is dead for many accounts. Press `p` and paste a `messages.google.com`
+  curl (`Ctrl+V`) when the bridge is offline. If this PC is already paired,
   that paste refreshes cookies with no phone tap. Clear `session.json` only
   to force a full unpaired Gaia pair; don't over-reconnect (it throttles).
 - **One transport owner.** `serve --mcp-stdio` is transportless by default; a
@@ -81,6 +83,7 @@ TUI + rivers, on any OS. Full keys and smoke checklist:
 # Go is mise-managed on this box — see docs/runbook/03_RULES_AND_STANDARDS.md
 go build -o om-tui .                       # om-tui.exe on Windows
 ./om-tui tui                               # unpaired: press p, paste a messages.google.com curl
+./om-tui chrome-cookie-host --install      # Windows: register Chrome native host for cookie auto-refresh
 ./om-tui pair slack --token xoxp-... --name "Acme"
 ```
 

@@ -103,14 +103,15 @@ type SlackRiverStatus struct {
 
 // GoogleStatus is the Google Messages block inside /api/status.
 type GoogleStatus struct {
-	Connected       bool                 `json:"connected"`
-	Paired          bool                 `json:"paired"`
-	NeedsPairing    bool                 `json:"needs_pairing"`
-	NeedsRepair     bool                 `json:"needs_repair,omitempty"`
-	LastError       string               `json:"last_error,omitempty"`
-	AuthExpired     bool                 `json:"auth_expired,omitempty"`
-	PhoneResponding bool                 `json:"phone_responding"`
-	Pairing         *GooglePairingStatus `json:"pairing,omitempty"`
+	Connected          bool                 `json:"connected"`
+	Paired             bool                 `json:"paired"`
+	NeedsPairing       bool                 `json:"needs_pairing"`
+	NeedsRepair        bool                 `json:"needs_repair,omitempty"`
+	LastError          string               `json:"last_error,omitempty"`
+	AuthExpired        bool                 `json:"auth_expired,omitempty"`
+	PhoneResponding    bool                 `json:"phone_responding"`
+	Pairing            *GooglePairingStatus `json:"pairing,omitempty"`
+	CookieBridgeOnline bool                 `json:"cookie_bridge_online,omitempty"`
 }
 
 // GooglePairingStatus is in-app Google Account pairing progress from /api/status.
@@ -826,6 +827,17 @@ func (c *Client) MarkRead(ctx context.Context, conversationID string) error {
 func (c *Client) ReconnectGoogle(ctx context.Context) (DaemonStatus, error) {
 	var status DaemonStatus
 	if err := c.postJSON(ctx, "/api/google/reconnect", map[string]any{}, &status); err != nil {
+		return DaemonStatus{}, err
+	}
+	return status, nil
+}
+
+// RefreshGoogleCookies posts POST /api/google/cookie-refresh to trigger the
+// daemon's self-heal path (script → Chrome extension bridge → native decrypt)
+// and rebuild the Google supervisor generation.
+func (c *Client) RefreshGoogleCookies(ctx context.Context) (DaemonStatus, error) {
+	var status DaemonStatus
+	if err := c.postJSON(ctx, "/api/google/cookie-refresh", map[string]any{}, &status); err != nil {
 		return DaemonStatus{}, err
 	}
 	return status, nil

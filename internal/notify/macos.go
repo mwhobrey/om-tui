@@ -52,6 +52,9 @@ func (n *MacOSNotifier) NotifyIncomingMessage(message *db.Message) {
 	if n == nil || !n.enabled || message == nil || message.IsFromMe {
 		return
 	}
+	if !messageFreshForNotification(message) {
+		return
+	}
 	if !notificationAllowed(n.store, n.mentionNames, message) {
 		return
 	}

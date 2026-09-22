@@ -232,6 +232,10 @@ type googleSupervisorControl struct {
 	unpairing         bool
 	closed            bool
 	pairing           *googlePairRuntime
+
+	cookieReconnectMu     sync.Mutex
+	cookieReconnectQueued bool
+	lastCookieReconnect   time.Time
 }
 
 func newGoogleSupervisorControl(

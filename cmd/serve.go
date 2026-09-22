@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -26,6 +29,7 @@ import (
 	signaladapter "github.com/maxghenis/openmessage/internal/bridgeadapters/signal"
 	slackadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/slack"
 	whatsappadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/whatsapp"
+	"github.com/maxghenis/openmessage/internal/cookiebridge"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/googlecookies"
 	"github.com/maxghenis/openmessage/internal/importer"
@@ -198,6 +202,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	a.OnMessagesChange = events.PublishMessages
 	a.OnStatusChange = func(bool) { publishOverallStatus() }
 	a.OnTypingChange = events.PublishTyping
+	if transports {
+		a.SetOnGoogleReady(clearGoogleBridgeExhaustion)
+	}
 	a.OnWhatsAppStatusChange = func() {
 		publishOverallStatus()
 	}
@@ -738,6 +745,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		if googleControl != nil {
 			status.Pairing = googleControl.PairingSnapshot()
 		}
+		status.CookieBridgeOnline = googleCookieBridge.Online()
 		return status
 	}
 	recordGoogleSend := a.RecordGoogleSendOutcome
@@ -810,7 +818,28 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				ReconnectGoogle:       reconnectGoogle,
 				PairGoogle:            pairGoogle,
 				CancelGooglePair:      cancelGooglePair,
-				Unpair:                unpairGoogle,
+				CookieBridge:          googleCookieBridge,
+				ApplyGoogleCookies: func(cookies map[string]string) error {
+					if googleControl == nil {
+						return errors.New("google cookie apply unavailable")
+					}
+					if err := googleControl.ApplySessionCookies(cookies); err != nil {
+						return err
+					}
+					a.NoteGoogleSessionCookiesUpdated()
+					return nil
+				},
+				RefreshGoogleCookies: func(ctx context.Context) error {
+					if err := refreshGoogleSessionCookies(ctx, a.SessionPath); err != nil {
+						return err
+					}
+					a.NoteGoogleSessionCookiesUpdated()
+					if googleControl != nil {
+						return googleControl.RebuildAfterSessionChange()
+					}
+					return reconnectGoogle()
+				},
+				Unpair: unpairGoogle,
 				WhatsAppStatus:        func() any { return a.WhatsAppStatus() },
 				ConnectWhatsApp:       connectWhatsApp,
 				PairWhatsAppPhone:     pairWhatsAppPhone,
@@ -1228,15 +1257,53 @@ func startupBackfillMode() string {
 }
 
 const googleCookieRefreshTimeout = 20 * time.Second
+const googleCookieBridgeTimeout = cookiebridge.DefaultRequestTimeout
+
+// googleCookieBridge is the process-wide Chrome native-messaging cookie
+// registry. The extension host long-polls it; credential repair and the TUI
+// ask it for live Gaia cookies when online.
+var googleCookieBridge = cookiebridge.New()
+
+// Bridge cookies that Google still rejects must not keep canRefresh true
+// forever — that traps the UI on "refreshing via Chrome…" while repair loops.
+var (
+	googleBridgeCookieMu      sync.Mutex
+	googleBridgeLastCookieFP  string
+	googleBridgeSameCookieHits int
+	googleBridgeExhausted     atomic.Bool
+)
+
+func clearGoogleBridgeExhaustion() {
+	googleBridgeCookieMu.Lock()
+	googleBridgeLastCookieFP = ""
+	googleBridgeSameCookieHits = 0
+	googleBridgeCookieMu.Unlock()
+	googleBridgeExhausted.Store(false)
+}
+
+func googleBridgeCookiesFingerprint(cookies map[string]string) string {
+	h := sha256.New()
+	for _, name := range cookiebridge.RequiredCookieNames {
+		_, _ = h.Write([]byte(name))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(cookies[name]))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // canRefreshGoogleCookies reports whether an expired Google session can be
-// recovered automatically — either via a configured external refresh script or
-// a local Chrome cookie DB (in-process decrypt on macOS; Windows/Linux also
-// try a dedicated pair-browser profile via Chrome DevTools). When neither is
-// available, the adapter classifies auth expiry as a blocked condition and the
-// existing needs_repair status prompts a manual re-pair instead of spinning.
+// recovered automatically — via a configured external refresh script, a live
+// Chrome extension bridge, or a local Chrome cookie DB (in-process decrypt on
+// macOS; Windows/Linux also try a dedicated pair-browser profile via Chrome
+// DevTools). When none is available, the adapter classifies auth expiry as a
+// blocked condition and the existing needs_repair status prompts a manual
+// re-pair instead of spinning.
 func canRefreshGoogleCookies() bool {
 	if strings.TrimSpace(os.Getenv("OPENMESSAGE_COOKIE_REFRESH_SCRIPT")) != "" {
+		return true
+	}
+	if googleCookieBridge.Online() && !googleBridgeExhausted.Load() {
 		return true
 	}
 	return googlecookies.NativeSupported()
@@ -1244,9 +1311,9 @@ func canRefreshGoogleCookies() bool {
 
 // refreshGoogleSessionCookies rewrites the Google cookies in sessionPath. It
 // prefers an explicitly configured OPENMESSAGE_COOKIE_REFRESH_SCRIPT (so the
-// operator can override the mechanism), otherwise falls back to the built-in
-// native refresh. The supervisor starts a new generation only after this
-// function succeeds.
+// operator can override the mechanism), then the Chrome extension bridge,
+// otherwise falls back to the built-in native refresh. The supervisor starts a
+// new generation only after this function succeeds.
 var refreshGoogleSessionCookies = func(ctx context.Context, sessionPath string) error {
 	script := strings.TrimSpace(os.Getenv("OPENMESSAGE_COOKIE_REFRESH_SCRIPT"))
 	if script != "" {
@@ -1267,6 +1334,43 @@ var refreshGoogleSessionCookies = func(ctx context.Context, sessionPath string) 
 			return fmt.Errorf("refresh Google cookies: %w: %s", err, detail)
 		}
 		return nil
+	}
+
+	if googleCookieBridge.Online() && !googleBridgeExhausted.Load() {
+		cookies, err := googleCookieBridge.RequestCookies(ctx, googleCookieBridgeTimeout)
+		if err == nil {
+			if err := cookiebridge.ValidateCookies(cookies); err != nil {
+				return fmt.Errorf("Chrome bridge cookies incomplete: %w", err)
+			}
+			fp := googleBridgeCookiesFingerprint(cookies)
+			googleBridgeCookieMu.Lock()
+			same := googleBridgeLastCookieFP != "" && fp == googleBridgeLastCookieFP
+			if same {
+				googleBridgeSameCookieHits++
+			} else {
+				googleBridgeLastCookieFP = fp
+				googleBridgeSameCookieHits = 0
+			}
+			hits := googleBridgeSameCookieHits
+			googleBridgeCookieMu.Unlock()
+			// Second time we see the exact same bridge cookie set, Google has
+			// already rejected it — stop auto-refresh and force paste.
+			if same && hits >= 1 {
+				googleBridgeExhausted.Store(true)
+				return fmt.Errorf("Chrome bridge cookies were already applied and Google still rejects them; paste a messages.google.com curl")
+			}
+			if err := googlecookies.UpdateSessionCookies(sessionPath, cookies); err != nil {
+				return fmt.Errorf("write refreshed Google cookies: %w", err)
+			}
+			return nil
+		}
+		// Fall through to native decrypt when the bridge fails; Windows v20
+		// usually still can't unwrap, but macOS/Linux may.
+		if !errors.Is(err, cookiebridge.ErrBridgeOffline) {
+			if !googlecookies.NativeSupported() {
+				return fmt.Errorf("refresh Google cookies via extension bridge: %w", err)
+			}
+		}
 	}
 
 	if !googlecookies.NativeSupported() {

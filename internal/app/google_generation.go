@@ -81,7 +81,17 @@ func (g *GoogleGeneration) Ready() bool {
 	a.emitStatusChange(true)
 	a.Logger.Info().Msg("Connected to Google Messages")
 	a.StartGoogleContactSync()
+	if a.onGoogleReady != nil {
+		a.onGoogleReady()
+	}
 	return true
+}
+
+// SetOnGoogleReady installs a hook invoked after a successful Google Ready
+// event (live connection). Used to clear cookie-bridge exhaustion so auto
+// refresh can work again after a healthy session.
+func (a *App) SetOnGoogleReady(fn func()) {
+	a.onGoogleReady = fn
 }
 
 func (g *GoogleGeneration) PhoneResponding(responding bool) {

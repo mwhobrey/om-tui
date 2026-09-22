@@ -152,7 +152,9 @@ Key facts:
 
 ### Cookie refresh (try this before a full re-pair)
 
-On Windows, Chrome v20 cookies expire after hours and silent self-heal cannot decrypt them. That is **not** the same as the phone unlinking the device. If `/api/status` still shows `google.paired=true` (even with `needs_repair` / `auth_expired`):
+On Windows, Chrome v20 cookies expire after hours and silent DB decrypt cannot unwrap them. That is **not** the same as the phone unlinking the device. Prefer the **Chrome cookie bridge** when installed ([runbook/05_CHROME_COOKIE_BRIDGE.md](runbook/05_CHROME_COOKIE_BRIDGE.md)): `om-tui chrome-cookie-host --install` + unpacked `extensions/google-cookies/`. While Chrome is open and signed in, `/api/status` shows `google.cookie_bridge_online=true` and auth expiry self-heals without paste.
+
+If the bridge is offline and `/api/status` still shows `google.paired=true` (even with `needs_repair` / `auth_expired`):
 
 1. Keep the daemon up. Do **not** delete `session.json`.
 2. Press `p`. Overlay title is **Refresh Google Messages**.
@@ -197,18 +199,18 @@ On Windows, Chrome v20 cookies expire after hours and silent self-heal cannot de
 
 The daemon **tries** to refresh expired Google cookies in-process and reconnect
 on its own. When the reconnect watchdog sees an expired session
-(`auth token: HTTP 401` / `SESSION_COOKIE_INVALID`) it reads the user's
-signed-in Chrome cookies, rewrites `auth_data.cookies` in `session.json`, and
-reconnects — no re-pair, no script. Implemented in `internal/googlecookies`
-(macOS keychain CBC; Windows DPAPI+AES-GCM **only when cookies are v10**,
-not current Chrome's app-bound v20). Headless Chrome DevTools is against a
-**temp copy** of the profile, never the live User Data dir, and returns no
-cookies on v20. Self-heal never opens an interactive Chrome window.
-On current Windows Chrome, self-heal usually cannot decrypt; re-pair via the
-TUI paste overlay (`p`).
-`refreshGoogleSessionCookies` prefers an explicit
-`OPENMESSAGE_COOKIE_REFRESH_SCRIPT` if set, else this native path;
-`canRefreshGoogleCookies()` gates whether the watchdog refreshes or parks.
+(`auth token: HTTP 401` / `SESSION_COOKIE_INVALID`) it rewrites
+`auth_data.cookies` in `session.json` and reconnects — no re-pair, no script.
+Order: `OPENMESSAGE_COOKIE_REFRESH_SCRIPT` if set → Chrome MV3 cookie bridge
+when online ([runbook/05_CHROME_COOKIE_BRIDGE.md](runbook/05_CHROME_COOKIE_BRIDGE.md))
+→ `internal/googlecookies` native decrypt (macOS keychain CBC; Windows DPAPI
+only when cookies are v10, not current Chrome's app-bound v20). Headless Chrome
+DevTools is against a **temp copy** of the profile, never the live User Data
+dir, and returns no cookies on v20. Self-heal never opens an interactive Chrome
+window. On current Windows Chrome without the extension bridge, self-heal
+usually cannot decrypt; re-pair via the TUI paste overlay (`p`).
+`canRefreshGoogleCookies()` is true when the script is set, the bridge is
+online, or native decrypt is supported.
 
 **Cookie requirements (the 2026-07-20 fix):** a Google-account libgm session
 authenticates with the five `.google.com` account cookies
