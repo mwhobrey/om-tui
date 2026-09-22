@@ -175,7 +175,8 @@ func TestRenderHTMLPasswordGate(t *testing.T) {
 	stats := minimalStats()
 	st := minimalStory()
 	cfg := minimalConfig()
-	cfg.PasswordHash = "abc123def456"
+	token := "v1$100000$0123456789abcdef0123456789abcdef$abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	cfg.PasswordHash = token
 
 	html, err := RenderHTML(stats, st, cfg)
 	if err != nil {
@@ -188,12 +189,15 @@ func TestRenderHTMLPasswordGate(t *testing.T) {
 	if !strings.Contains(s, "password-gate") {
 		t.Error("missing password-gate element")
 	}
-	if !strings.Contains(s, "abc123def456") {
-		t.Error("missing password hash in JS")
+	if !strings.Contains(s, token) {
+		t.Error("missing password token in JS")
 	}
-	// Must have SubtleCrypto / SHA-256 reference
-	if !strings.Contains(s, "SHA-256") {
-		t.Error("missing SHA-256 reference for password hashing")
+	// Must have SubtleCrypto / PBKDF2 reference
+	if !strings.Contains(s, "PBKDF2") {
+		t.Error("missing PBKDF2 reference for password hashing")
+	}
+	if !strings.Contains(s, "crypto.subtle") {
+		t.Error("missing crypto.subtle reference")
 	}
 }
 

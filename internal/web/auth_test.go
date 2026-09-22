@@ -148,7 +148,7 @@ func TestControlBootstrapSetsStrictCookieAndIsSingleUse(t *testing.T) {
 		t.Fatalf("first = %d location %q", first.Code, first.Header().Get("Location"))
 	}
 	cookies := first.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != ControlCookieName || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Secure || cookies[0].Path != "/" {
+	if len(cookies) != 1 || cookies[0].Name != ControlCookieName || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || !cookies[0].Secure || cookies[0].Path != "/" {
 		t.Fatalf("cookie = %+v", cookies)
 	}
 	second := httptest.NewRecorder()

@@ -829,17 +829,44 @@ h3 { font-size: clamp(1.3rem, 2.5vw, 1.8rem); line-height: 1.3; }
 </div>
 <script>
 (function() {
-    var expectedHash = '{{.Config.PasswordHash}}';
+    var expectedToken = '{{.Config.PasswordHash}}';
+
+    function hexToBytes(hex) {
+        var out = new Uint8Array(hex.length / 2);
+        for (var i = 0; i < out.length; i++) {
+            out[i] = parseInt(hex.substr(i * 2, 2), 16);
+        }
+        return out;
+    }
+
+    function bytesToHex(buf) {
+        return Array.from(new Uint8Array(buf)).map(function(b) {
+            return b.toString(16).padStart(2, '0');
+        }).join('');
+    }
 
     window.checkPassword = async function() {
         var input = document.getElementById('pw-input').value;
+        var parts = expectedToken.split('$');
+        if (parts.length !== 4 || parts[0] !== 'v1') {
+            document.getElementById('pw-error').classList.add('show');
+            return;
+        }
+        var iterations = parseInt(parts[1], 10);
+        var salt = hexToBytes(parts[2]);
+        var expectedHex = parts[3];
         var encoder = new TextEncoder();
-        var data = encoder.encode(input);
-        var hashBuf = await crypto.subtle.digest('SHA-256', data);
-        var hashArr = Array.from(new Uint8Array(hashBuf));
-        var hashHex = hashArr.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+        var keyMaterial = await crypto.subtle.importKey(
+            'raw', encoder.encode(input), 'PBKDF2', false, ['deriveBits']
+        );
+        var derived = await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' },
+            keyMaterial,
+            256
+        );
+        var hashHex = bytesToHex(derived);
 
-        if (hashHex === expectedHash) {
+        if (hashHex === expectedHex) {
             document.getElementById('password-gate').classList.add('hidden');
         } else {
             document.getElementById('pw-error').classList.add('show');

@@ -107,7 +107,7 @@ func searchKlipyGIFs(ctx context.Context, query string, limit, page int) ([]gifS
 		return nil, fmt.Errorf("decode GIF search: %w", err)
 	}
 
-	results := make([]gifSearchResult, 0, min(limit, len(payload.Results)))
+	results := make([]gifSearchResult, 0, maxGIFSearchResults)
 	for _, item := range payload.Results {
 		result, ok := parseKlipyGIFResult(item)
 		if !ok {
@@ -215,6 +215,8 @@ func downloadGIFMedia(ctx context.Context, rawURL string, limit int64) ([]byte, 
 	if err != nil {
 		return nil, "", "", err
 	}
+	// Host allowlisted to *.klipy.com in validateKlipyMediaURL; URL rebuilt there.
+	// codeql[go/request-forgery]
 	resp, err := gifHTTPClient.Do(req)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("download GIF: %w", err)
@@ -259,11 +261,38 @@ func validateKlipyMediaURL(rawURL string) (*url.URL, error) {
 	if parsed.Scheme != "https" {
 		return nil, errors.New("GIF URL must use HTTPS")
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host != "klipy.com" && !strings.HasSuffix(host, ".klipy.com") {
+	host, ok := allowlistedKlipyHost(parsed.Hostname())
+	if !ok {
 		return nil, errors.New("GIF URL host is not allowed")
 	}
-	return parsed, nil
+	// Rebuild from allowlisted host + parsed path so the outbound request is
+	// not the raw user string (breaks request-forgery taint on scheme/host).
+	safe := &url.URL{
+		Scheme:   "https",
+		Host:     host,
+		Path:     parsed.Path,
+		RawPath:  parsed.RawPath,
+		RawQuery: parsed.RawQuery,
+	}
+	if safe.Path == "" {
+		safe.Path = "/"
+	}
+	return safe, nil
+}
+
+// allowlistedKlipyHost returns a canonical host if it is klipy.com or a subdomain.
+func allowlistedKlipyHost(host string) (string, bool) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || strings.ContainsAny(host, " \t\r\n@:/") {
+		return "", false
+	}
+	if host == "klipy.com" {
+		return "klipy.com", true
+	}
+	if strings.HasSuffix(host, ".klipy.com") && len(host) > len(".klipy.com") {
+		return host, true
+	}
+	return "", false
 }
 
 func gifFilename(parsed *url.URL, mimeType string) string {

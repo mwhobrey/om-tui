@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/story"
@@ -26,7 +28,7 @@ func generateVizTool() mcp.Tool {
 		mcp.WithString("person1", mcp.Description("First person's display name (default: 'Max')")),
 		mcp.WithString("person2", mcp.Description("Second person's display name (default: matched name)")),
 		mcp.WithString("timezone", mcp.Description("Timezone for heatmap and dates (default: America/New_York)")),
-		mcp.WithString("password", mcp.Description("Password to protect the viz (will be SHA-256 hashed client-side). Empty = no gate.")),
+		mcp.WithString("password", mcp.Description("Password to protect the viz (PBKDF2-hashed client-side). Empty = no gate.")),
 		mcp.WithString("primary_color", mcp.Description("Primary CSS color for person2 (e.g. '#be123c')")),
 		mcp.WithString("secondary_color", mcp.Description("Secondary CSS color for person1 (e.g. '#d97706')")),
 		mcp.WithString("accent_color", mcp.Description("Accent CSS color (e.g. '#fbbf24')")),
@@ -168,13 +170,22 @@ func generateVizHandler(a *app.App, configured ...Options) server.ToolHandlerFun
 	}
 }
 
-// hashPassword returns the SHA-256 hex digest of a password, or empty if password is empty.
+// hashPassword returns a PBKDF2-SHA256 gate token for the offline HTML viz, or
+// empty if password is empty. Format: v1$<iterations>$<salt_hex>$<dk_hex>.
 func hashPassword(pw string) string {
 	if pw == "" {
 		return ""
 	}
-	h := sha256.Sum256([]byte(pw))
-	return hex.EncodeToString(h[:])
+	const iterations = 100_000
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		// Extremely unlikely; fall back to a deterministic salt so generation
+		// still succeeds rather than failing the whole viz export.
+		sum := sha256.Sum256([]byte("openmessage-viz-gate|" + pw))
+		salt = sum[:16]
+	}
+	dk := pbkdf2.Key([]byte(pw), salt, iterations, 32, sha256.New)
+	return fmt.Sprintf("v1$%d$%s$%s", iterations, hex.EncodeToString(salt), hex.EncodeToString(dk))
 }
 
 func joinNames(names []string) string {
