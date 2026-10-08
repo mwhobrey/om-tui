@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ const exportUsage = "usage: om-tui export <name|number|conversation_id> [--forma
 // with no --out the file goes to the export dir (see export.DefaultDir).
 func RunExport(logger zerolog.Logger, args ...string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "--") {
-		return fmt.Errorf(exportUsage)
+		return errors.New(exportUsage)
 	}
 	query, rest := args[0], args[1:]
 

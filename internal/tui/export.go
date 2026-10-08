@@ -112,10 +112,12 @@ func (m Model) runExport(args string) (tea.Model, tea.Cmd) {
 func (m Model) exportCmd(opts exportOpts, selected *localapi.Message) tea.Cmd {
 	client := m.session.Client
 	convID := m.activeID
-	conv := export.Conversation{ID: convID, Name: m.activeName}
+	conv := export.Conversation{ID: convID, Name: m.activeName, Participants: m.activeParticipants}
+	cached := false
 	for _, c := range m.paletteConvs {
 		if c.ConversationID == convID {
 			conv = export.ConversationFromLocal(c)
+			cached = true
 			break
 		}
 	}
@@ -123,6 +125,19 @@ func (m Model) exportCmd(opts exportOpts, selected *localapi.Message) tea.Cmd {
 		// Paging a long history can take a while; bound the whole export.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
+
+		// The palette cache loads asynchronously and may be empty; without it
+		// the platform/river/participants would silently drop out of the file.
+		if !cached {
+			if convs, err := client.ListConversations(ctx, 1000); err == nil {
+				for _, c := range convs {
+					if c.ConversationID == convID {
+						conv = export.ConversationFromLocal(c)
+						break
+					}
+				}
+			}
+		}
 
 		var (
 			rows   []export.Message

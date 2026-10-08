@@ -243,6 +243,12 @@ func WriteFile(path string, f Format, conv Conversation, r Range, msgs []Message
 	if err != nil {
 		return "", err
 	}
+	// OpenFile's mode only applies to files it creates; tighten a pre-existing
+	// file before any conversation data lands in it.
+	if err := out.Chmod(0o600); err != nil {
+		out.Close()
+		return "", err
+	}
 	if err := Write(out, f, conv, r, msgs); err != nil {
 		out.Close()
 		return "", err
@@ -311,7 +317,8 @@ func ParseBound(s string, endOfDay bool) (int64, error) {
 	}
 	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
 		if endOfDay {
-			t = t.Add(24*time.Hour - time.Millisecond)
+			// Calendar day, not 24h: DST days are 23 or 25 hours long.
+			t = t.AddDate(0, 0, 1).Add(-time.Millisecond)
 		}
 		return t.UnixMilli(), nil
 	}

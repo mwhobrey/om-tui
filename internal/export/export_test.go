@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata"
 
 	"gopkg.in/yaml.v3"
 )
@@ -101,4 +105,47 @@ func mustMS(t *testing.T, s string) int64 {
 		t.Fatal(err)
 	}
 	return ms
+}
+
+// A date-only --until must cover the whole local calendar day even when DST
+// makes that day 23 or 25 hours long.
+func TestParseBoundEndOfDayAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tz database: %v", err)
+	}
+	old := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = old })
+
+	for _, day := range []string{"2026-03-08", "2026-11-01", "2026-06-15"} { // spring-forward, fall-back, normal
+		end, err := ParseBound(day, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := time.UnixMilli(end).In(loc)
+		if got.Format("2006-01-02 15:04:05.000") != day+" 23:59:59.999" {
+			t.Fatalf("%s end of day = %s", day, got.Format(time.RFC3339Nano))
+		}
+	}
+}
+
+func TestWriteFileTightensExistingPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.json")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteFile(path, JSON, Conversation{ID: "c"}, Range{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return // Windows has no POSIX mode bits to assert on
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("mode = %o, want 600", perm)
+	}
 }
