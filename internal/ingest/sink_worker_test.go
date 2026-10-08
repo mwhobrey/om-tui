@@ -332,7 +332,10 @@ func TestI01WorkerStartupDrainsDurableFramesAfterCrash(t *testing.T) {
 		first, firstErr := i01GetMessage(secondMessages, "remote-i01-crash-one")
 		second, secondErr := i01GetMessage(secondMessages, "remote-i01-crash-two")
 		pending, pendingErr := secondMessages.Unprocessed(ctx)
-		return firstErr == nil && first.Body == "recovered remote-i01-crash-one" &&
+		// The Projected counter advances after the row is written, so a bare
+		// row check can race the counter read below; wait for it too.
+		projected := secondCounters.Snapshot(i01AccountID).Projected == 2
+		return projected && firstErr == nil && first.Body == "recovered remote-i01-crash-one" &&
 			secondErr == nil && second.Body == "recovered remote-i01-crash-two" &&
 			pendingErr == nil && len(pending) == 0
 	})
