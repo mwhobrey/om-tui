@@ -772,6 +772,64 @@ func (c *Client) ConversationMessages(ctx context.Context, conversationID string
 	return out, nil
 }
 
+// ConversationMessagesAfter pages a conversation oldest-first, returning up to
+// limit messages strictly after the (afterMS, afterID) cursor. afterID may be
+// empty; afterMS must be > 0 (the API treats 0 as "no cursor").
+func (c *Client) ConversationMessagesAfter(ctx context.Context, conversationID string, afterMS int64, afterID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/api/conversations/%s/messages?limit=%d&after=%d", conversationID, limit, afterMS)
+	if afterID != "" {
+		path += "&after_id=" + url.QueryEscape(afterID)
+	}
+	var out []Message
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Message{}
+	}
+	return out, nil
+}
+
+// ConversationMessagesBefore pages a conversation newest-first, returning up to
+// limit messages strictly older than the (beforeMS, beforeID) cursor.
+func (c *Client) ConversationMessagesBefore(ctx context.Context, conversationID string, beforeMS int64, beforeID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	path := fmt.Sprintf("/api/conversations/%s/messages?limit=%d&before=%d", conversationID, limit, beforeMS)
+	if beforeID != "" {
+		path += "&before_id=" + url.QueryEscape(beforeID)
+	}
+	var out []Message
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Message{}
+	}
+	return out, nil
+}
+
+// OlderPhoneResult is the outcome of asking the daemon to pull older history
+// for a Google Messages conversation from the phone into the local store.
+type OlderPhoneResult struct {
+	Fetched   int  `json:"fetched"`
+	Exhausted bool `json:"exhausted"`
+}
+
+// FetchOlderPhoneHistory asks the daemon to fetch messages older than beforeMS
+// for an SMS/RCS conversation from the phone. The messages land in the store;
+// read them back with ConversationMessagesBefore.
+func (c *Client) FetchOlderPhoneHistory(ctx context.Context, conversationID string, beforeMS int64) (OlderPhoneResult, error) {
+	path := fmt.Sprintf("/api/conversations/%s/older-phone?before=%d", conversationID, beforeMS)
+	var out OlderPhoneResult
+	err := c.postJSON(ctx, path, map[string]any{}, &out)
+	return out, err
+}
+
 func (c *Client) SlackThread(ctx context.Context, conversationID, rootMessageID string) ([]Message, error) {
 	path := fmt.Sprintf("/api/conversations/%s/slack-thread?root_id=%s", conversationID, url.QueryEscape(rootMessageID))
 	var out []Message

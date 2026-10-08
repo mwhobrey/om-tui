@@ -226,6 +226,47 @@ Under the data dir (see above):
 
 `action` is `send` or `open`. Quick send from the palette: `>msg contact::message text`.
 
+## Scrolling back through history
+
+A thread opens with the newest 100 messages. Press `Up` on the oldest loaded
+message (or `PgUp` / `Ctrl+U`) to load 100 more from the local store; the
+selection stays on the message you were on, and live refreshes keep what you
+scrolled in. Loading stops at 1000 messages in memory (use `>export` for more)
+and says "Start of history" when the store has nothing older. Slack channels
+keep their own `PgUp` fetch from Slack.
+
+History is read in two tiers. The local store comes first. On a Google Messages
+(SMS/RCS) thread, when the store has nothing older, the TUI asks the daemon to
+fetch older messages from your phone (`POST /api/conversations/<id>/older-phone`),
+which writes them to the store, then reads them back. The status line shows
+"Fetching older messages from your phone…" while that runs. The daemon remembers
+where it stopped per conversation, so each further scroll continues from there
+instead of re-walking from the newest message. It needs a connected Google
+Messages session and refuses while a deep backfill is running. WhatsApp and
+Signal threads only have the local store; `POST /api/backfill` still does a full
+phone sync.
+
+## Export
+
+Export one conversation (SMS/RCS thread, WhatsApp/Signal chat, Slack channel or
+DM) to JSON, YAML or CSV, optionally limited to a date/time window.
+
+- **TUI:** open the conversation, `Ctrl+K`, then
+  `>export [json|yaml|csv] [FROM..TO]`. Dates are `YYYY-MM-DD` or
+  `YYYY-MM-DDTHH:MM`; either side of `..` may be omitted; one bare date means
+  that whole day. Examples: `>export csv 2026-05-01..2026-05-31`,
+  `>export yaml 2026-05-10`, `>export` (JSON, full history).
+  `>export selected` exports just the highlighted message; `>export last 50`
+  exports the newest 50 (max 1000; combines with a date, e.g. `last 20 2026-05-10`).
+- **CLI:** `om-tui export <name|number|conversation_id> [--format json|yaml|csv]
+  [--since DATE] [--until DATE] [--out PATH|-]`. An ambiguous name lists the
+  candidates instead of guessing. `--out -` writes to stdout.
+
+Files land in `$OPENMESSAGES_EXPORT_DIR/exports` (default
+`~/Documents/OpenMessage/exports`) as `<name>_<platform>_<from>_<to>.<ext>`,
+mode 0600. JSON/YAML wrap the messages with conversation metadata; CSV is one
+row per message. Media is referenced by id, not embedded.
+
 ## Media
 
 Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[file]`, plus any caption text.

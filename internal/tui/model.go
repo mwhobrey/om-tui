@@ -133,6 +133,9 @@ type Model struct {
 	rivers              []localapi.River
 	messages            []localapi.Message
 	msgGeneration       uint64
+	olderLoading        bool // an older-history page is in flight
+	localExhausted      bool // the store has nothing older than messages[0]
+	phoneExhausted      bool // the phone has nothing older either (Google Messages only)
 	viewportWidth       int
 	composeHeight       int
 	drafts              map[string]string
@@ -402,6 +405,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.info = "Slack thread"
 		return m, nil
 
+	case olderMessagesMsg:
+		return m.handleOlderMessages(msg)
+
+	case phoneOlderMsg:
+		return m.handlePhoneOlder(msg)
+
+	case olderErrMsg:
+		return m.handleOlderErr(msg)
+
 	case olderSlackHistoryMsg:
 		if msg.conversationID != m.activeID || m.threadRootID != "" {
 			return m, nil
@@ -464,6 +476,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.info = "Opened " + filepath.Base(msg.path)
 		}
+		return m, nil
+
+	case exportDoneMsg:
+		m.err = ""
+		m.info = fmt.Sprintf("Exported %d message(s) to %s", msg.count, msg.path)
 		return m, nil
 
 	case reactDoneMsg:
@@ -844,6 +861,8 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
 		if m.selectedMsg > 0 {
 			m.selectedMsg--
+		} else {
+			return m.loadOlderHistory()
 		}
 		m.setThreadContent(m.renderActiveThread())
 		return m, nil
@@ -856,6 +875,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.info = "Loading older Slack history…"
 			return m, m.fetchOlderSlackHistoryCmd(m.activeID)
 		}
+		return m.loadOlderHistory()
 	case "ctrl+e", "e":
 		// Ctrl+E works from compose too; bare e is only reachable in thread focus.
 		return m.openReactPalette()
@@ -951,6 +971,9 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeRiverProvider() == "slack" && m.threadRootID == "" && m.activeID != "" {
 			m.info = "Loading older Slack history…"
 			return m, m.fetchOlderSlackHistoryCmd(m.activeID)
+		}
+		if m.activeID != "" && m.viewport.AtTop() {
+			return m.loadOlderHistory()
 		}
 	case "ctrl+r":
 		m.info = "Reconnecting…"
@@ -1203,6 +1226,9 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	m.activeName = name
 	m.activeParticipants = participants
 	m.messages = nil
+	m.olderLoading = false
+	m.localExhausted = false
+	m.phoneExhausted = false
 	m.threadRootID = ""
 	m.channelMessages = nil
 	m.selectedMsg = -1
@@ -1712,10 +1738,12 @@ func (m Model) activeSlackBadge() string {
 }
 
 func (m Model) refreshMessagesCmd(conversationID string, generation uint64) tea.Cmd {
+	// Re-fetch everything already scrolled into view, not just the newest page.
+	window := m.loadedWindow()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		msgs, err := m.session.Client.ConversationMessages(ctx, conversationID, 100)
+		msgs, err := m.session.Client.ConversationMessages(ctx, conversationID, window)
 		if err != nil {
 			return errMsg{err: err}
 		}

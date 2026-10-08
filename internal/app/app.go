@@ -152,6 +152,7 @@ type App struct {
 	gmClient                  GMClient
 	BackfillProgress          BackfillProgress
 	backfillRunning           atomic.Bool
+	older                     olderHistoryState
 	reconcileRunning          atomic.Bool
 	avatarSyncMu              sync.Mutex
 	avatarSyncOnce            sync.Once

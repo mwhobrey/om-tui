@@ -138,6 +138,9 @@ type APIOptions struct {
 	SendSlackText          func(conversationID, body, replyToID string) (*db.Message, error)
 	FetchSlackThread       func(conversationID, rootMessageID string) ([]*db.Message, error)
 	FetchOlderSlackHistory func(conversationID string, limit int) ([]*db.Message, error)
+	// FetchOlderGoogleHistory pulls messages older than beforeMS from the phone
+	// into the store (POST /api/conversations/{id}/older-phone).
+	FetchOlderGoogleHistory func(conversationID string, beforeMS int64, want int) (fetched int, exhausted bool, err error)
 	SlackStatus            func() any
 	ListRivers             func() (any, error)
 	CreateRiver            func(provider, displayName string) (any, error)
@@ -1216,6 +1219,37 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				return
 			}
 			writeJSON(w, mapSlackLiveMessagesToV2(opts, convID, msgs))
+			return
+		}
+		if action == "older-phone" {
+			if r.Method != http.MethodPost {
+				httpError(w, "method not allowed", 405)
+				return
+			}
+			if opts.FetchOlderGoogleHistory == nil {
+				httpError(w, "phone history fetch unavailable", 501)
+				return
+			}
+			beforeMS := queryInt64(r, "before", 0)
+			if beforeMS <= 0 {
+				httpError(w, "before (ms timestamp) is required", 400)
+				return
+			}
+			liveID, ok := resolveGoogleLiveID(opts, reads, convID)
+			if !ok {
+				httpError(w, "not a Google Messages conversation", 400)
+				return
+			}
+			fetched, exhausted, err := opts.FetchOlderGoogleHistory(liveID, beforeMS, queryIntClamped(r, "limit", 100, 500))
+			if err != nil {
+				markGoogleAuthExpired(err)
+				httpError(w, googleAPIErrorMessage("fetch older messages", err), 502)
+				return
+			}
+			if fetched > 0 {
+				publishMessages(convID)
+			}
+			writeJSON(w, map[string]any{"fetched": fetched, "exhausted": exhausted})
 			return
 		}
 		if action == "messages-around" {
