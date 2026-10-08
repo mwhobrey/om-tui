@@ -70,6 +70,17 @@ func allActions() []tuiAction {
 			},
 		},
 		{
+			ID:       "export",
+			Label:    "Export conversation",
+			Keys:     []string{">export [selected|last N|FROM..TO]"},
+			Keywords: []string{"export", "save", "json", "yaml", "csv", "backup", "download", "selected", "last"},
+			Group:    "global",
+			When:     func(m Model) bool { return !m.reactPalette && m.activeID != "" },
+			Run: func(m Model) (tea.Model, tea.Cmd) {
+				return m.runExport("")
+			},
+		},
+		{
 			ID:       "jump",
 			Label:    "Jump filter",
 			Keys:     []string{"/"},

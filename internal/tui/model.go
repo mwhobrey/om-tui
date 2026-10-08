@@ -466,6 +466,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case exportDoneMsg:
+		m.err = ""
+		m.info = fmt.Sprintf("Exported %d message(s) to %s", msg.count, msg.path)
+		return m, nil
+
 	case reactDoneMsg:
 		m.err = ""
 		if msg.action == "remove" {

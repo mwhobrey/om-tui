@@ -23,7 +23,7 @@ func main() {
 		With().Timestamp().Logger().Level(level)
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|backup|migrate|read|thread|threads|send|import|tui|status|chrome-cookie-host>")
+		fmt.Fprintln(os.Stderr, "Usage: om-tui <pair|serve|demo|backup|migrate|read|thread|threads|export|send|import|tui|status|chrome-cookie-host>")
 		fmt.Fprintln(os.Stderr, "  pair [--google|--google-file path]       - Pair with your phone via QR or Google account cookies")
 		fmt.Fprintln(os.Stderr, "  pair slack [--token xoxp-...] [--name N] - Pair a Slack workspace (river) via user token")
 		fmt.Fprintln(os.Stderr, "  serve [--demo] [--web|--no-web] [--api|--no-api] [--mcp-sse|--no-mcp-sse] [--mcp-stdio] - Start explicit web/API/MCP transports")
@@ -34,6 +34,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  read <query> [--limit N] [--phone X] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] - Search the local store")
 		fmt.Fprintln(os.Stderr, "  thread <name|number|conversation_id> [--limit N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] - Print a full conversation chronologically")
 		fmt.Fprintln(os.Stderr, "  threads [--limit N] [--json]             - List recent conversations (find an id/name for thread)")
+		fmt.Fprintln(os.Stderr, "  export <name|number|conversation_id> [--format json|yaml|csv] [--since DATE] [--until DATE] [--out PATH|-] - Export a conversation to a file")
 		fmt.Fprintln(os.Stderr, "  status [--json]                          - Show per-platform message counts and sync freshness")
 		fmt.Fprintln(os.Stderr, "  send <conversation_id> <msg> [--not-before-ms N] [--idempotency-key K] - Send text to an existing conversation")
 		fmt.Fprintln(os.Stderr, "  send-group <phone1,phone2,...> <msg>       - Send group message (MMS)")
@@ -76,6 +77,8 @@ func main() {
 		err = cmd.RunThread(logger, os.Args[2:]...)
 	case "threads":
 		err = cmd.RunThreads(logger, os.Args[2:]...)
+	case "export":
+		err = cmd.RunExport(logger, os.Args[2:]...)
 	case "status":
 		err = cmd.RunStatus(logger, os.Args[2:]...)
 	case "send":

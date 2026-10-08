@@ -104,6 +104,7 @@ startup repair writes to the shared live store) and start no live transports:
 om-tui read "<query>" [--limit N] [--phone NUMBER] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
 om-tui search ...                                            # alias for read
 om-tui status [--json]                                       # per-platform counts + sync freshness
+om-tui export <conversation> [--format json|yaml|csv] [--since D] [--until D] [--out PATH|-]  # one thread/channel to a file
 ```
 
 `status` is the fast way to check coverage before trusting a search. Date

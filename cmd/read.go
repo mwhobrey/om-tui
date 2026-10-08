@@ -14,6 +14,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/export"
 	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/v2read"
@@ -170,20 +171,5 @@ func firstNonEmpty(vals ...string) string {
 // date resolves to 23:59:59.999 so that "--until 2026-05-28" includes all of
 // that day rather than stopping at midnight.
 func parseDayBound(s string, endOfDay bool) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
-	}
-	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
-		if endOfDay {
-			t = t.Add(24*time.Hour - time.Millisecond)
-		}
-		return t.UnixMilli(), nil
-	}
-	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02T15:04", time.RFC3339} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t.UnixMilli(), nil
-		}
-	}
-	return 0, fmt.Errorf("invalid date %q (use YYYY-MM-DD)", s)
+	return export.ParseBound(s, endOfDay)
 }

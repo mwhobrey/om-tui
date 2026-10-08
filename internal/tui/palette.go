@@ -628,6 +628,9 @@ func (m Model) runPaletteAction(item paletteItem) (tea.Model, tea.Cmd) {
 		if item.ActionID == "quick-msg" {
 			return m.runQuickMsg(item.Args)
 		}
+		if item.ActionID == "export" {
+			return m.runExport(item.Args)
+		}
 		for _, a := range allActions() {
 			if a.ID == item.ActionID && a.Run != nil {
 				return a.Run(m)

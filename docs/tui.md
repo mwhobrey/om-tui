@@ -226,6 +226,27 @@ Under the data dir (see above):
 
 `action` is `send` or `open`. Quick send from the palette: `>msg contact::message text`.
 
+## Export
+
+Export one conversation (SMS/RCS thread, WhatsApp/Signal chat, Slack channel or
+DM) to JSON, YAML or CSV, optionally limited to a date/time window.
+
+- **TUI:** open the conversation, `Ctrl+K`, then
+  `>export [json|yaml|csv] [FROM..TO]`. Dates are `YYYY-MM-DD` or
+  `YYYY-MM-DDTHH:MM`; either side of `..` may be omitted; one bare date means
+  that whole day. Examples: `>export csv 2026-05-01..2026-05-31`,
+  `>export yaml 2026-05-10`, `>export` (JSON, full history).
+  `>export selected` exports just the highlighted message; `>export last 50`
+  exports the newest 50 (max 1000; combines with a date, e.g. `last 20 2026-05-10`).
+- **CLI:** `om-tui export <name|number|conversation_id> [--format json|yaml|csv]
+  [--since DATE] [--until DATE] [--out PATH|-]`. An ambiguous name lists the
+  candidates instead of guessing. `--out -` writes to stdout.
+
+Files land in `$OPENMESSAGES_EXPORT_DIR/exports` (default
+`~/Documents/OpenMessage/exports`) as `<name>_<platform>_<from>_<to>.<ext>`,
+mode 0600. JSON/YAML wrap the messages with conversation metadata; CSV is one
+row per message. Media is referenced by id, not embedded.
+
 ## Media
 
 Attachments render as typed placeholders: `[image]`, `[video]`, `[audio]`, or `[file]`, plus any caption text.
