@@ -839,16 +839,16 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 					}
 					return reconnectGoogle()
 				},
-				Unpair: unpairGoogle,
-				WhatsAppStatus:        func() any { return a.WhatsAppStatus() },
-				ConnectWhatsApp:       connectWhatsApp,
-				PairWhatsAppPhone:     pairWhatsAppPhone,
-				UnpairWhatsApp:        unpairWhatsApp,
-				SignalStatus:          func() any { return a.SignalStatus() },
-				ConnectSignal:         connectSignal,
-				ReplaySignalRecovery:  a.ReplaySignalRecoveryQueue,
-				UnpairSignal:          unpairSignal,
-				LeaveWhatsAppGroup:    a.LeaveWhatsAppGroup,
+				Unpair:               unpairGoogle,
+				WhatsAppStatus:       func() any { return a.WhatsAppStatus() },
+				ConnectWhatsApp:      connectWhatsApp,
+				PairWhatsAppPhone:    pairWhatsAppPhone,
+				UnpairWhatsApp:       unpairWhatsApp,
+				SignalStatus:         func() any { return a.SignalStatus() },
+				ConnectSignal:        connectSignal,
+				ReplaySignalRecovery: a.ReplaySignalRecoveryQueue,
+				UnpairSignal:         unpairSignal,
+				LeaveWhatsAppGroup:   a.LeaveWhatsAppGroup,
 				WhatsAppQRCode: func() (any, error) {
 					return a.WhatsAppQRCode()
 				},
@@ -864,7 +864,11 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				SendSlackText:          a.SendSlackText,
 				FetchSlackThread:       a.FetchSlackThread,
 				FetchOlderSlackHistory: a.FetchOlderSlackHistory,
-				SlackStatus:            func() any { return a.SlackStatusSnapshot() },
+				FetchOlderGoogleHistory: func(conversationID string, beforeMS int64, want int) (int, bool, error) {
+					res, err := a.FetchOlderGoogleHistory(conversationID, beforeMS, want)
+					return res.Fetched, res.Exhausted, err
+				},
+				SlackStatus: func() any { return a.SlackStatusSnapshot() },
 				ListRivers: func() (any, error) {
 					return a.ListRiversWithUnread()
 				},
@@ -1267,10 +1271,10 @@ var googleCookieBridge = cookiebridge.New()
 // Bridge cookies that Google still rejects must not keep canRefresh true
 // forever — that traps the UI on "refreshing via Chrome…" while repair loops.
 var (
-	googleBridgeCookieMu      sync.Mutex
-	googleBridgeLastCookieFP  string
+	googleBridgeCookieMu       sync.Mutex
+	googleBridgeLastCookieFP   string
 	googleBridgeSameCookieHits int
-	googleBridgeExhausted     atomic.Bool
+	googleBridgeExhausted      atomic.Bool
 )
 
 func clearGoogleBridgeExhaustion() {

@@ -19,6 +19,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/media"
 	"github.com/maxghenis/openmessage/internal/messaging"
+	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/river"
 	"github.com/maxghenis/openmessage/internal/storage/blob"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
@@ -619,6 +620,33 @@ func resolveSlackLiveIDs(opts APIOptions, conversationID, rootMessageID string) 
 		return liveConversationID, rootMessageID
 	}
 	return liveConversationID, fmt.Sprintf("slack:%s:%s", conversation.RemoteConversationID, remoteID)
+}
+
+// resolveGoogleLiveID maps the conversation id a client uses to the Google
+// Messages conversation id the phone knows it by. Under V2 that is the
+// conversation's remote id; under the legacy store the ids are the same. It
+// reports false for anything that is not a Google Messages conversation.
+func resolveGoogleLiveID(opts APIOptions, reads readsource.ReadSource, conversationID string) (string, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", false
+	}
+	if opts.V2Primary && opts.V2 != nil && opts.V2.V2Store != nil {
+		conversation, err := opts.V2.V2Store.GetConversation(conversationID)
+		if err != nil || !strings.HasPrefix(conversation.AccountID, "google-") {
+			return "", false
+		}
+		remote := strings.TrimSpace(conversation.RemoteConversationID)
+		return remote, remote != ""
+	}
+	if reads == nil {
+		return "", false
+	}
+	conv, err := reads.GetConversation(conversationID)
+	if err != nil || conv == nil || conv.SourcePlatform != "sms" {
+		return "", false
+	}
+	return conversationID, true
 }
 
 func slackMessageTS(messageID string) string {

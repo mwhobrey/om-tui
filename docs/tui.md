@@ -226,6 +226,26 @@ Under the data dir (see above):
 
 `action` is `send` or `open`. Quick send from the palette: `>msg contact::message text`.
 
+## Scrolling back through history
+
+A thread opens with the newest 100 messages. Press `Up` on the oldest loaded
+message (or `PgUp` / `Ctrl+U`) to load 100 more from the local store; the
+selection stays on the message you were on, and live refreshes keep what you
+scrolled in. Loading stops at 1000 messages in memory (use `>export` for more)
+and says "Start of history" when the store has nothing older. Slack channels
+keep their own `PgUp` fetch from Slack.
+
+History is read in two tiers. The local store comes first. On a Google Messages
+(SMS/RCS) thread, when the store has nothing older, the TUI asks the daemon to
+fetch older messages from your phone (`POST /api/conversations/<id>/older-phone`),
+which writes them to the store, then reads them back. The status line shows
+"Fetching older messages from your phone…" while that runs. The daemon remembers
+where it stopped per conversation, so each further scroll continues from there
+instead of re-walking from the newest message. It needs a connected Google
+Messages session and refuses while a deep backfill is running. WhatsApp and
+Signal threads only have the local store; `POST /api/backfill` still does a full
+phone sync.
+
 ## Export
 
 Export one conversation (SMS/RCS thread, WhatsApp/Signal chat, Slack channel or
