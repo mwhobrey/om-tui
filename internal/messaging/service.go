@@ -78,6 +78,11 @@ type MessageService struct {
 	maxMediaBytes int64
 	batchLimit    int
 
+	transportTimeout       time.Duration
+	mediaTransportTimeout  time.Duration
+	transportShutdownGrace time.Duration
+	transport              transportCalls
+
 	wake chan struct{}
 
 	changeMu sync.Mutex
@@ -128,8 +133,13 @@ func NewMessageService(
 		maxPollDelay:  defaultMaxPollDelay,
 		maxMediaBytes: DefaultMaxMediaBytes,
 		batchLimit:    defaultBatchLimit,
-		wake:          make(chan struct{}, 1),
-		changed:       make(chan struct{}),
+
+		transportTimeout:       defaultTransportCallTimeout,
+		mediaTransportTimeout:  defaultMediaTransportCallTimeout,
+		transportShutdownGrace: defaultTransportShutdownGrace,
+
+		wake:    make(chan struct{}, 1),
+		changed: make(chan struct{}),
 	}, nil
 }
 
