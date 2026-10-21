@@ -3534,49 +3534,55 @@ func decodedSignalAccounts(raw []byte) []string {
 		seen[account] = struct{}{}
 		accounts = append(accounts, account)
 	}
-	tryDecode := func(payload []byte) {
-		payload = bytes.TrimSpace(payload)
-		if len(payload) == 0 {
-			return
-		}
+	// The buffer comes from CombinedOutput, so signal-cli's stderr is mixed in
+	// with its --output=json payload. A whole-buffer decode is therefore only
+	// the happy path: any WARN line ahead of the JSON makes it fail. Try the
+	// whole buffer first (cheapest, and correct when signal-cli was quiet),
+	// then each line on its own -- the same noise-tolerant convention
+	// decodeSignalSendJSON already uses on the send path.
+	for _, chunk := range append([][]byte{raw}, jsonCandidateLines(raw)...) {
 		var list []signalAccount
-		if err := json.Unmarshal(payload, &list); err == nil {
+		if err := json.Unmarshal(chunk, &list); err == nil {
 			for _, item := range list {
 				appendAccount(item.Number)
 			}
 		}
+
 		var wrapped struct {
 			Accounts []signalAccount `json:"accounts"`
 		}
-		if err := json.Unmarshal(payload, &wrapped); err == nil {
+		if err := json.Unmarshal(chunk, &wrapped); err == nil {
 			for _, item := range wrapped.Accounts {
 				appendAccount(item.Number)
 			}
 		}
+		if len(accounts) > 0 {
+			break
+		}
 	}
 
-	tryDecode(raw)
-	if len(accounts) > 0 {
-		return accounts
-	}
-	// signal-cli 0.14.8 listAccounts often exits 1 with an INFO log glued
-	// onto the JSON array: `INFO AccountHelper - …: [{"number":"+1…"}]`.
-	s := string(raw)
-	for _, cut := range []byte{'[', '{'} {
-		if i := strings.IndexByte(s, cut); i > 0 {
-			tryDecode([]byte(s[i:]))
-			if len(accounts) > 0 {
-				return accounts
-			}
-		}
-	}
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, "{") {
-			tryDecode([]byte(line))
-		}
-	}
 	return accounts
+}
+
+// jsonCandidateLines returns the lines of raw that could be a JSON array or
+// object, so a decoder can retry them individually when the whole buffer is
+// not valid JSON. signal-cli prints one JSON document per line, so a line is
+// the right unit.
+func jsonCandidateLines(raw []byte) [][]byte {
+	var out [][]byte
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		// Also support same-line prefixes like `INFO: [{"number":...}]`
+		if i := bytes.IndexAny(line, "[{"); i >= 0 {
+			out = append(out, append([]byte(nil), line[i:]...))
+		}
+	}
+	return out
 }
 
 func updateStoredReactions(existingJSON, actorID, emoji string) (string, bool, error) {
