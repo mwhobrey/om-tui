@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
@@ -199,6 +200,19 @@ type MediaStream struct {
 	MIME     string
 }
 
+// ErrMediaGone marks a DownloadMedia failure the transport cannot recover
+// from by retrying: it no longer holds the attachment's bytes and has nothing
+// it could fetch them with. Adapters wrap it (errors.Is must match) instead
+// of reporting an OpError class, so retry and lifecycle policy never see it.
+var ErrMediaGone = errors.New("bridge: the transport no longer has this attachment")
+
+// ErrMediaNotReady marks a DownloadMedia call made before the transport has
+// told this app where the attachment's bytes are: the message arrived, but
+// the reference it carried names no media yet. A later update of the same
+// message refreshes the pending attachment's reference, so asking again can
+// succeed. Adapters wrap it (errors.Is must match) instead of reporting an
+// OpError class: nothing failed, and no lifecycle policy should react.
+var ErrMediaNotReady = errors.New("bridge: the transport has not said where this attachment's bytes are yet")
 type MediaDownloader interface {
 	DownloadMedia(ctx context.Context, accountID string, ref MediaRef) (MediaStream, error)
 }
