@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -20,6 +21,29 @@ import (
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/web"
 )
+
+// syncBuffer is a bytes.Buffer that is safe to share with the goroutines
+// RunServe's daemon shape leaves running after it returns (legacy sync loops,
+// the scheduler): they keep logging while the test reads the output, which
+// the race detector otherwise reports against whatever test runs next.
+// zerolog.SyncWriter only serializes writers, so it would not protect the
+// test's String read (same helper as internal/signallive's gate_test.go).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // TestServeOptionsTransportMatrix pins which serve shapes may own live
 // platform connections. The MCP-stdio-only shape is the per-Claude-session
@@ -112,8 +136,8 @@ func TestRunServeMCPStdioStartsWhileInstanceLockHeld(t *testing.T) {
 	}
 	defer lock.Close()
 
-	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+	var logs syncBuffer
+	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio) with lock held: %v\n%s", err, logs.String())
 	}
 	if !strings.Contains(logs.String(), "MCP client mode") {
@@ -147,8 +171,8 @@ func TestRunServeMCPStdioStartsZeroTransportSupervisors(t *testing.T) {
 	dataDir := t.TempDir()
 	setClientModeTestEnv(t, dataDir)
 
-	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+	var logs syncBuffer
+	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 
@@ -178,8 +202,8 @@ func TestRunServeMCPStdioStartsZeroTransportSupervisors(t *testing.T) {
 	// above against silently passing because the fixtures changed.
 	daemonDataDir := t.TempDir()
 	setClientModeTestEnv(t, daemonDataDir)
-	var daemonLogs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&daemonLogs)), "--mcp-stdio", "--transports"); err != nil {
+	var daemonLogs syncBuffer
+	if err := RunServe(zerolog.New(&daemonLogs), "--mcp-stdio", "--transports"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio --transports): %v\n%s", err, daemonLogs.String())
 	}
 	if _, err := os.Stat(filepath.Join(daemonDataDir, "whatsapp-session.db")); err != nil {
@@ -229,8 +253,8 @@ func TestRunServeMCPClientAdoptsDaemonTruth(t *testing.T) {
 	setClientModeTestEnv(t, dataDir)
 	t.Setenv("OPENMESSAGES_PORT", daemonURL.Port())
 
-	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+	var logs syncBuffer
+	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	logOutput := logs.String()
@@ -276,8 +300,8 @@ func TestRunServeMCPClientAdoptsDaemonDataDir(t *testing.T) {
 		t.Fatalf("unset data dir: %v", err)
 	}
 
-	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+	var logs syncBuffer
+	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	logOutput := logs.String()
@@ -351,8 +375,8 @@ func TestRunServeMCPClientDoesNotRepairStore(t *testing.T) {
 	setClientModeTestEnv(t, dataDir)
 	seedLegacyReactionPlaceholder(t, dataDir)
 
-	var logs bytes.Buffer
-	if err := RunServe(zerolog.New(zerolog.SyncWriter(&logs)), "--mcp-stdio"); err != nil {
+	var logs syncBuffer
+	if err := RunServe(zerolog.New(&logs), "--mcp-stdio"); err != nil {
 		t.Fatalf("RunServe(--mcp-stdio): %v\n%s", err, logs.String())
 	}
 	if !strings.Contains(logs.String(), "MCP client mode") {
