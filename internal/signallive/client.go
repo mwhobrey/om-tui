@@ -117,6 +117,18 @@ func (v signalCLIVersion) String() string {
 	return fmt.Sprintf("%d.%d.%d", v.major, v.minor, v.patch)
 }
 
+// receiveOutputHasEnvelopes reports whether a receive call's output holds any
+// line processReceiveLine would treat as an envelope (it skips everything that
+// does not start with '{', such as signal-cli's log lines).
+func receiveOutputHasEnvelopes(output []byte) bool {
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		if line = bytes.TrimSpace(line); len(line) > 0 && line[0] == '{' {
+			return true
+		}
+	}
+	return false
+}
+
 func isSignalIdleReceiveTimeout(err error, timedOut bool, output []byte) bool {
 	if len(bytes.TrimSpace(output)) != 0 {
 		return false
@@ -126,6 +138,11 @@ func isSignalIdleReceiveTimeout(err error, timedOut bool, output []byte) bool {
 
 var (
 	now = time.Now
+
+	// receiveCallDeadline bounds one `signal-cli receive` call. signal-cli's
+	// own --timeout restarts after every envelope, so a call that is still
+	// delivering can run into it. Swapped by tests to reach it quickly.
+	receiveCallDeadline = time.Duration(receiveTimeoutSeconds+3) * time.Second
 
 	// accountProbeRetryDelays paces the in-generation listAccounts retries: a
 	// probe that races signal-cli's own account bootstrap at boot (observed
@@ -1835,23 +1852,41 @@ func (b *Bridge) runReceiveLoop(
 
 		b.maybeSweepTmp()
 
-		callCtx, callCancel := context.WithTimeout(ctx, time.Duration(receiveTimeoutSeconds+3)*time.Second)
 		b.commandMu.Lock()
+		callCtx, callCancel := context.WithTimeout(ctx, receiveCallDeadline)
 		output, err := runSignalCLI(callCtx, b.configDir, "-a", probedAccount, "--output", "json", "receive", "--timeout", strconv.Itoa(receiveTimeoutSeconds), "--max-messages", strconv.Itoa(receiveMaxMessages))
 		b.commandMu.Unlock()
 		timedOut := errors.Is(callCtx.Err(), context.DeadlineExceeded)
 		callCancel()
-		if ctx.Err() != nil {
+		stopped := ctx.Err() != nil
+		// signal-cli acknowledges each envelope to Signal's server as it
+		// prints it, so a call that was stopped, hit its deadline or exited
+		// non-zero can still hold messages the server will never deliver to
+		// this device again. Keep them before deciding what the call's
+		// outcome means; the success path below handles its own output.
+		delivered := receiveOutputHasEnvelopes(output)
+		if delivered && (err != nil || stopped) {
+			if handleErr := b.handleReceiveOutput(probedAccount, output); handleErr != nil {
+				b.logger.Debug().Err(handleErr).Msg("Failed to process Signal receive payload")
+			}
+		}
+		if stopped {
 			continue
 		}
 		if err != nil {
-			if isSignalIdleReceiveTimeout(err, timedOut, output) {
+			// A deadline hit while envelopes were still arriving is a long
+			// batch, not a broken connection.
+			if isSignalIdleReceiveTimeout(err, timedOut, output) || (timedOut && delivered) {
 				consecutiveFailures = 0
 				consecutivePoisonFailures = 0
 				consecutiveAccountInvalid = 0
 				lastPoisonFingerprint = ""
 				if run != nil {
-					run.beat("receive_idle")
+					if delivered {
+						run.beat("receive_batch")
+					} else {
+						run.beat("receive_idle")
+					}
 				}
 				continue
 			}
@@ -3534,49 +3569,55 @@ func decodedSignalAccounts(raw []byte) []string {
 		seen[account] = struct{}{}
 		accounts = append(accounts, account)
 	}
-	tryDecode := func(payload []byte) {
-		payload = bytes.TrimSpace(payload)
-		if len(payload) == 0 {
-			return
-		}
+	// The buffer comes from CombinedOutput, so signal-cli's stderr is mixed in
+	// with its --output=json payload. A whole-buffer decode is therefore only
+	// the happy path: any WARN line ahead of the JSON makes it fail. Try the
+	// whole buffer first (cheapest, and correct when signal-cli was quiet),
+	// then each line on its own -- the same noise-tolerant convention
+	// decodeSignalSendJSON already uses on the send path.
+	for _, chunk := range append([][]byte{raw}, jsonCandidateLines(raw)...) {
 		var list []signalAccount
-		if err := json.Unmarshal(payload, &list); err == nil {
+		if err := json.Unmarshal(chunk, &list); err == nil {
 			for _, item := range list {
 				appendAccount(item.Number)
 			}
 		}
+
 		var wrapped struct {
 			Accounts []signalAccount `json:"accounts"`
 		}
-		if err := json.Unmarshal(payload, &wrapped); err == nil {
+		if err := json.Unmarshal(chunk, &wrapped); err == nil {
 			for _, item := range wrapped.Accounts {
 				appendAccount(item.Number)
 			}
 		}
+		if len(accounts) > 0 {
+			break
+		}
 	}
 
-	tryDecode(raw)
-	if len(accounts) > 0 {
-		return accounts
-	}
-	// signal-cli 0.14.8 listAccounts often exits 1 with an INFO log glued
-	// onto the JSON array: `INFO AccountHelper - …: [{"number":"+1…"}]`.
-	s := string(raw)
-	for _, cut := range []byte{'[', '{'} {
-		if i := strings.IndexByte(s, cut); i > 0 {
-			tryDecode([]byte(s[i:]))
-			if len(accounts) > 0 {
-				return accounts
-			}
-		}
-	}
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, "{") {
-			tryDecode([]byte(line))
-		}
-	}
 	return accounts
+}
+
+// jsonCandidateLines returns the lines of raw that could be a JSON array or
+// object, so a decoder can retry them individually when the whole buffer is
+// not valid JSON. signal-cli prints one JSON document per line, so a line is
+// the right unit.
+func jsonCandidateLines(raw []byte) [][]byte {
+	var out [][]byte
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		// Also support same-line prefixes like `INFO: [{"number":...}]`
+		if i := bytes.IndexAny(line, "[{"); i >= 0 {
+			out = append(out, append([]byte(nil), line[i:]...))
+		}
+	}
+	return out
 }
 
 func updateStoredReactions(existingJSON, actorID, emoji string) (string, bool, error) {
