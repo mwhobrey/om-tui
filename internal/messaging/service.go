@@ -82,6 +82,8 @@ type MessageService struct {
 	mediaTransportTimeout  time.Duration
 	transportShutdownGrace time.Duration
 	transport              transportCalls
+	passes                 dispatchPasses
+	leaseFailures          dispatchLeaseFailures
 
 	wake chan struct{}
 

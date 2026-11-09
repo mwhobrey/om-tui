@@ -19,36 +19,34 @@ func (s *MessageService) Run(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("run message service: context is nil")
 	}
-	recovered, err := s.outbox.RecoverExpiredLeases(ctx, s.clock.Now())
-	if err != nil {
-		// Cancellation mid-query surfaces as a driver interrupt, not
-		// context.Canceled, so a shutdown race would read as a startup fault.
-		// As in DispatchDue's lease path, surface the cancellation itself.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		return fmt.Errorf("run message service: recover expired leases: %w", err)
-	}
-	if recovered.NotDispatched > 0 || recovered.Uncertain > 0 {
-		s.signalChange()
-	}
-
+	var backoff time.Duration
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := s.reconcileStoreFailedDue(ctx, s.batchLimit); err != nil {
+		if err := s.dispatchPass(ctx); err != nil {
+			// Cancellation mid-query surfaces as a driver interrupt, not
+			// context.Canceled, so a shutdown race would read as a failed
+			// pass. As in DispatchDue's lease path, surface the cancellation
+			// itself.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
-			return fmt.Errorf("run message service: reconcile store-failed deliveries: %w", err)
-		}
-		if _, err := s.DispatchDue(ctx, s.batchLimit); err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
+			backoff = nextPassBackoff(backoff, s.pollDelay, s.maxPollDelay)
+			s.passes.fail(fmt.Errorf("run message service: %w", err), s.clock.Now(), backoff)
+			// Only time ends the backoff: a wake from a new submission would
+			// turn a storage fault that persists into a tight retry loop.
+			timer := s.clock.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C():
 			}
-			return fmt.Errorf("run message service: %w", err)
+			continue
 		}
+		backoff = 0
+		s.passes.succeed()
 
 		timer := s.clock.NewTimer(s.nextPollDelay(ctx))
 		select {
@@ -62,9 +60,54 @@ func (s *MessageService) Run(ctx context.Context) error {
 	}
 }
 
+// dispatchPass is one round of Run. It recovers expired leases on every pass,
+// not only at startup, so a lease that a failed pass or a crashed process left
+// behind is freed once it expires. Recovery never causes a resend: passes run
+// one at a time, a pass stops waiting on a call past its bound and marks its
+// intent uncertain, and recovery requeues only a lease whose transport call
+// never started (MarkTransportCalled commits before every call); a lease whose
+// call started becomes uncertain.
+func (s *MessageService) dispatchPass(ctx context.Context) error {
+	recovered, err := s.outbox.RecoverExpiredLeases(ctx, s.clock.Now())
+	if err != nil {
+		return fmt.Errorf("recover expired leases: %w", err)
+	}
+	if recovered.NotDispatched > 0 || recovered.Uncertain > 0 {
+		s.signalChange()
+	}
+	if _, err := s.reconcileStoreFailedDue(ctx, s.batchLimit); err != nil {
+		return fmt.Errorf("reconcile store-failed deliveries: %w", err)
+	}
+	if _, err := s.DispatchDue(ctx, s.batchLimit); err != nil {
+		return err
+	}
+	return nil
+}
+
+// nextPassBackoff is how long Run waits after a failed pass: the shortest
+// poll delay after the first failure, doubling with each failure in a row up
+// to the longest. A zero or negative delay falls back to the production
+// defaults.
+func nextPassBackoff(previous, shortest, longest time.Duration) time.Duration {
+	if shortest <= 0 {
+		shortest = defaultPollDelay
+	}
+	longest = max(longest, shortest)
+	if previous < shortest {
+		return shortest
+	}
+	return min(previous*2, longest)
+}
+
 // DispatchDue claims and synchronously processes at most limit due intents.
 // Transport failures become durable states; only local state-machine failures
 // are returned.
+//
+// A due intent whose lease fails on its own row does not hold the others:
+// LeaseDueBatch sets it aside and leases the rows after it, and DispatchDue
+// records it (DispatchHealth and the OnLeaseFailure hook). A row the store
+// could not set aside either stays due, so DispatchDue sends the rest and then
+// returns an error naming it, and Run backs off before it meets that row again.
 func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error) {
 	if ctx == nil {
 		return 0, fmt.Errorf("dispatch due messages: context is nil")
@@ -72,7 +115,7 @@ func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error
 	if limit <= 0 {
 		return 0, fmt.Errorf("dispatch due messages: limit must be positive")
 	}
-	leases, err := s.outbox.LeaseDue(ctx, sqlite.LeaseRequest{
+	batch, err := s.outbox.LeaseDueBatch(ctx, sqlite.LeaseRequest{
 		Owner:    workerOwner,
 		Now:      s.clock.Now(),
 		Duration: s.leaseTime,
@@ -88,11 +131,13 @@ func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error
 		}
 		return 0, fmt.Errorf("lease due messages: %w", err)
 	}
+	stuck := s.recordFailedLeases(batch.Failed)
 
+	leases := batch.Leases
 	processed := 0
 	for index, lease := range leases {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return processed, errors.Join(ctxErr, s.releaseUntouched(ctx, leases[index:]))
+			return processed, errors.Join(ctxErr, s.releaseUntouched(ctx, leases[index:]), stuck)
 		}
 		if lease.LeaseExpiresAtMS != nil && *lease.LeaseExpiresAtMS <= s.clock.Now().UnixMilli() {
 			mutationCtx, cancel := s.storageMutationContext(ctx)
@@ -102,7 +147,7 @@ func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error
 				s.signalChange()
 			}
 			if recoverErr != nil {
-				return processed, fmt.Errorf("recover leases expired during dispatch: %w", recoverErr)
+				return processed, errors.Join(fmt.Errorf("recover leases expired during dispatch: %w", recoverErr), stuck)
 			}
 			break
 		}
@@ -123,11 +168,40 @@ func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error
 			))
 		}
 		if dispatchErr != nil {
-			return processed, errors.Join(dispatchErr, s.releaseUntouched(ctx, leases[index+1:]))
+			return processed, errors.Join(dispatchErr, s.releaseUntouched(ctx, leases[index+1:]), stuck)
 		}
 		processed++
 	}
-	return processed, nil
+	return processed, stuck
+}
+
+// recordFailedLeases records each due row whose lease failed on its own row
+// and returns an error naming the rows the store could not set aside either.
+func (s *MessageService) recordFailedLeases(failed []sqlite.LeaseFailure) error {
+	if len(failed) == 0 {
+		return nil
+	}
+	now := s.clock.Now()
+	var stuck []error
+	setAside := false
+	for _, failure := range failed {
+		s.leaseFailures.fail(failure, now)
+		if failure.SetAsideErr != nil {
+			stuck = append(stuck, fmt.Errorf(
+				"could neither lease outbox item %q (%w) nor set it aside (%w)",
+				failure.OutboxID, failure.Err, failure.SetAsideErr,
+			))
+			continue
+		}
+		setAside = true
+	}
+	if setAside {
+		s.signalChange()
+	}
+	if len(stuck) == 0 {
+		return nil
+	}
+	return fmt.Errorf("lease due messages: %w", errors.Join(stuck...))
 }
 
 func (s *MessageService) dispatchTextLease(ctx context.Context, outboxLease sqlite.Lease) error {

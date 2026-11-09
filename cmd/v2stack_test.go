@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -813,7 +814,9 @@ func assertPrivateDirectory(t *testing.T, path string) {
 	if !info.IsDir() {
 		t.Fatalf("%q is not a directory", path)
 	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("mode for %q = %#o, want 0700", path, got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("mode for %q = %#o, want 0700", path, got)
+		}
 	}
 }

@@ -308,7 +308,8 @@ func TestRunServeMCPClientAdoptsDaemonDataDir(t *testing.T) {
 	if !strings.Contains(logOutput, "adopted the running app's data directory") {
 		t.Fatalf("data dir adoption did not happen:\n%s", logOutput)
 	}
-	if !strings.Contains(logOutput, daemonDataDir) {
+	escapedDaemonDataDir := strings.ReplaceAll(daemonDataDir, `\`, `\\`)
+	if !strings.Contains(logOutput, daemonDataDir) && !strings.Contains(logOutput, escapedDaemonDataDir) {
 		t.Fatalf("adopted dir was not the daemon's:\n%s", logOutput)
 	}
 	// The adopted directory now holds the client's read store.
