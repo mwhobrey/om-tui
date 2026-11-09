@@ -169,3 +169,18 @@ func TestReactStaysOnLegacySendersUntilV2IsPrimary(t *testing.T) {
 		t.Fatalf("a legacy-primary reaction reached the outbox: %+v, %v", pending, err)
 	}
 }
+
+// A reaction refused because the phone's thread now names other people says so,
+// rather than reading as a platform refusal.
+func TestReactOutcomeSaysAMovedThreadSentNothing(t *testing.T) {
+	status, body := reactOutcome(messaging.Delivery{
+		OutboxID: "outbox-1", State: messaging.OutboxRejected, ErrorClass: "recipient_mismatch",
+	})
+	if status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", status)
+	}
+	if message, _ := body["error"].(string); !strings.Contains(message, "now names other people") ||
+		!strings.Contains(message, "sent nothing") {
+		t.Fatalf("error message = %q, want explanation of recipient mismatch", message)
+	}
+}

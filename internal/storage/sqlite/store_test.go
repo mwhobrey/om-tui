@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +24,11 @@ type ledgerRow struct {
 }
 
 func TestOpenInitializesBlankDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "store ? #.sqlite3")
+	filename := "store ? #.sqlite3"
+	if runtime.GOOS == "windows" {
+		filename = "store #.sqlite3"
+	}
+	path := filepath.Join(t.TempDir(), filename)
 	store, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open(): %v", err)
@@ -122,7 +127,7 @@ func TestOpenInitializesBlankDatabase(t *testing.T) {
 	if ledger.name != "storage_shell" {
 		t.Errorf("ledger name = %q, want storage_shell", ledger.name)
 	}
-	sum := sha256.Sum256([]byte(migration0001SQL))
+	sum := sha256.Sum256([]byte(strings.ReplaceAll(migration0001SQL, "\r\n", "\n")))
 	wantChecksum := hex.EncodeToString(sum[:])
 	if ledger.checksum != wantChecksum {
 		t.Errorf("ledger checksum = %q, want %q", ledger.checksum, wantChecksum)

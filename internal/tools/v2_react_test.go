@@ -15,6 +15,7 @@ import (
 
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/bridge"
+	"github.com/maxghenis/openmessage/internal/messaging"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 )
 
@@ -464,4 +465,48 @@ func TestDaemonReactToMessageThroughTheCompatibilityRoute(t *testing.T) {
 			t.Fatalf("result = %q, want an error", resultText(t, result))
 		}
 	})
+}
+
+// A reaction refused for one message (the platform said no, or its target
+// cannot be named) carries error class unsupported. The text must not read as
+// "this platform cannot react", which is a different rejection: an account
+// without reactions is rejected before the transport with its own code.
+func TestV2ReactionTextSaysARefusalIsAboutTheMessage(t *testing.T) {
+	refused := v2ReactionText("outbox-1", messaging.OutboxRejected, "unsupported", "send_reaction", "")
+	if !strings.Contains(refused, "outbox-1") || !strings.Contains(refused, "not because the platform lacks reactions") {
+		t.Fatalf("refused reaction text = %q, want it to say the refusal is about this message", refused)
+	}
+	for _, other := range []struct{ class, code string }{
+		{"unsupported", "reactions_unsupported"},
+		{"unpaired", "send_reaction"},
+	} {
+		text := v2ReactionText("outbox-2", messaging.OutboxRejected, other.class, other.code, "")
+		if strings.Contains(text, "lacks reactions") || !strings.Contains(text, "error class "+other.class) {
+			t.Fatalf("rejected text for %s/%s = %q, want only the class named", other.class, other.code, text)
+		}
+	}
+}
+
+// A reaction the adapter refused because the phone's thread now names other
+// people says the app sent nothing and steers away from reacting there again.
+func TestV2ReactionTextSaysAMovedThreadSentNothing(t *testing.T) {
+	text := v2ReactionText("outbox-1", messaging.OutboxRejected, "recipient_mismatch", "send_reaction", "")
+	for _, fragment := range []string{"outbox-1", "error class recipient_mismatch", "now names other people", "the app sent nothing", "react from the phone"} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("recipient_mismatch reaction text missing %q: %q", fragment, text)
+		}
+	}
+	if strings.Contains(text, "The platform refused this reaction") {
+		t.Fatalf("recipient_mismatch reaction text reads as a platform refusal: %q", text)
+	}
+}
+
+// A reaction rejected because its own target was never sent says so, rather
+// than reading as a platform refusal.
+func TestV2ReactionTextSaysANeverSentTargetHasNothingToReactTo(t *testing.T) {
+	text := v2ReactionText("outbox-1", messaging.OutboxRejected, "unsupported", "reaction_target_never_sent", "")
+	if !strings.Contains(text, "outbox-1") || !strings.Contains(text, "was never sent") ||
+		strings.Contains(text, "The platform refused this reaction") {
+		t.Fatalf("never-sent target text = %q, want it to say the message was never sent, not that the platform refused", text)
+	}
 }

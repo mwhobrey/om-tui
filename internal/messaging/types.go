@@ -173,3 +173,9 @@ func (t systemTimer) C() <-chan time.Time { return t.Timer.C }
 type messageRepository interface {
 	GetMessage(context.Context, string) (sqlite.Message, error)
 }
+
+// rosterRepository loads the identities a send's ConversationRef carries.
+type rosterRepository interface {
+	ListConversationPeerIdentities(accountID, conversationID string) ([]sqlite.Identity, error)
+	ListSelfIdentities(accountID string) ([]sqlite.Identity, error)
+}

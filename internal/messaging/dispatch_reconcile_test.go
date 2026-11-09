@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/url"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -610,9 +612,13 @@ func openReconcileTestStore(t *testing.T, now time.Time) (*sqlite.Store, *sql.DB
 	query := make(url.Values)
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(ON)")
+	normalizedPath := filepath.ToSlash(path)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(normalizedPath, "/") {
+		normalizedPath = "/" + normalizedPath
+	}
 	raw, err := sql.Open("sqlite", (&url.URL{
 		Scheme:   "file",
-		Path:     filepath.ToSlash(path),
+		Path:     normalizedPath,
 		RawQuery: query.Encode(),
 	}).String())
 	if err != nil {

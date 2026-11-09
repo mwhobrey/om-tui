@@ -577,10 +577,12 @@ func (c *Client) LegacySendMedia(ctx context.Context, submission MediaSubmission
 // delivered, in which case the daemon keeps retrying it and the caller must
 // not react again. OutboxID and State identify the intent for Delivery.
 type ReactResult struct {
-	Success  bool   `json:"success"`
-	Queued   bool   `json:"queued"`
-	OutboxID string `json:"outbox_id"`
-	State    string `json:"state"`
+	Success    bool   `json:"success"`
+	Queued     bool   `json:"queued"`
+	OutboxID   string `json:"outbox_id"`
+	State      string `json:"state"`
+	ErrorClass string `json:"error_class"`
+	ErrorCode  string `json:"error_code"`
 }
 
 // React routes a reaction through the daemon's /api/react surface, which

@@ -149,12 +149,15 @@ func TestLinkPreviewServiceEvictsLeastRecentlyUsedEntries(t *testing.T) {
 	if _, err := service.Fetch(context.Background(), urlA); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(20 * time.Millisecond)
 	if _, err := service.Fetch(context.Background(), urlB); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(20 * time.Millisecond)
 	if _, err := service.Fetch(context.Background(), urlA); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(20 * time.Millisecond)
 	if _, err := service.Fetch(context.Background(), urlC); err != nil {
 		t.Fatal(err)
 	}

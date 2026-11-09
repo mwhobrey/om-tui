@@ -713,6 +713,33 @@ reaction named nobody (`[{"emoji":"👍","count":1}]`) keeps it as an anonymous
 reactor (`reactor_key = 'anon:👍'`, `migration/transform.go`). Reacting 👍 to it on v2 adds "me" beside
 it, so the pill reads 2 with only "You" listed.
 
+### Google sends to moved thread numbers
+
+The running app rebinds a thread only on live traffic, so long after a swap v2
+can still bind a thread to a number the phone now uses for someone else's
+thread. The Google adapter sends to the bound number, so a text in one of those
+threads would go to the other person. The adapter looks the thread up
+before every text, media and reaction send, and compares the phone's
+participants with the stored thread's roster using `ingest.CheckSendTarget`. The
+kinds must agree, a direct thread's peers must match exactly, and a group must
+keep at least one member. A thread with no stored roster, or a phone answer
+naming only this account, proves nothing and sends. On a contradiction nothing
+goes out:
+
+- the outbox row ends `rejected`, with `error_class: recipient_mismatch` and
+  `error_code` `send_text`, `send_media` or `send_reaction`. The dispatcher
+  never retries it, and the adapter refuses media before uploading it;
+- the log says `Refused a Google send: the phone's thread for this conversation now names other people`,
+  with counts of each side's people;
+- the refusal leaves the receive lifecycle alone, since the phone answered.
+
+While the app runs, only live traffic moves a thread to its new number. A
+catch-up or backfill never does, because history never moves a binding. A
+direct thread usually moves when its peer's next message arrives live
+(`googleIncomingConversation`) or when the phone pushes a live update for a
+thread with that peer alone (`googleConversationEventTarget`), and sends work
+again.
+
 ## Deploying a new build to a live install
 
 Rebuild (`go build -o om-tui .`), stop the running daemon, replace the

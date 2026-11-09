@@ -48,6 +48,15 @@ type Liveness struct {
 
 type ConversationRef struct {
 	RemoteID string
+	// Kind is the stored conversation's kind ("direct", "group", "broadcast",
+	// "system"). Empty means the dispatcher did not say.
+	Kind string
+	// Peers are the stored conversation's active participants other than
+	// this account, and Self are this account's own identities, each as Kind
+	// and Canonical (v2keys.IdentityKey). A ref without Kind or Peers asserts
+	// nothing about the remote conversation's roster.
+	Peers []IdentityRef
+	Self  []IdentityRef
 }
 
 type MessageRef struct {
