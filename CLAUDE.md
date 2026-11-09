@@ -38,6 +38,7 @@ state.
 │   └── web/             Local HTTP+SSE API only — no bundled UI on this fork
 └── docs/
     ├── runbook/         Federated agent/developer runbook (START HERE)
+    ├── ROADMAP.md       Triaged backlog, upstream ports, and tracking roadmap
     ├── agent-runbook.md Live-install support (data dir, MCP fratricide, re-pair)
     └── tui.md           TUI + rivers product path (all platforms)
 ```
