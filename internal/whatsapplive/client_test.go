@@ -1108,6 +1108,7 @@ func TestBridgeProfilePhotoReturnsMissingWhenNotFound(t *testing.T) {
 func TestDownloadStoredMediaReadsLocalWhatsAppDesktopFile(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
 
 	root := filepath.Join(tempHome, "Library", "Group Containers", "group.net.whatsapp.WhatsApp.shared", "Message")
 	mediaDir := filepath.Join(root, "Media", "jenn")

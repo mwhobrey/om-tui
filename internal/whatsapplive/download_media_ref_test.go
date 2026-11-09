@@ -63,6 +63,7 @@ func TestDownloadMediaRefRemoteDecodesHexAndControlsAllowNoHash(t *testing.T) {
 func TestDownloadMediaRefLocalRoutesWithoutTransport(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
 	path := filepath.Join(tempHome, "Library", "Group Containers", "group.net.whatsapp.WhatsApp.shared", "Message", "Media", "voice.opus")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)

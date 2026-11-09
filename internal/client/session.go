@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 )
 
 type SessionData struct {
@@ -60,10 +62,19 @@ func SaveSession(path string, data *SessionData) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp session: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("install session: %w", err)
+	var renameErr error
+	for attempt := 0; attempt < 30; attempt++ {
+		renameErr = os.Rename(tmpPath, path)
+		if renameErr == nil {
+			return nil
+		}
+		if runtime.GOOS == "windows" {
+			time.Sleep(time.Duration(attempt+1) * 3 * time.Millisecond)
+			continue
+		}
+		break
 	}
-	return nil
+	return fmt.Errorf("install session: %w", renameErr)
 }
 
 func LoadSession(path string) (*SessionData, error) {

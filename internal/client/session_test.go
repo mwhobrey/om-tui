@@ -1,6 +1,7 @@
 package client
 
 import (
+	"runtime"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,11 +84,15 @@ func TestSaveSessionRewritesAtomically(t *testing.T) {
 				return
 			default:
 			}
+			runtime.Gosched()
 			loaded, err := LoadSession(path)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			if err != nil {
+				if runtime.GOOS == "windows" && strings.Contains(err.Error(), "used by another process") {
+					continue
+				}
 				// A torn write surfaces here as a JSON parse failure.
 				failures <- fmt.Errorf("read session: %w", err)
 				return
@@ -142,8 +147,10 @@ func TestSaveSessionRewritesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat session: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Fatalf("session permissions = %04o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("session permissions = %04o, want 0600", got)
+		}
 	}
 }
 
