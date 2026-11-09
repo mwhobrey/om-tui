@@ -90,9 +90,21 @@ running daemon:
   `TestNewClientPerformsNoStoreWrites` (internal/app),
   `TestRunServeMCPClientDoesNotRepairStore` and
   `TestOpenCommandReadSourceLegacyDoesNotRepairStore` (cmd).
-- **Sends/reactions route through the daemon** (`/api/v1/outbox` on v2,
-  `/api/send`+`/api/react` on legacy), like the CLI has done since PR #140,
-  with the same do-not-resend idempotency contract. With the daemon down,
+- **The v2 store opens without migrating** (`sqlite.OpenWithoutMigrating`):
+  only the store's owner applies schema migrations, i.e. the daemon as the
+  first step of building its v2 stack, plus `repair` and cutover. A migration
+  holds SQLite's write lock for its whole run (index builds take seconds on a
+  large store) and the daemon's writers give up after the 5 s busy timeout,
+  so a client migrating under the running app would drop inbox appends. A
+  client binary newer than the store refuses it with "quit and reopen the
+  OpenMessage app"; one older than the store refuses it as "newer than
+  supported". Regression tests: `TestOpenWithoutMigrating*`
+  (internal/storage/sqlite), `TestOpenCommandReadSourceNeverMigratesTheV2Store`
+  and `TestRunServeMCPClientNeverMigratesTheV2Store` (cmd).
+- **Sends/reactions route through the daemon** (sends: `/api/v1/outbox` on
+  v2, `/api/send` on legacy; reactions: `/api/v1/outbox/reactions` on a
+  v2-primary app, `/api/react` otherwise), like the CLI has done since PR
+  #140, with the same do-not-resend idempotency contract. With the daemon down,
   send tools return an actionable "start the daemon" error — they never
   fall back to opening their own connections. Local reads/status keep
   working from the store directly even with the daemon down (see above) —
@@ -471,14 +483,235 @@ latched a permanent park; a single `POST /api/signal/connect` reconnected in
   `signal_account_invalid` with **no** automatic retest. Probe empty with
   accounts.json **also** empty parks immediately (`signal_account_invalid`).
 
-Debugging a parked Signal: check `/api/status` and the supervisor fingerprint
-before recommending a re-pair. `signal_account_unreadable` → local read
-problem, wait for the retest or `POST /api/signal/connect`; verify contention
-first (`pgrep -fl signal-cli`, `lsof` on the config dir — see the MCP
-fratricide section above). `signal_account_invalid` from `receive` → genuine
-server-side unlink, re-pair is real. **Never unpair to "fix" a park**: unpair
-`os.RemoveAll`s the signal-cli dir including CDN-expired media — permanent
-loss.
+Debugging a parked Signal — check, in order:
+
+1. `/api/status` fingerprint/error. `signal_account_invalid` from `receive` →
+   server-confirmed unlink; re-pair is real.
+2. Contention: `pgrep -fl signal-cli`, `lsof` on the config dir (see the MCP
+   fratricide section above).
+3. The persisted server verdict:
+   `jq .registered "$DATADIR/signal-cli/data/<account-file>"` — **`false`
+   means the server rejected the device** (genuine; only a re-link fixes it);
+   `true` with an `signal_account_unreadable` park means transient check
+   failures — wait for the retest or fire `POST /api/signal/connect`.
+4. To see the verdict live (only while the app's Signal supervisor is parked
+   and no signal-cli process is running):
+   `signal-cli --verbose --verbose --config "$DATADIR/signal-cli" listAccounts`
+   — genuine shows `DeviceDeregisteredException` + `[403] Authorization
+   failed!`; transient shows an IO-flavored "Error while checking account"
+   with `registered` still true afterwards.
+
+**Never unpair to "fix" a park**: unpair `os.RemoveAll`s the signal-cli dir
+including CDN-expired media — permanent loss. Before a *genuine* re-link, back
+up the whole `signal-cli/` dir first and restore the media subdirs
+(`attachments`, `avatars`, `stickers`, `outgoing-attachments`) — not `data/` —
+after the new link (recipe proven 2026-07-20; backups live under
+`<datadir>/app-backups/`).
+
+### Signal quote-replies on v2-primary
+
+Signal quotes a message by its author and sent timestamp, passed to signal-cli
+as `--quote-timestamp/--quote-author/--quote-message`. The outbox stores only
+the quoted message's v2 remote ID, which for an incoming message is a SHA-1
+(`v2keys.SignalIncomingSourceID`), not a timestamp. So the dispatcher
+(`messaging.replyRefForLease`) loads the quoted v2 message and puts its author,
+`occurred_at_ms`, body and first attachment on the request's
+`bridge.MessageRef`, and `signallive.QuoteArgs` builds the quote from those.
+No legacy row is needed. Before this, the Signal transport looked the quote up
+in the legacy `messages.db` only (the retained receive handler still writes
+it on v2-primary), and on v2-primary that lookup cannot find:
+
+- any send this account made through the v2 outbox. The legacy projector runs
+  only on legacy-primary, and the adapter expects no echo of its own sends;
+- messages this account sent from the phone after cutover. Legacy keeps them
+  as `signal:local:<sha1>`, v2 as the bare timestamp;
+- incoming messages whose sender the legacy handler resolved differently from
+  the capture-time contact cache (it refreshes contacts on a miss, capture
+  does not), which puts them under different IDs.
+
+Rules worth knowing when a quote looks wrong:
+
+- The timestamp is `occurred_at_ms`. The decoder sets it to the Signal sent
+  timestamp, and so does the migration, except for a text sent from the legacy
+  desktop path: that row kept its completion time and a `local:<sha1>` ID, so a
+  quote of it carries the completion time (a limitation the legacy store
+  already had). The other exception is a message this account wrote whose
+  remote ID is a decimal timestamp. A send through the outbox keeps its
+  *submit* time as `occurred_at_ms`, and confirming it sets the remote ID to the
+  timestamp signal-cli reported, so that ID wins.
+- A reply submitted while its quoted send was still pending stored the quoted
+  message's transport request ID. The dispatcher follows the outbox row from
+  that ID to the message's current remote ID.
+- A quoted message v2 does not hold, or an outgoing one still awaiting its
+  transport ID, gets a bare ref, and the transport falls back to the legacy
+  lookup. A delivery that fails with `signal reply target not found` is that
+  case. Check the quoted message's own outbox row
+  (`GET /api/v1/outbox/<outbox_id>`).
+- On legacy-primary with `OPENMESSAGES_V2_SEND=1`, the mirror keys a reply
+  target by its legacy ID (`signal:<ts>`) and records no sender or attachment.
+  Such an ID still quotes from its legacy row when that row exists. If the
+  legacy lookup itself fails, the send fails before signal-cli runs rather
+  than quoting the mirror's sender-less copy.
+
+### Signal reactions through the v2 outbox
+
+Signal names the message a reaction targets by its author and sent timestamp
+(`signal-cli sendReaction -a <author> -t <timestamp>`), never by an ID
+OpenMessage stores. The dispatcher (`messaging.targetRefForLease`) puts the
+target's sender, direction (`Outgoing`) and `occurred_at_ms` on the request's
+`bridge.MessageRef`, and `signallive.ReactionTargetArgs` sends a reaction only
+when the store vouches for both halves of that name:
+
+- **An incoming message** is named by its stored sender and `occurred_at_ms`,
+  and only when its remote ID is a SHA-1 (40 hex digits,
+  `v2keys.SignalIncomingSourceID`). That is the ID a Signal receiver gives a
+  message it keyed by sender and sent timestamp, and each writer that uses it
+  stores that timestamp as the occurred time: the v2 decoder, the legacy
+  receiver, and a Signal Desktop import of a row that has a sent time. The ID
+  itself is not sent.
+- **A message this account sent** is named by this account and its remote ID,
+  and only when that ID is a decimal timestamp. That is how a send Signal
+  accepted is stored when its timestamp was kept: an outbox confirm sets the ID
+  to the timestamp signal-cli reported, a sync message from the phone arrives
+  under its own, and the legacy `SendMedia` and legacy-primary projector keyed
+  their rows by signal-cli's. Its `occurred_at_ms` is not used. This is stricter than the
+  quote rule above, because a quote carries the quoted text with it and a
+  reaction carries nothing but the name.
+
+Anything else stops before signal-cli runs. The row goes `not_dispatched`
+(`error_class: transient`, `error_code: send_reaction` on
+`GET /api/v1/outbox/<id>`) and retries every 5 s with no cap. The reason is in
+the `error_detail` column of the `outbox` table in the v2 store:
+
+- `signal reaction target timestamp is unavailable`, for this account's own
+  message: its remote ID is not a Signal timestamp.
+  - *Still on its outbox request ID.* A pending send: the reaction goes out on
+    a retry once the send is confirmed. A canceled or failed send: never. An
+    uncertain one: not while it is unresolved. Also a send Signal accepted
+    whose local confirm failed (`store_failed`): the outbox row holds the
+    timestamp as its result, but the message is not moved to it until that
+    confirm is repaired (`RepairStoreFailed`).
+  - *A migrated `local:<sha1>` message.* The legacy `SendText` stamped its row
+    with the wall clock after signal-cli returned, not with Signal's
+    timestamp. The phone's own sends were stored under the same alias with the
+    right time, and nothing tells the two apart, so none of them can be
+    reacted to through the outbox.
+  - *A migrated scheduled send caught in `sending`*: imported under a derived
+    request ID with its creation time and no outbox row.
+- `signal reaction target timestamp is unavailable`, for an incoming message:
+  its remote ID is not a SHA-1, or it has no occurred time.
+  - *`received:<sha1>`*: a Signal Desktop row that had no sent time. The
+    importer stores it under the time it was received and marks its source ID
+    (`v2keys.SignalReceivedSourceID`).
+  - *`signal:<id>`*: a legacy ID the legacy-primary mirror kept.
+- `signal reaction target author is unavailable`: an incoming message stored
+  with no sender. The legacy receiver stored a group message with no source
+  that way, and the legacy-primary mirror (`v2wire.MirrorReplyTarget`) records
+  none.
+
+A reaction that can never be named keeps retrying until it is canceled
+(`POST /api/v1/outbox/<id>/cancel`).
+
+One gap remains that nothing can mark. Before the importer marked them, a
+Signal Desktop row with no sent time was stored under a plain SHA-1 of its
+received time. A re-import rewrites that source ID in the legacy store, but a
+v2 store migrated before then still holds the row under the unmarked hash,
+indistinguishable from a message keyed by its sent timestamp. A reaction to
+it names the received time.
+
+Before this the transport passed the v2 remote ID to `-t`. For a decoded
+incoming message that is a SHA-1. signal-cli 0.14.8 refuses a non-integer
+while parsing its arguments (`could not convert '<id>' to integer (64 bits)`,
+exit 1), and the row ended `uncertain` with nothing sent.
+
+On a v2-primary install every reaction from the web UI and the
+`react_to_message` MCP tool takes this path; see "Reactions on v2-primary go
+through the outbox" below.
+
+## Reactions on v2-primary go through the outbox
+
+On a v2-primary daemon the read API hands out v2 IDs (32-hex conversation and
+message keys). The legacy reaction senders cannot place those: `/api/react`
+used to tell platforms apart by a `signal:`/`whatsapp:` prefix or a
+legacy-store lookup and fall back to Google Messages, so before this every
+reaction from the UI or MCP to a v2 message, on any platform, went down the
+Google path with a v2 message ID: with no Google client it answered
+`503 not connected to Google Messages` (reproduced in
+`TestR5ReactRoutesThroughTheOutboxOnV2Primary`), and with one it asked Google
+to react to an ID that is not a Google message ID.
+Legacy-primary daemons, including ones with `OPENMESSAGES_V2_SEND=1`, keep the
+legacy senders unchanged.
+
+**Routes.**
+
+- `POST /api/react` `{conversation_id, message_id, emoji, action}` resolves the
+  target by its v2 message ID and queues the reaction on the outbox
+  (`MessageService.SendReaction`). The target decides the account and the
+  conversation; `conversation_id` may be omitted, and when given must name the
+  target's own conversation, by v2 ID or by its remote ID (`signal:+1…`, a
+  WhatsApp JID, a Google thread id). It then waits up to 8 s for the reaction
+  to settle, and the answer says how far it got:
+
+  | Status | Body | Meaning |
+  |---|---|---|
+  | 200 | `success: true` | The platform accepted it (`confirmed`, or `store_failed`). |
+  | 202 | `success: true, queued: true` | Stored, not delivered yet (`queued`, `dispatching`, `not_dispatched`). The app keeps retrying it; do not react again. |
+  | 502 | `error` | `uncertain` (the transport call ended without an answer: it may have been applied) or `rejected` (the platform refused it). |
+  | 409 | `error` | `canceled` before it was sent. |
+  | 422 | `reaction_target_unavailable` | No v2 message with that ID, or not in that conversation. Nothing was queued. |
+  | 501 | `error` | The account has no reaction sender (an import-only platform). |
+
+  Every 2xx/409/502 answer carries `outbox_id` and `state`. The legacy handler
+  answered only after the transport call; this one returns while delivery may
+  still be in progress, which is what the 202 is for. A request without
+  `idempotency_key` mints a new key, so repeating the POST queues a second
+  reaction.
+- `POST /api/v1/outbox/reactions` (same body plus a required
+  `idempotency_key`) is the durable twin, like `/api/v1/outbox/messages`: it
+  returns the submission at once and `GET /api/v1/outbox/<id>` follows it. A
+  legacy-primary daemon answers it `409 legacy primary: use /api/react`.
+- The MCP tool, in-process on a v2-primary daemon, queues on the outbox and
+  waits up to 25 s. In transportless client mode it probes `/api/status` and,
+  when the app reports `v2_primary`, submits to `/api/v1/outbox/reactions`
+  and polls the delivery; otherwise it uses `/api/react`. Its result carries
+  `outbox_id`, `state`, `idempotency_key` and `settled`; `settled: false` is not
+  an error and means do not react again.
+
+**What the user sees.** The adapters store nothing when they send a reaction
+(the legacy senders updated the stored reactions themselves after the send).
+So when the transport accepts a reaction, the outbox confirms the row and
+writes the account's own reaction (`reactor_key = 'self'`, shown as "You") in
+the same SQLite transaction (`OutboxRepository.ConfirmReaction`); without it
+the reaction would appear only if a transport later reported it. Its time is
+when the transport accepted it, and a later report for the same reactor key
+replaces it when it carries a later time (the usual `ApplyReaction`
+ordering). On Google Messages the phone's copy is authoritative instead:
+every Google frame for a message applies that message's full reaction
+snapshot (`ReplaceEmbeddedReactions`), which removes active reactors the
+snapshot does not list, and the Google decoder names reactors by participant
+ID rather than as self. So the next frame for the message replaces the "self"
+row with the reactor the phone names, or removes it if the phone's copy does
+not have the reaction yet; a reaction can disappear briefly and come back. A reaction that ends
+`uncertain`, `rejected`, `not_dispatched` or `canceled` writes nothing, so the
+thread shows only reactions that went out. While a reaction is `queued`,
+`dispatching` or `not_dispatched` it is listed in the web UI's outbox tray
+with a Cancel button.
+
+**Reactions stuck retrying.** A reaction the transport cannot deliver yet goes
+`not_dispatched` and retries (every 5 s by default) with no cap; a Signal
+reaction whose target can never be named (above) stays there until it is
+canceled. Find them with:
+
+```bash
+curl -s "http://127.0.0.1:7007/api/v1/outbox?limit=100" | jq '.[] | select(.kind=="reaction")'
+```
+
+and cancel one with `POST /api/v1/outbox/<id>/cancel`.
+
+**A count one higher than the reactors shown.** A migrated message whose legacy
+reaction named nobody (`[{"emoji":"👍","count":1}]`) keeps it as an anonymous
+reactor (`reactor_key = 'anon:👍'`, `migration/transform.go`). Reacting 👍 to it on v2 adds "me" beside
+it, so the pill reads 2 with only "You" listed.
 
 ## Deploying a new build to a live install
 

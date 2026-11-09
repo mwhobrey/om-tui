@@ -1464,9 +1464,10 @@ func TestReactV2PrimaryEnqueuesNativeOutbox(t *testing.T) {
 	ts := newTestServerWithOptions(t, APIOptions{
 		V2Primary: true,
 		V2: &V2Options{
-			Service:  service,
-			V2Store:  v2Store,
-			Registry: registry,
+			Service:            service,
+			V2Store:            v2Store,
+			Registry:           registry,
+			ReactSettleTimeout: 10 * time.Millisecond,
 		},
 	})
 	body := `{"conversation_id":"hashed-slack-conv","message_id":"hashed-slack-msg","emoji":"👍","action":"add"}`
@@ -1475,9 +1476,9 @@ func TestReactV2PrimaryEnqueuesNativeOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusAccepted {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("got status %d, want 200: %s", resp.StatusCode, raw)
+		t.Fatalf("got status %d, want 202: %s", resp.StatusCode, raw)
 	}
 	pending, err := service.ListPending(context.Background(), messaging.ListPendingQuery{Limit: 10})
 	if err != nil {

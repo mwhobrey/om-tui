@@ -82,12 +82,6 @@ func (v *V2Dependencies) submitMedia(
 	return v2wire.SubmitMedia(ctx, v.submitDeps(a), input)
 }
 
-func (v *V2Dependencies) submitReaction(
-	ctx context.Context,
-	input v2wire.ReactionInput,
-) (messaging.Submission, error) {
-	return v2wire.SubmitReactionV2(ctx, v.nativeDeps(), input)
-}
 
 func v2IdempotencyKey(args map[string]any) (string, error) {
 	if raw, present := args["idempotency_key"]; present {
@@ -158,28 +152,6 @@ func submitV2Text(
 	return waitForV2Delivery(ctx, v2, submission, key)
 }
 
-func submitV2Reaction(
-	ctx context.Context,
-	v2 *V2Dependencies,
-	args map[string]any,
-	conversationID, messageID, emoji, action string,
-) *mcp.CallToolResult {
-	key, err := v2IdempotencyKey(args)
-	if err != nil {
-		return errorResult(err.Error())
-	}
-	submission, err := v2.submitReaction(ctx, v2wire.ReactionInput{
-		ConversationID:  conversationID,
-		TargetMessageID: messageID,
-		Emoji:           emoji,
-		Action:          action,
-		IdempotencyKey:  key,
-	})
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to submit reaction: %v", err))
-	}
-	return waitForV2Delivery(ctx, v2, submission, key)
-}
 
 // waitForV2Delivery reports the durable send's outcome. The intent is already
 // enqueued when this runs, so no path below may return an IsError result: a

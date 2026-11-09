@@ -1912,7 +1912,7 @@ func (m Model) reactCmd(conversationID, messageID, emoji, action string) tea.Cmd
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		if err := client.React(ctx, conversationID, messageID, emoji, action); err != nil {
+		if _, err := client.React(ctx, conversationID, messageID, emoji, action, ""); err != nil {
 			return errMsg{err: err}
 		}
 		return reactDoneMsg{conversationID: conversationID, emoji: emoji, action: action}
