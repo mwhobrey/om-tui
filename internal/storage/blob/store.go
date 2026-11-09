@@ -10,8 +10,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -389,16 +389,4 @@ func copyCapped(ctx context.Context, dst io.Writer, src io.Reader, max int64) (i
 			return written, readErr
 		}
 	}
-}
-
-func syncDir(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
 }

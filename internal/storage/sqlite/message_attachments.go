@@ -170,7 +170,12 @@ func (r *MessageAttachmentRepository) RecordInboundAttachment(
 				THEN message_attachments.mime ELSE excluded.mime END,
 			size_bytes = CASE WHEN `+keepsReference+`
 				THEN message_attachments.size_bytes ELSE excluded.size_bytes END,
-			last_error = COALESCE(excluded.last_error, message_attachments.last_error),
+			last_error = CASE
+				WHEN excluded.remote_id <> ''
+					AND excluded.remote_id <> message_attachments.remote_id
+					AND message_attachments.last_error LIKE 'unavailable: %'
+				THEN excluded.last_error
+				ELSE COALESCE(excluded.last_error, message_attachments.last_error) END,
 			updated_at_ms = excluded.updated_at_ms
 		WHERE message_attachments.blob_hash IS NULL
 	`,

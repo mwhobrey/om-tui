@@ -124,3 +124,59 @@ func TestRecordInboundAttachmentReferenceIsTheLastNamedUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRecordInboundAttachmentClearsUnavailableMarkWhenMediaIsRenamed(t *testing.T) {
+	clock := newMessageTestClock(messageAttachmentTestTimeMS)
+	store, repository := openMessageAttachmentTestRepository(t, clock.Now)
+	seedMessageAttachmentParent(t, store, "message-unavailable-clear")
+	initial := MessageAttachment{
+		MessageID: "message-unavailable-clear", Ordinal: 0,
+		RemoteID: "thumb-1", RemoteRef: []byte("ref-1"),
+		Filename: "IMG.jpeg", MIME: "image/jpeg",
+	}
+	recordMessageAttachment(t, store, repository, initial)
+	if err := repository.MarkFailed(context.Background(), "message-unavailable-clear", 0, UnavailableAttachmentErrorPrefix+"gone"); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+	got, err := repository.GetForDownload(context.Background(), "message-unavailable-clear", 0)
+	if err != nil {
+		t.Fatalf("GetForDownload: %v", err)
+	}
+	if _, ok := got.UnavailableReason(); !ok {
+		t.Fatalf("expected unavailable reason on initial row")
+	}
+
+	// Nameless update does not clear the mark
+	recordMessageAttachment(t, store, repository, MessageAttachment{
+		MessageID: "message-unavailable-clear", Ordinal: 0,
+		RemoteID: "", RemoteRef: nil,
+	})
+	got, _ = repository.GetForDownload(context.Background(), "message-unavailable-clear", 0)
+	if _, ok := got.UnavailableReason(); !ok {
+		t.Fatalf("nameless update should keep unavailable mark")
+	}
+
+	// Update with same remote ID does not clear the mark
+	recordMessageAttachment(t, store, repository, MessageAttachment{
+		MessageID: "message-unavailable-clear", Ordinal: 0,
+		RemoteID: "thumb-1", RemoteRef: []byte("ref-1"),
+	})
+	got, _ = repository.GetForDownload(context.Background(), "message-unavailable-clear", 0)
+	if _, ok := got.UnavailableReason(); !ok {
+		t.Fatalf("same remote ID should keep unavailable mark")
+	}
+
+	// Update with new remote ID clears the mark
+	recordMessageAttachment(t, store, repository, MessageAttachment{
+		MessageID: "message-unavailable-clear", Ordinal: 0,
+		RemoteID: "full-1", RemoteRef: []byte("ref-2"),
+		Filename: "IMG.jpeg", MIME: "image/jpeg",
+	})
+	got, _ = repository.GetForDownload(context.Background(), "message-unavailable-clear", 0)
+	if reason, ok := got.UnavailableReason(); ok {
+		t.Fatalf("new remote ID should clear unavailable mark, got: %s", reason)
+	}
+	if got.RemoteID != "full-1" {
+		t.Fatalf("remote ID = %q, want full-1", got.RemoteID)
+	}
+}

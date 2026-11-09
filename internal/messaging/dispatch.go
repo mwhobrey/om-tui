@@ -105,9 +105,9 @@ func nextPassBackoff(previous, shortest, longest time.Duration) time.Duration {
 //
 // A due intent whose lease fails on its own row does not hold the others:
 // LeaseDueBatch sets it aside and leases the rows after it, and DispatchDue
-// records it (DispatchHealth and the OnLeaseFailure hook). A row the store
-// could not set aside either stays due, so DispatchDue sends the rest and then
-// returns an error naming it, and Run backs off before it meets that row again.
+// records it (DispatchHealth and the OnLeaseFailure hook). Stuck rows are
+// tracked in DispatchHealth; the rest of the pass succeeds so one bad row
+// does not freeze other sends behind pass backoff.
 func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error) {
 	if ctx == nil {
 		return 0, fmt.Errorf("dispatch due messages: context is nil")
@@ -172,7 +172,10 @@ func (s *MessageService) DispatchDue(ctx context.Context, limit int) (int, error
 		}
 		processed++
 	}
-	return processed, stuck
+	// Stuck rows are already recorded in leaseFailures/DispatchHealth and the
+	// OnLeaseFailure hook; the rest of the pass succeeded, so do not make Run
+	// back off and ignore wakes because of one bad row.
+	return processed, nil
 }
 
 // recordFailedLeases records each due row whose lease failed on its own row

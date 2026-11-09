@@ -440,7 +440,12 @@ func daemonReactToMessageHandler(options Options) server.ToolHandlerFunc {
 				// deliver it; its outbox state says what happened (an
 				// uncertain one may have been applied).
 				return v2ReactionResult(
-					messaging.Delivery{OutboxID: result.OutboxID, State: messaging.OutboxState(result.State)},
+					messaging.Delivery{
+						OutboxID:   result.OutboxID,
+						State:      messaging.OutboxState(result.State),
+						ErrorClass: result.ErrorClass,
+						ErrorCode:  result.ErrorCode,
+					},
 					false, key, nil,
 				), nil
 			}
@@ -462,7 +467,12 @@ func daemonReactToMessageHandler(options Options) server.ToolHandlerFunc {
 			// A v2-primary app answered on the compatibility route: the
 			// reaction is on its outbox, under key, and not delivered yet.
 			return v2ReactionResult(
-				messaging.Delivery{OutboxID: result.OutboxID, State: messaging.OutboxState(result.State)},
+				messaging.Delivery{
+					OutboxID:   result.OutboxID,
+					State:      messaging.OutboxState(result.State),
+					ErrorClass: result.ErrorClass,
+					ErrorCode:  result.ErrorCode,
+				},
 				false, key, nil,
 			), nil
 		}
