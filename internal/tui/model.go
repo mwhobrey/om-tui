@@ -106,6 +106,12 @@ type (
 		emoji          string
 		action         string
 		queued         bool
+		outboxID       string
+	}
+	reactionSettledMsg struct {
+		conversationID string
+		emoji          string
+		delivery       localapi.Delivery
 	}
 	debouncedConvRefreshMsg uint64
 )
@@ -492,6 +498,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.info = "Removed " + msg.emoji
 		} else {
 			m.info = "Reacted " + msg.emoji
+		}
+		refresh := m.refreshMessagesCmd(msg.conversationID, m.msgGeneration)
+		if msg.queued && msg.outboxID != "" {
+			return m, tea.Batch(refresh, m.waitReactionDeliveryCmd(msg.conversationID, msg.outboxID, msg.emoji))
+		}
+		return m, refresh
+
+	case reactionSettledMsg:
+		switch msg.delivery.State {
+		case "failed", "store_failed", "uncertain":
+			m.err = fmt.Sprintf("Reaction %s delivery failed (%s)", msg.emoji, msg.delivery.State)
+		case "canceled":
+			m.info = fmt.Sprintf("Reaction %s canceled", msg.emoji)
 		}
 		return m, m.refreshMessagesCmd(msg.conversationID, m.msgGeneration)
 
@@ -1911,6 +1930,9 @@ func (m Model) sendCmd(conversationID, body, replyToID string) tea.Cmd {
 }
 
 func (m Model) reactCmd(conversationID, messageID, emoji, action string) tea.Cmd {
+	if m.session == nil || m.session.Client == nil {
+		return nil
+	}
 	client := m.session.Client
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -1922,7 +1944,33 @@ func (m Model) reactCmd(conversationID, messageID, emoji, action string) tea.Cmd
 		if !result.Success && !result.Queued {
 			return errMsg{err: fmt.Errorf("the app reported that the reaction was not applied")}
 		}
-		return reactDoneMsg{conversationID: conversationID, emoji: emoji, action: action, queued: result.Queued}
+		return reactDoneMsg{
+			conversationID: conversationID,
+			emoji:          emoji,
+			action:         action,
+			queued:         result.Queued,
+			outboxID:       result.OutboxID,
+		}
+	}
+}
+
+func (m Model) waitReactionDeliveryCmd(conversationID, outboxID, emoji string) tea.Cmd {
+	if m.session == nil || m.session.Client == nil {
+		return nil
+	}
+	client := m.session.Client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		delivery, settled, err := client.WaitDelivery(ctx, outboxID, 10*time.Second)
+		if err != nil || !settled {
+			return nil
+		}
+		return reactionSettledMsg{
+			conversationID: conversationID,
+			emoji:          emoji,
+			delivery:       delivery,
+		}
 	}
 }
 

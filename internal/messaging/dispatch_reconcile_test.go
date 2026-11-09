@@ -340,6 +340,7 @@ func TestStoreFailedRepointRepair(t *testing.T) {
 		fixture := newStoreFailedRepointFixture(t, clock)
 		fixture.service.pollDelay = time.Hour
 		drainReconcileWake(fixture.service)
+		clock.drain()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -698,6 +699,16 @@ func newNotifyingReconcileClock(now time.Time) *notifyingReconcileClock {
 	return &notifyingReconcileClock{
 		manualClock:  newManualClock(now),
 		timerCreated: make(chan struct{}, 4),
+	}
+}
+
+func (c *notifyingReconcileClock) drain() {
+	for {
+		select {
+		case <-c.timerCreated:
+		default:
+			return
+		}
 	}
 }
 
