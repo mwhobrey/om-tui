@@ -12,7 +12,9 @@ import (
 )
 
 const (
+	sqliteTooBigCode               = 18
 	sqliteConstraintCode           = 19
+	sqliteMismatchCode             = 20
 	sqliteConstraintForeignKeyCode = 787
 	sqliteConstraintPrimaryKeyCode = 1555
 )
@@ -389,6 +391,23 @@ func (s *Store) ListIdentities(accountID string) ([]Identity, error) {
 	identities, err := collectRows(rows, scanIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("list identities for account %q: %w", accountID, err)
+	}
+	return identities, nil
+}
+
+// ListSelfIdentities returns the account's own identities.
+func (s *Store) ListSelfIdentities(accountID string) ([]Identity, error) {
+	rows, err := s.db.QueryContext(
+		context.Background(),
+		"SELECT "+identityColumns+" FROM identities WHERE account_id = ? AND is_self = 1 ORDER BY identity_id",
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list self identities for account %q: %w", accountID, err)
+	}
+	identities, err := collectRows(rows, scanIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("list self identities for account %q: %w", accountID, err)
 	}
 	return identities, nil
 }

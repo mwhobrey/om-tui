@@ -94,3 +94,48 @@ func TestReactPaletteSize(t *testing.T) {
 		t.Fatalf("palette len = %d, want 9", len(reactPaletteEmojis))
 	}
 }
+
+func TestReactionSettledMsgUpdatesStatus(t *testing.T) {
+	m := Model{
+		session: &Session{},
+	}
+
+	// Settled: confirmed
+	updated, _ := m.Update(reactionSettledMsg{
+		conversationID: "conv-1",
+		emoji:          "👍",
+		delivery: localapi.Delivery{
+			State: "confirmed",
+		},
+	})
+	m2 := updated.(Model)
+	if m2.err != "" {
+		t.Fatalf("unexpected error: %s", m2.err)
+	}
+
+	// Settled: failed
+	updated, _ = m.Update(reactionSettledMsg{
+		conversationID: "conv-1",
+		emoji:          "👍",
+		delivery: localapi.Delivery{
+			State: "failed",
+		},
+	})
+	m2 = updated.(Model)
+	if m2.err != "Reaction 👍 delivery failed (failed)" {
+		t.Fatalf("unexpected error message: %q", m2.err)
+	}
+
+	// Settled: canceled
+	updated, _ = m.Update(reactionSettledMsg{
+		conversationID: "conv-1",
+		emoji:          "❤️",
+		delivery: localapi.Delivery{
+			State: "canceled",
+		},
+	})
+	m2 = updated.(Model)
+	if m2.info != "Reaction ❤️ canceled" {
+		t.Fatalf("unexpected info message: %q", m2.info)
+	}
+}

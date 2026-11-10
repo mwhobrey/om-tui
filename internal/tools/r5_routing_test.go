@@ -497,7 +497,7 @@ func TestR5MCPV2PrimaryReactUsesNativeConversationID(t *testing.T) {
 	}
 	t.Cleanup(func() { sendWhatsAppReactionMessage = originalSend })
 
-	result, err := reactToMessageHandler(harness.app, &harness.deps)(context.Background(), toolRequest(map[string]any{
+	result, err := reactToMessageHandler(harness.app, Options{V2: &harness.deps, V2Primary: true})(context.Background(), toolRequest(map[string]any{
 		"conversation_id": conversationID,
 		"message_id":      messageID,
 		"emoji":           "👍",

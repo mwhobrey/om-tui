@@ -33,26 +33,41 @@ func (s *Store) UpsertMessageAndReportNew(m *Message) (bool, error) {
 	}
 	defer tx.Rollback()
 
-	var exists int
-	err = tx.QueryRow(`SELECT 1 FROM messages WHERE message_id = ?`, m.MessageID).Scan(&exists)
-	isNew := errors.Is(err, sql.ErrNoRows)
-	if err != nil && !isNew {
+	before, existed, err := storedMessageBodyTx(tx, m.MessageID)
+	if err != nil {
 		return false, err
 	}
 	if err := upsertMessageTx(tx, m); err != nil {
 		return false, err
 	}
-	body, err := messageSearchBodyTx(tx, m.MessageID)
+	after, err := messageSearchBodyTx(tx, m.MessageID)
 	if err != nil {
 		return false, err
 	}
-	if err := s.syncMessageSearchIndex(tx, m.MessageID, body); err != nil {
+	if err := s.updateMessageSearchIndex(tx, m.MessageID, existed, before, after); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return isNew, nil
+	return !existed, nil
+}
+
+// upsertMessageAndIndexTx stores m and brings the search index in line with
+// the body that ends up stored.
+func (s *Store) upsertMessageAndIndexTx(tx *sql.Tx, m *Message) error {
+	before, existed, err := storedMessageBodyTx(tx, m.MessageID)
+	if err != nil {
+		return err
+	}
+	if err := upsertMessageTx(tx, m); err != nil {
+		return err
+	}
+	after, err := messageSearchBodyTx(tx, m.MessageID)
+	if err != nil {
+		return err
+	}
+	return s.updateMessageSearchIndex(tx, m.MessageID, existed, before, after)
 }
 
 func upsertMessageTx(tx *sql.Tx, m *Message) error {
@@ -133,14 +148,7 @@ func (s *Store) RecordOutgoingMessage(m *Message, deleteDraftID string) error {
 	}
 	defer tx.Rollback()
 
-	if err := upsertMessageTx(tx, m); err != nil {
-		return err
-	}
-	body, err := messageSearchBodyTx(tx, m.MessageID)
-	if err != nil {
-		return err
-	}
-	if err := s.syncMessageSearchIndex(tx, m.MessageID, body); err != nil {
+	if err := s.upsertMessageAndIndexTx(tx, m); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE conversations SET last_message_ts = ? WHERE conversation_id = ?`, m.TimestampMS, m.ConversationID); err != nil {
@@ -160,6 +168,19 @@ func messageSearchBodyTx(tx *sql.Tx, messageID string) (string, error) {
 		return "", err
 	}
 	return body, nil
+}
+
+// storedMessageBodyTx returns the body stored for messageID and whether a row
+// exists for it.
+func storedMessageBodyTx(tx *sql.Tx, messageID string) (string, bool, error) {
+	body, err := messageSearchBodyTx(tx, messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return body, true, nil
 }
 
 func (s *Store) GetMessagesByConversation(conversationID string, limit int) ([]*Message, error) {
@@ -953,16 +974,27 @@ func ValidateMessageTranscript(transcript string, model *string) error {
 	return nil
 }
 
-func (s *Store) syncMessageSearchIndex(exec interface {
-	Exec(string, ...any) (sql.Result, error)
-}, messageID, body string) error {
-	if !s.ftsEnabled {
+// updateMessageSearchIndex brings the search index in line with a message
+// whose stored body went from before (if the row existed) to after.
+//
+// The index can't find a row by message ID: messages_fts declares message_id
+// UNINDEXED, so `DELETE ... WHERE message_id = ?` scans every index row, about
+// 15 ms a save on an 80,000-message store (BenchmarkSaveIntoLargeStore). Most
+// saves re-deliver or re-import a message whose body hasn't changed (the
+// periodic Signal Desktop rescan and the Google recent reconcile re-save
+// thousands of stored messages an hour), so those leave the index alone. A new
+// row has no index entry to remove, so it only inserts one. Only a changed body
+// pays for the scan.
+func (s *Store) updateMessageSearchIndex(tx *sql.Tx, messageID string, existed bool, before, after string) error {
+	if !s.ftsEnabled || (existed && before == after) {
 		return nil
 	}
-	if _, err := exec.Exec(`DELETE FROM messages_fts WHERE message_id = ?`, messageID); err != nil {
-		return err
+	if existed {
+		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE message_id = ?`, messageID); err != nil {
+			return err
+		}
 	}
-	_, err := exec.Exec(`INSERT INTO messages_fts(message_id, body) VALUES (?, ?)`, messageID, body)
+	_, err := tx.Exec(`INSERT INTO messages_fts(message_id, body) VALUES (?, ?)`, messageID, after)
 	return err
 }
 

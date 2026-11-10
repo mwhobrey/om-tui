@@ -1,6 +1,7 @@
 package signallive
 
 import (
+	"runtime"
 	"context"
 	"os"
 	"path/filepath"
@@ -271,6 +272,8 @@ func TestSweepSignalTmpRootRemovesOnlyStaleEntries(t *testing.T) {
 func TestSweepLegacyLibsignalTempFiltersByNameAndAge(t *testing.T) {
 	tempRoot := t.TempDir()
 	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
 
 	oldLeak := filepath.Join(tempRoot, "libsignal12345")
 	freshLeak := filepath.Join(tempRoot, "libsignal67890")
@@ -303,6 +306,8 @@ func TestSweepLegacyLibsignalTempFiltersByNameAndAge(t *testing.T) {
 func TestSweepRespectsOptOut(t *testing.T) {
 	tempRoot := t.TempDir()
 	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
 	t.Setenv(signalTmpSweepEnvVar, "0")
 
 	leak := filepath.Join(tempRoot, "libsignal-optout")
@@ -326,10 +331,17 @@ func TestSweepRespectsOptOut(t *testing.T) {
 // against a stub executable to prove the subprocess sees the confined
 // TMPDIR/SIGNAL_CLI_OPTS and that the per-run dir is removed afterwards.
 func TestRunSignalCLIConfinesTempAndCleansUp(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
 	configDir := t.TempDir()
 	stub := filepath.Join(t.TempDir(), "signal-cli-stub")
 	script := "#!/bin/sh\nprintf '%s|%s' \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n"
+	if runtime.GOOS == "windows" {
+		stub = filepath.Join(t.TempDir(), "signal-cli-stub.cmd")
+		script = "@echo off\r\nif not exist \"%TMPDIR%\\libsignal-test\" mkdir \"%TMPDIR%\\libsignal-test\"\r\necho %TMPDIR%^|%SIGNAL_CLI_OPTS%\r\n"
+	}
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +351,7 @@ func TestRunSignalCLIConfinesTempAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSignalCLI: %v (out=%s)", err, out)
 	}
-	parts := strings.SplitN(string(out), "|", 2)
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 2)
 	if len(parts) != 2 {
 		t.Fatalf("unexpected stub output: %q", out)
 	}

@@ -203,7 +203,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 	if reads == nil {
 		reads = store
 	}
-	registerV1Routes(mux, store, logger, opts.V2, opts.V2Primary)
+	v1 := registerV1Routes(mux, store, logger, opts.V2, opts.V2Primary)
 	diagnosticsStartedAt := time.Now()
 	getClient := func() *client.Client {
 		if opts.Client != nil {
@@ -334,6 +334,12 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				"enabled":     opts.V2IngestCounters != nil,
 				"per_account": v2IngestPerAccount,
 			},
+		}
+		if opts.V2 != nil && opts.V2.Service != nil {
+			// The dispatch loop's in-flight and abandoned transport calls: a
+			// send that never returns froze all sending for hours on
+			// 2026-10-20 while every other field here looked healthy.
+			payload["v2_dispatch"] = opts.V2.Service.DispatchHealth()
 		}
 		if strings.TrimSpace(opts.IdentityName) != "" {
 			payload["identity_name"] = strings.TrimSpace(opts.IdentityName)
@@ -2417,9 +2423,9 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				httpError(w, "v2 media not available", http.StatusServiceUnavailable)
 				return
 			}
-			if err := writeV2MessageMediaResponse(r.Context(), w, opts.V2, msgID); err != nil {
-				code, message := v1ErrorResponse(err)
-				httpError(w, message, code)
+			messageID, ordinal := parseV2MediaID(msgID)
+			if err := writeV2MessageMediaResponse(r, w, opts.V2, messageID, ordinal); err != nil {
+				writeMediaError(w, err)
 			}
 			return
 		}
@@ -2499,12 +2505,7 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			httpError(w, "method not allowed", 405)
 			return
 		}
-		var req struct {
-			ConversationID string `json:"conversation_id"`
-			MessageID      string `json:"message_id"`
-			Emoji          string `json:"emoji"`
-			Action         string `json:"action"` // "add", "remove", "switch"; default "add"
-		}
+		var req reactionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpError(w, "invalid JSON: "+err.Error(), 400)
 			return
@@ -2514,35 +2515,10 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 			return
 		}
 		if opts.V2Primary {
-			if opts.V2 == nil || opts.V2.V2Store == nil || opts.V2.Service == nil || opts.V2.Registry == nil {
-				httpError(w, "v2 reactions not available", http.StatusServiceUnavailable)
-				return
-			}
-			if strings.TrimSpace(req.ConversationID) == "" {
-				httpError(w, "conversation_id is required", 400)
-				return
-			}
-			submission, err := v2wire.SubmitReactionV2(r.Context(), v2wire.NativeDeps{
-				V2:       opts.V2.V2Store,
-				Service:  opts.V2.Service,
-				Registry: opts.V2.Registry,
-			}, v2wire.ReactionInput{
-				ConversationID:  req.ConversationID,
-				TargetMessageID: req.MessageID,
-				Emoji:           req.Emoji,
-				Action:          req.Action,
-				IdempotencyKey:  reactionIdempotencyKey(req.ConversationID, req.MessageID, req.Emoji, req.Action),
-			})
-			if err != nil {
-				code, message := v1ErrorResponse(err)
-				httpError(w, message, code)
-				return
-			}
-			publishMessages(req.ConversationID)
-			writeJSON(w, map[string]any{
-				"success":   true,
-				"outbox_id": submission.OutboxID,
-			})
+			// The read API hands out v2 IDs here, which the legacy routing
+			// below cannot place: it tells platforms apart by ID prefix or a
+			// legacy-store lookup and falls back to Google Messages.
+			v1.react(w, r, req)
 			return
 		}
 		if isWhatsAppConversation(req.ConversationID) {
@@ -4306,12 +4282,33 @@ func scheduledID() string {
 	return "sched:" + hex.EncodeToString(b)
 }
 
+// parseV2MediaID accepts either a v2 message ID (its first attachment) or
+// the media_id the read API reports for an attachment, v2msg:<message>:<n>.
+func parseV2MediaID(raw string) (string, int64) {
+	raw = strings.TrimSpace(raw)
+	rest, ok := strings.CutPrefix(raw, "v2msg:")
+	if !ok {
+		return raw, 0
+	}
+	cut := strings.LastIndexByte(rest, ':')
+	if cut <= 0 {
+		return rest, 0
+	}
+	ordinal, err := strconv.ParseInt(rest[cut+1:], 10, 64)
+	if err != nil || ordinal < 0 {
+		return raw, 0
+	}
+	return rest[:cut], ordinal
+}
+
 func writeV2MessageMediaResponse(
-	ctx context.Context,
+	r *http.Request,
 	w http.ResponseWriter,
 	v2 *V2Options,
 	messageID string,
+	ordinal int64,
 ) error {
+	ctx := r.Context()
 	messages, err := sqlite.NewMessageRepository(v2.V2Store, time.Now)
 	if err != nil {
 		return err
@@ -4323,7 +4320,7 @@ func writeV2MessageMediaResponse(
 	descriptor, err := v2.Media.Resolve(ctx, media.DownloadCommand{
 		AccountID: message.AccountID,
 		MessageID: message.MessageID,
-		Ordinal:   0,
+		Ordinal:   ordinal,
 	})
 	if err != nil {
 		return err
@@ -4333,7 +4330,7 @@ func writeV2MessageMediaResponse(
 		return err
 	}
 	defer reader.Close()
-	writeDescriptorMediaResponse(w, reader, descriptor)
+	writeDescriptorMediaResponse(w, r, reader, descriptor)
 	return nil
 }
 

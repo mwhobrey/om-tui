@@ -1,6 +1,7 @@
 package signallive
 
 import (
+	"runtime"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -42,9 +43,16 @@ func (b *syncBuffer) String() string {
 }
 
 func TestSignalCLIVersionProbeUsesExactCommandAndPrivateTemp(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
 	stub := filepath.Join(t.TempDir(), "signal-cli-stub")
 	script := "#!/bin/sh\nprintf '%s|%s|%s' \"$1\" \"$TMPDIR\" \"$SIGNAL_CLI_OPTS\"\nmkdir -p \"$TMPDIR/libsignal-test\"\n"
+	if runtime.GOOS == "windows" {
+		stub = filepath.Join(t.TempDir(), "signal-cli-stub.cmd")
+		script = "@echo off\r\nif not exist \"%TMPDIR%\\libsignal-test\" mkdir \"%TMPDIR%\\libsignal-test\"\r\necho %~1^|%TMPDIR%^|%SIGNAL_CLI_OPTS%\r\n"
+	}
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +62,7 @@ func TestSignalCLIVersionProbeUsesExactCommandAndPrivateTemp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probeSignalCLIVersion(): %v (output=%s)", err, output)
 	}
-	parts := strings.SplitN(string(output), "|", 3)
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "|", 3)
 	if len(parts) != 3 {
 		t.Fatalf("unexpected version probe output: %q", output)
 	}

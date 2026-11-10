@@ -119,64 +119,6 @@ func SubmitMediaV2(
 	})
 }
 
-// SubmitReactionV2 resolves the account from an existing v2 conversation and
-// submits a reaction against a v2-native target message ID.
-func SubmitReactionV2(
-	ctx context.Context,
-	deps NativeDeps,
-	input ReactionInput,
-) (messaging.Submission, error) {
-	if err := validateNativeSubmitDeps(ctx, deps); err != nil {
-		return messaging.Submission{}, err
-	}
-	conversation, err := deps.V2.GetConversation(input.ConversationID)
-	if err != nil {
-		return messaging.Submission{}, fmt.Errorf(
-			"resolve v2 conversation %q: %w",
-			input.ConversationID,
-			err,
-		)
-	}
-	if !deps.Registry.Capabilities(conversation.AccountID).Reactions {
-		return messaging.Submission{}, fmt.Errorf(
-			"%w: account %q does not support reactions",
-			ErrPlatformNotSendable,
-			conversation.AccountID,
-		)
-	}
-
-	targetMessageID, err := validateNativeReplyTarget(
-		ctx,
-		deps.V2,
-		input.TargetMessageID,
-		conversation.AccountID,
-		conversation.ConversationID,
-	)
-	if err != nil {
-		return messaging.Submission{}, err
-	}
-	if targetMessageID == "" {
-		return messaging.Submission{}, fmt.Errorf(
-			"%w: reaction target message id is empty",
-			ErrReplyTargetUnavailable,
-		)
-	}
-	action, err := parseNativeReactionAction(input.Action)
-	if err != nil {
-		return messaging.Submission{}, err
-	}
-	return deps.Service.SendReaction(ctx, messaging.SendReactionCommand{
-		CommonCommand: messaging.CommonCommand{
-			AccountID:      conversation.AccountID,
-			ConversationID: conversation.ConversationID,
-			IdempotencyKey: input.IdempotencyKey,
-			NotBefore:      input.NotBefore,
-		},
-		TargetMessageID: targetMessageID,
-		Emoji:           input.Emoji,
-		Action:          action,
-	})
-}
 
 func validateNativeSubmitDeps(ctx context.Context, deps NativeDeps) error {
 	if ctx == nil {
@@ -244,16 +186,3 @@ func slackRemoteFromReplyID(messageID string) string {
 	return strings.TrimSpace(messageID)
 }
 
-func parseNativeReactionAction(action string) (bridge.ReactionAction, error) {
-	action = strings.TrimSpace(strings.ToLower(action))
-	if action == "" {
-		return bridge.ReactionAdd, nil
-	}
-	parsed := bridge.ReactionAction(action)
-	switch parsed {
-	case bridge.ReactionAdd, bridge.ReactionRemove, bridge.ReactionSwitch:
-		return parsed, nil
-	default:
-		return "", fmt.Errorf("%w: reaction action %q is invalid", messaging.ErrInvalidCommand, action)
-	}
-}

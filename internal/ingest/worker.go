@@ -999,9 +999,9 @@ func (w *Worker) prepareReactionActor(
 ) (preparedReactionActor, error) {
 	if reference.IsSelf {
 		return preparedReactionActor{
-			key:    "self",
+			key:    sqlite.SelfReactorKey,
 			isSelf: true,
-			label:  "me",
+			label:  sqlite.SelfReactorLabel,
 		}, nil
 	}
 	if identityRaw(reference) == "" {
@@ -1478,4 +1478,57 @@ func optionalTrimmed(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func (w *Worker) historySnapshotContradicts(
+	accountID string,
+	platform bridge.Platform,
+	event bridge.ConversationEvent,
+	bound sqlite.Conversation,
+) (bool, error) {
+	storedPeers, err := w.store.ListConversationPeerIdentities(accountID, bound.ConversationID)
+	if err != nil {
+		return false, err
+	}
+	if len(storedPeers) == 0 {
+		return false, nil
+	}
+	kind := sqlite.ConversationKindDirect
+	if event.Kind == string(sqlite.ConversationKindGroup) {
+		kind = sqlite.ConversationKindGroup
+	}
+	if kind != bound.Kind {
+		return true, nil
+	}
+	eventPeers := make([]sqlite.Identity, 0, len(event.Participants))
+	seen := make(map[string]struct{}, len(event.Participants))
+	for _, participant := range event.Participants {
+		if participant.Identity.IsSelf || identityRaw(participant.Identity) == "" {
+			continue
+		}
+		key, err := v2keys.IdentityKey(accountID, string(platform), identityRaw(participant.Identity))
+		if err != nil {
+			return false, err
+		}
+		identityID := v2keys.DeriveID("identity", accountID, key.Kind+"\x1f"+key.Canonical)
+		identity, err := w.store.GetIdentityByCanonical(accountID, sqlite.IdentityKind(key.Kind), key.Canonical)
+		switch {
+		case err == nil:
+			if identity.IsSelf {
+				continue
+			}
+			identityID = identity.IdentityID
+		case !errors.Is(err, sqlite.ErrNotFound):
+			return false, err
+		}
+		if _, duplicate := seen[identityID]; duplicate {
+			continue
+		}
+		seen[identityID] = struct{}{}
+		eventPeers = append(eventPeers, sqlite.Identity{IdentityID: identityID})
+	}
+	if len(eventPeers) == 0 {
+		return false, nil
+	}
+	return !rostersConsistent(kind == sqlite.ConversationKindDirect, eventPeers, storedPeers), nil
 }

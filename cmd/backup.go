@@ -1074,6 +1074,9 @@ func writeManifestAtomically(path string, manifest backupManifest) (returnErr er
 	}
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
+	if isWindowsAccessDenied(syncErr) {
+		syncErr = nil
+	}
 	if err := errors.Join(syncErr, closeErr); err != nil {
 		_ = os.Remove(path)
 		return err

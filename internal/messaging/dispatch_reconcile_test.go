@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/url"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -338,6 +340,7 @@ func TestStoreFailedRepointRepair(t *testing.T) {
 		fixture := newStoreFailedRepointFixture(t, clock)
 		fixture.service.pollDelay = time.Hour
 		drainReconcileWake(fixture.service)
+		clock.drain()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -610,9 +613,13 @@ func openReconcileTestStore(t *testing.T, now time.Time) (*sqlite.Store, *sql.DB
 	query := make(url.Values)
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(ON)")
+	normalizedPath := filepath.ToSlash(path)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(normalizedPath, "/") {
+		normalizedPath = "/" + normalizedPath
+	}
 	raw, err := sql.Open("sqlite", (&url.URL{
 		Scheme:   "file",
-		Path:     filepath.ToSlash(path),
+		Path:     normalizedPath,
 		RawQuery: query.Encode(),
 	}).String())
 	if err != nil {
@@ -692,6 +699,16 @@ func newNotifyingReconcileClock(now time.Time) *notifyingReconcileClock {
 	return &notifyingReconcileClock{
 		manualClock:  newManualClock(now),
 		timerCreated: make(chan struct{}, 4),
+	}
+}
+
+func (c *notifyingReconcileClock) drain() {
+	for {
+		select {
+		case <-c.timerCreated:
+		default:
+			return
+		}
 	}
 }
 

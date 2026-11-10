@@ -573,14 +573,6 @@ func (s *v2ToolTextSender) snapshotRequests() []bridge.TextRequest {
 	return append([]bridge.TextRequest(nil), s.requests...)
 }
 
-type v2ToolReactionSender struct{}
-
-func (s *v2ToolReactionSender) SendReaction(
-	_ context.Context,
-	request bridge.ReactionRequest,
-) (bridge.SendResult, error) {
-	return bridge.SendResult{RemoteMessageID: "remote-" + request.RequestID}, nil
-}
 
 type v2ToolMediaRequest struct {
 	AccountID      string

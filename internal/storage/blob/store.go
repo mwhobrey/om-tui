@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -329,7 +330,7 @@ func validateExistingBlob(path string, expectedSize int64) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("hash path is not a regular file")
 	}
-	if info.Mode().Perm() != privateFileMode {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != privateFileMode {
 		return fmt.Errorf("hash path mode is %04o, want %04o", info.Mode().Perm(), privateFileMode)
 	}
 	if info.Size() != expectedSize {
@@ -388,13 +389,4 @@ func copyCapped(ctx context.Context, dst io.Writer, src io.Reader, max int64) (i
 			return written, readErr
 		}
 	}
-}
-
-func syncDir(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
 }

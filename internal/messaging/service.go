@@ -65,6 +65,7 @@ type MessageService struct {
 	store    *sqlite.Store
 	outbox   *sqlite.OutboxRepository
 	messages messageRepository
+	roster   rosterRepository
 	bridges  bridge.Registry
 	blobs    *blob.BlobStore
 	clock    Clock
@@ -76,6 +77,13 @@ type MessageService struct {
 	maxPollDelay  time.Duration
 	maxMediaBytes int64
 	batchLimit    int
+
+	transportTimeout       time.Duration
+	mediaTransportTimeout  time.Duration
+	transportShutdownGrace time.Duration
+	transport              transportCalls
+	passes                 dispatchPasses
+	leaseFailures          dispatchLeaseFailures
 
 	wake chan struct{}
 
@@ -116,6 +124,7 @@ func NewMessageService(
 		store:         store,
 		outbox:        outbox,
 		messages:      messages,
+		roster:        store,
 		bridges:       bridges,
 		blobs:         blobs,
 		clock:         clock,
@@ -126,8 +135,13 @@ func NewMessageService(
 		maxPollDelay:  defaultMaxPollDelay,
 		maxMediaBytes: DefaultMaxMediaBytes,
 		batchLimit:    defaultBatchLimit,
-		wake:          make(chan struct{}, 1),
-		changed:       make(chan struct{}),
+
+		transportTimeout:       defaultTransportCallTimeout,
+		mediaTransportTimeout:  defaultMediaTransportCallTimeout,
+		transportShutdownGrace: defaultTransportShutdownGrace,
+
+		wake:    make(chan struct{}, 1),
+		changed: make(chan struct{}),
 	}, nil
 }
 

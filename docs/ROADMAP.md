@@ -8,15 +8,15 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 
 | ID | Priority | Subsystem | Title / Upstream Reference | Status | Impact / Value |
 |---|---|---|---|---|---|
-| **P0-1** | **P0** | Google | Validate send recipient against stale thread bindings (Upstream #271) | `Open` | Prevents misdirecting sends after phone swap/restore |
-| **P0-2** | **P0** | Outbox | Outbox lease failure head-of-line unblocking (Upstream #278, #274) | `Open` | Prevents 1 failed lease from freezing all outbox sends |
+| **P0-1** | **P0** | Google | Validate send recipient against stale thread bindings (Upstream #271) | `Completed` | Prevents misdirecting sends after phone swap/restore |
+| **P0-2** | **P0** | Outbox | Outbox lease failure head-of-line unblocking (Upstream #278, #274) | `Completed` | Prevents 1 failed lease from freezing all outbox sends |
 | **P0-3** | **P0** | WhatsApp | Fix WhatsApp disconnect message loss race during teardown (Upstream #236) | `Open` | Prevents lost messages during disconnect/reconnect |
-| **P0-4** | **P0** | Media | Handle late-named Google media without permanent failure (Upstream #263) | `Open` | Prevents images from getting stuck as "Image unavailable" |
-| **P1-1** | **P1** | Storage/Perf | Optimize FTS indexing to skip unchanged message updates (Upstream #273) | `Open` | 99% reduction in message write latency (15ms -> 0.08ms) |
+| **P0-4** | **P0** | Media | Handle late-named Google media without permanent failure (Upstream #263) | `Completed` | Prevents images from getting stuck as "Image unavailable" |
+| **P1-1** | **P1** | Storage/Perf | Optimize FTS indexing to skip unchanged message updates (Upstream #273) | `Completed` | 99% reduction in message write latency (15ms -> 0.08ms) |
 | **P1-2** | **P1** | Google | Auto-retry failed Google cookie repairs with backoff (Upstream #260) | `Open` | Eliminates false `Blocked` supervisor parks |
 | **P1-3** | **P1** | Signal | Drain Signal receive calls stopped mid-download (Upstream #259) | `Open` | Prevents corrupted/dropped attachments on 5s timeout |
-| **P1-4** | **P1** | Signal | Mark missing Signal attachments as 410 & enable import (Upstream #258) | `Open` | Accurate attachment availability state and manual recovery |
-| **P1-5** | **P1** | Outbox | Bound transport calls to 60s in dispatcher (Upstream #248) | `Open` | Prevents outbox dispatch lockups on hanging transports |
+| **P1-4** | **P1** | Signal | Mark missing Signal attachments as 410 & enable import (Upstream #258) | `Completed` | Accurate attachment availability state and manual recovery |
+| **P1-5** | **P1** | Outbox | Bound transport calls to 60s in dispatcher (Upstream #248) | `Completed` | Prevents outbox dispatch lockups on hanging transports |
 | **P2-1** | **P2** | WhatsApp | Stop storing WhatsApp LIDs as phone numbers & repair V2 (Upstream #256) | `Open` | Stops identity corruption and synthetic number pollution |
 | **P2-2** | **P2** | WhatsApp | Match group read receipt sender form to incoming message (Upstream #255) | `Open` | Read receipt sender consistency |
 | **P2-3** | **P2** | Google | Hold Google intents during phone silence & back off (Upstream #254) | `Open` | Eliminates CPU/request churn when phone is offline |
@@ -171,11 +171,14 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 
 ## 3. Recommended Phased Execution Plan
 
-### Phase 1: Critical Safety & Outbox Stability (Current Focus)
-- [ ] **P0-1:** Port Google send recipient validation (Upstream #271).
-- [ ] **P0-2:** Port outbox lease failure isolation & retry (Upstream #278, #274).
-- [ ] **P0-4:** Port Google late media 503 retry (Upstream #263).
-- [ ] **P1-1:** Port SQLite FTS indexing optimization (Upstream #273).
+### Phase 1: Critical Safety & Outbox Stability (Completed)
+- [x] **P0-1:** Port Google send recipient validation (Upstream #271).
+- [x] **P0-2:** Port outbox lease failure isolation & retry (Upstream #278, #274).
+- [x] **P0-4:** Port Google late media 503 retry (Upstream #263).
+- [x] **P1-1:** Port SQLite FTS indexing optimization (Upstream #273).
+- [x] **P1-4:** Port missing Signal attachment 410 & import (Upstream #258).
+- [x] **P1-5:** Bound transport calls in outbox worker to 60s (Upstream #248).
+- [x] Route v2-primary reactions through the outbox (Upstream #227).
 
 ### Phase 2: Transports & Connection Recovery
 - [ ] **P1-2:** Port Google cookie repair auto-recovery with backoff (Upstream #260).

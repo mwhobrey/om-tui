@@ -163,6 +163,10 @@ Person/story/viz tools, `list_contacts`, `resolve_contact_routes`, and `download
 - `GET /api/search?q=…` — search across platforms
 - `GET /api/media/<message_id>` — download attachment (requires `MediaID`)
 
+- `GET /api/search/messages?q=...` — **message-level** search: raw message DTOs
+- `POST /api/react` — `{conversation_id, message_id, emoji, action}`. On a v2-primary daemon it queues the reaction on the outbox and waits up to 8 s.
+- `POST /api/v1/outbox/reactions` — the durable twin (v2-primary only, `idempotency_key` required).
+
 No static UI is served from this fork — `internal/web` is the API/SSE layer
 only. `gifs.go`/`linkpreview.go` handlers exist but are currently dormant
 (no TUI consumer yet).

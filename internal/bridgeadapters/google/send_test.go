@@ -740,7 +740,7 @@ func TestSendMediaInstalledClientBeforeReadyIsClassifiedPreCall(t *testing.T) {
 	legacy := newLegacyClient(t)
 	generation := host.BeginGoogleGeneration(legacy)
 	t.Cleanup(generation.Release)
-	fake := &fakeMediaSendClient{}
+	fake := &fakeMediaSendClient{conversationResult: &gmproto.Conversation{}}
 	installMediaSendClient(t, legacy, fake)
 	a := New("google-primary", host, func() bool { return true })
 
@@ -922,7 +922,7 @@ func TestSendMediaBoundsAndLengthChecksReaderBeforeUpload(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake := &fakeMediaSendClient{}
+			fake := &fakeMediaSendClient{conversationResult: &gmproto.Conversation{}}
 			a := newMediaSendTestAdapter(t, fake)
 			_, err := a.SendMedia(context.Background(), bridge.MediaRequest{
 				Reader: test.reader,
@@ -940,7 +940,7 @@ func TestSendMediaBoundsAndLengthChecksReaderBeforeUpload(t *testing.T) {
 	}
 
 	reader := strings.NewReader("abcdef")
-	fake := &fakeMediaSendClient{}
+	fake := &fakeMediaSendClient{conversationResult: &gmproto.Conversation{}}
 	a := newMediaSendTestAdapter(t, fake)
 	_, _ = a.SendMedia(context.Background(), bridge.MediaRequest{Reader: reader, Size: 3})
 	if reader.Len() != 2 {
@@ -972,7 +972,7 @@ func TestSendMediaPreDispatchTransportFailuresAreClassifiedNotCalled(t *testing.
 		{
 			name: "nil conversation result",
 			configure: func(fake *fakeMediaSendClient) {
-				fake.uploadResult = &gmproto.MediaContent{MediaID: "media-id"}
+				fake.conversationResult = nil
 			},
 			wantClass:   bridge.FailureTransient,
 			fingerprint: "google_conversation_get_failed",
@@ -990,7 +990,7 @@ func TestSendMediaPreDispatchTransportFailuresAreClassifiedNotCalled(t *testing.
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake := &fakeMediaSendClient{}
+			fake := &fakeMediaSendClient{conversationResult: &gmproto.Conversation{}}
 			test.configure(fake)
 			a := newMediaSendTestAdapter(t, fake)
 			_, err := a.SendMedia(context.Background(), bridge.MediaRequest{
