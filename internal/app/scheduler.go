@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/signallive"
 )
 
 const (
@@ -68,6 +69,13 @@ func (a *App) sendScheduledMessage(sm *db.ScheduledMessage) {
 	}
 	if err != nil {
 		a.Logger.Warn().Err(err).Str("scheduled_id", sm.ID).Msg("Scheduler: send failed")
+		// signal-cli was finishing an attachment download for a receive
+		// call, which can take minutes; the send never ran. Retry without
+		// spending one of the few attempts.
+		if signallive.IsReceiveDrainingError(err) {
+			_ = a.Store.RequeueScheduledMessage(sm.ID, err.Error())
+			return
+		}
 		a.retryOrFail(sm, err.Error())
 		return
 	}
