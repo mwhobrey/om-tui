@@ -1355,32 +1355,104 @@ curl -s http://127.0.0.1:7007/api/status | jq '.google.repairs_paced'
 The counter records exactly one thing: **how many repair requests were delayed
 by the floor**. A climbing count proves requests arrived faster than the
 configured interval — it does not identify why (could be fast revocation, a
-crash/reconnect loop, or repeated manual reconnects). It cannot clear the
-session healthy either: a single failed repair parks the supervisor in Blocked
-with the counter still at 0. For context, observed expiries on fixed builds
+crash/reconnect loop, or repeated manual Reconnect presses while a repair
+waits). Retries of a *failed* repair never count: the supervisor waits at
+least the same interval before retrying (`Policy.RepairRetryFloor`), so they
+never reach the gate early. For context, observed expiries on fixed builds
 were ~0-2/day (one account).
 
-To see *why* a repair failed: the refresh error is currently **returned but
-never logged** — the native path emits no log line, and the supervisor
-discards the error detail (`handleRepairResult` sets Blocked without logging
-it) — so the only way to observe it today is to reproduce it directly: run
-`scripts/refresh-google-session-cookies-macos.py` manually and read its error
-output. (A fix to log the repair failure is chipped.)
+**A failed repair is retried, not parked (as of the 2026-10-22 fix).** Before
+it, one failed cookie refresh parked the supervisor in Blocked with no log
+line and nothing to retry it; on 2026-10-22 19:26 that kept SMS dead until a
+manual cookie refresh and restart. Now:
+
+- A refresh error (Chrome cookie DB copy, keychain, missing cookies, the
+  session write, the 20 s timeout) is retried with backoff: at least
+  `OPENMESSAGE_REPAIR_MIN_INTERVAL` (90 s), then full jitter over a window that
+  doubles per consecutive failure, up to 5 min. No generation starts until a
+  refresh succeeds. The first two failures stay quiet; from the third in a
+  row (`repair_failing: true`, about 3–4.5 minutes after the expiry when each
+  refresh fails fast, up to a minute more when each runs into the 20 s refresh
+  timeout) status also raises
+  `needs_repair`, so the watchdog and the app's health notification fire,
+  while the retries go on. A refresh that keeps failing is usually Chrome
+  (signed out of the account, keychain access refused), never a re-pair; once
+  Chrome is fixed the next retry heals it with no Reconnect.
+- It parks only for a terminal error: no refresh mechanism at all
+  (`google_cookie_refresh_unavailable`, the one case that asks for a re-pair),
+  or a terminal class from the lifecycle (Gaia logout, unusable session). It
+  also parks after five consecutive expiries in one episode, the first plus
+  four repairs whose fresh cookies Google rejected too
+  (`block_reason: repeated_failure` with `error_class: credentials_expired`):
+  check that Chrome is signed in to the account, then press Reconnect; re-pair
+  only if that fails too. The count resets whenever a generation shows any
+  activity, so a generation that gets a long-poll event before each 401
+  (`ListenRecovered`, then a set-active 401) repairs again every pacing
+  interval instead of tripping the circuit; `repairs_paced` climbing is the
+  signal for that loop.
+- A libgm ping or set-active-session rejected with HTTP 401 now goes to
+  repair at once. Before, it took three failed pings (~2-3 min) and a
+  transient reconnect to learn the same thing from the new long poll
+  (observed 2026-10-22 21:01→21:03).
+- Pressing Reconnect while a failed repair waits retries it now
+  (`RetryCredentialRepairNow`); the pacing gate still applies.
+
+Every repair attempt and result is logged, with the error:
+
+```
+INF Google credential repair: refreshing session cookies   attempt=N trigger=google_auth_expired
+INF Refreshed Google session cookies from Chrome            cookies=60 changed=10
+INF Google credential repair succeeded; reconnecting        attempt=N took=…
+WRN Google credential repair failed; will retry             attempt=N error="…" retry_in=…
+ERR Google credential repair failed and cannot be retried automatically; …
+ERR Google Messages supervisor parked; it will not retry until Reconnect   block_reason=…
+```
+
+`changed=0` means Chrome holds the very cookies Google just rejected, so the
+reconnect will likely 401 again. The supervisor's own view is in
+`/api/status`:
+
+```bash
+curl -s http://127.0.0.1:7007/api/status | jq '.google | {connected, auth_expired, reconnecting, needs_repair, supervisor}'
+```
+
+`supervisor.state` is the lifecycle state (`online`, `connecting`, `backoff`,
+`repairing_credentials`, `blocked`, …), `supervisor.block_reason` says why it
+parked, `supervisor.retry_at_ms` is when the next attempt is due, and
+`supervisor.repair` holds the episode's `attempts` and the newest attempt's
+`last_started_ms`, `last_finished_ms`, `last_outcome` (`running`,
+`succeeded`, `failed_retrying`, `failed_blocked`) and `last_error`. The last
+repair's fields stay after the account heals, so the cause of the previous
+episode is still readable.
+
+What the flags mean now: `auth_expired` + `reconnecting` is a cookie refresh
+in progress or waiting to retry; it needs nothing from anyone. `needs_repair`
+is set only when a person must act: the supervisor parked
+(`supervisor.state == "blocked"`), the refresh has failed three times in a row
+(`repair_failing`, still retrying, fix Chrome), or sends keep failing while
+connected (the zombie). `supervisor.repair.consecutive_failures` counts the
+failed refreshes since the last success. The web banner, the macOS menu bar alert and the settings status
+follow the same split: "Reconnecting… No re-pair needed" while recovering, and
+the parked reason (with Re-pair only when the session is the problem) once it
+stops.
 
 An `auth_expired` session with its device link intact revives by cookie
-rewrite alone — **do not re-pair** for `needs_repair`; that resets nothing the
-refresh can't fix and risks pairing throttles. So the **first** thing to try
-when SMS is dead is nothing — wait ~2-3 min for the watchdog (the one observed
-live heal took 2m20s; under-waiting funnels you into the re-pair this section
-warns against). If it hasn't recovered, **read the actual repair and reconnect
-errors before deciding to re-pair** — the causes are broader than "the cookies
-are gone": Chrome/keychain/profile access, missing or undecryptable cookies, a
-session-file write failure, network or server rejection, or a genuinely revoked
-device link. Re-check the running binary (above) and whether Chrome still holds
-the five `.google.com` account cookies first; only once those are ruled out
-fall back to the manual re-pair recipe above. The app also posts a **health notification**
-(once, on the rising edge) when Google flips to `needs_repair` or WhatsApp
-logs out, so a dead platform can't sit silent for days.
+rewrite alone — **do not re-pair** while `reconnecting` is true; that resets
+nothing the refresh can't fix and risks pairing throttles. So the **first**
+thing to try when SMS is dead is nothing — wait ~2-3 min (the one observed
+live heal took 2m20s; the 2026-10-22 21:03 heal took 180 ms after the 401
+reached the supervisor). If it hasn't recovered, **read the repair errors
+before deciding to re-pair** (`supervisor.repair.last_error` and the log lines
+above) — the causes are broader than "the cookies are gone": Chrome/keychain/
+profile access, missing or undecryptable cookies, a session-file write
+failure, network or server rejection, or a genuinely revoked device link.
+Re-check the running binary (above) and whether Chrome still holds the five
+`.google.com` account cookies first; only once those are ruled out fall back to
+the manual re-pair recipe above. To reproduce a refresh by hand, run
+`scripts/refresh-google-session-cookies-macos.py` with the app quit. The app
+also posts a **health notification** (once, on the rising edge) when Google
+flips to `needs_repair` or WhatsApp logs out, so a dead platform can't sit
+silent for days.
 
 Prereq: the app must be **non-sandboxed** (it is — `OpenMessage.entitlements`
 is hardened-runtime only) so the backend can read Chrome's cookie DB and the
@@ -1608,6 +1680,84 @@ the handler context both detached and cancelled, on v2-ingest and
 legacy-only installs. It also covers an
 app-state patch interrupted between its version and MAC writes.
 
+## WhatsApp LIDs stored as phone numbers
+
+A WhatsApp LID (`<digits>@lid`) has an all-digit user part, like a phone
+number (`<digits>@s.whatsapp.net`), so its digits alone never say which it
+is. Until this fix both `jidToPhone` helpers turned any all-digit user into
+`+<digits>`: the legacy bridge stored a LID whose number `canonicalJID` did not
+know that way, and the WhatsApp Desktop importer every LID sender. Migration
+then minted an `e164` identity for the LID's digits. In v2 such a sender shows
+a phone number that is no one's, matches phone searches, and a reaction or read
+receipt to their group message names `<lid digits>@s.whatsapp.net`. The same
+check passed new-style group JIDs (`120363…@g.us`) and newsletters for phone
+numbers, so a legacy group with no subject was named `+120363…`, and a
+newsletter's posts named it as their sender by that number.
+
+What each path stores now:
+
+- **v2 live ingest** (unchanged): the phone number when whatsmeow knows the
+  LID's number, else `<digits>@lid` (`ingest.whatsAppIdentity`).
+- **Legacy bridge**: the same value (`whatsapplive.StoredAddress`), so a
+  migrated row names the identity a live frame does: the phone number, else
+  the sender's JID (a LID, a hosted or bot JID, a newsletter), and nothing for
+  a group or broadcast list. A chat with no name yet is named by its JID,
+  which a real name replaces when one arrives. `phoneForJID` no longer falls
+  back to a contact's `RedactedPhone` (the masked `+1 ••• ••21` a LID group
+  shows a non-contact by): once a LID gets no number from `jidToPhone`, that
+  fallback would store the mask's digits as one. It stays a display name.
+- **Desktop importer**: the number Desktop pairs the LID with (the chat's or
+  member's `ZCONTACTIDENTIFIER` when it is a phone-number JID or `+<digits>`,
+  or `LID.sqlite`), else `<digits>@lid`.
+
+**Repairing existing v2 identities** (the dry run may run beside the app;
+`--apply` needs the daemon down, takes the instance lock, refuses while
+`/api/status` answers, and copies `v2/store.sqlite3*` to
+`v2/repair-backups/<stamp>/` first; park the watchdog before applying):
+
+```bash
+OPENMESSAGES_DATA_DIR="$HOME/Library/Application Support/OpenMessage" \
+  openmessage repair whatsapp-lid --report lid-repair.json   # dry run
+# review, then add --apply
+```
+
+The repair rewrites an `e164` identity of the WhatsApp account only when a
+record that keeps the JID's server names its digits as a LID and no record
+names them as a phone number. It reads, read-only: the whatsmeow session store
+(`whatsapp-session.db`: `whatsmeow_lid_map`, the device row, contacts),
+WhatsApp Desktop (`ChatStorage.sqlite` chats, members and senders, and
+`LID.sqlite`; `--desktop-db ''` skips it), and the v2 store itself (the
+account's `<digits>@lid` identities and chats, its own number, and every
+number on another platform's account). Each source's line in the report says
+whether it was read, missing or failed; a source that fails only means less
+evidence, so fewer identities change. Digit length is never evidence. A LID
+becomes the form v2 ingest gives a LID: its phone number when the records pair
+it with exactly one (and nothing names that number a LID), otherwise
+`<digits>@lid`. The repair can know a number live ingest does not yet:
+`canonicalJID` asks only whatsmeow and the session store's LID map, not
+Desktop. Until whatsmeow learns that pair, a new live message from the LID
+names it `<digits>@lid`, a second identity beside the number; any LID whose
+number becomes known after its first message gets the same split today.
+When that identity exists the two merge: messages,
+roster rows, reactions (the newer per person and message) and the person link
+move, and display names that only repeat the LID's digits are cleared. It
+refuses, and reports, an identity also named as a phone number
+(`also-a-phone-number`), this account's own (`own-identity`), one whose LID
+pairs with this account's own number (`target-is-own-identity`), and one whose
+target links to a different person (`target-links-another-person`). Running it
+again plans nothing new. It changes only the v2 store; the legacy
+`messages.db` keeps its old rows. It rewrites only LIDs: a group's or
+newsletter's digits stored as `+<digits>` before the fix (a group title, a
+newsletter's sender) stay as they are, since no record names those digits a
+LID.
+
+Read receipts parse their stored sender the way reactions do
+(`whatsapplive.MarkReadRequest`; see "WhatsApp read-receipt senders" below).
+So after the repair a group receipt names a sender the repair left as
+`<digits>@lid` by that LID, and one it rewrote to a phone number the way any
+stored number is named. No production path queues a v2 read receipt yet:
+nothing outside tests calls `messaging.MessageService.MarkRead`.
+
 ## signal-cli
 
 Require **signal-cli ≥ 0.14.5**. 0.14.1 throws
@@ -1689,6 +1839,103 @@ up the whole `signal-cli/` dir first and restore the media subdirs
 (`attachments`, `avatars`, `stickers`, `outgoing-attachments`) — not `data/` —
 after the new link (recipe proven 2026-07-20; backups live under
 `<datadir>/app-backups/`).
+
+### Receive calls that are still downloading an attachment
+
+Each `signal-cli receive` call is bounded at 5 s (`receiveCallDeadline`), then
+gets SIGTERM. What happens next decides whether a message survives
+(signal-cli 0.14.9 and libsignal 0.103 source, read 2026-10-21):
+
+- signal-cli **caches and acks** each envelope before handling it, downloads
+  its attachments **while handling it**, and prints it only after that.
+- SIGTERM is graceful: `receive` installs signal-cli's `Shutdown` handler,
+  which stops reading from the server and waits for the envelope in hand to
+  finish. The native build does this too (observed: `[SIGTERM handler] INFO
+  Shutdown - Received SIGTERM signal, shutting down ...`, exit 0).
+- **A SIGKILL between the decrypt and the print loses that message
+  silently.** The next `receive` retries the cached copy first, but the
+  decrypt already advanced the session, so libsignal reports a duplicate and
+  signal-cli deletes the entry without printing it. It sends no delivery
+  receipt and makes no resend request. It is not a wedge, because later
+  messages flow normally.
+- Downloads are what make that window long. The CDN client allows 30 s
+  **per read** with no overall deadline, so a large video on a slow link takes
+  minutes. Ciphertext grows in `signal-cli_tmp_*.tmp` in `java.io.tmpdir`. The
+  plaintext is stored through `attachments/<name>.<random>.tmp`, which exists
+  but stays empty for the whole download.
+
+Before #259 every call got a fixed 3 s between SIGTERM and SIGKILL, so a
+download still running about 8 s into a receive call lost its message. Now
+a receive call stopped by **its deadline** is *drained*
+(`internal/signallive/receive_drain.go`):
+
+- It keeps running while a download in it grows. The drain watches the
+  call's run dir and fresh `attachments/*.tmp` every 250 ms.
+- It is killed 3 s after no download is in flight (the old grace), 45 s
+  after its downloads stop growing (longer than the CDN's 30 s read timeout,
+  so a stalled download fails inside signal-cli, which still prints the
+  message; #258 then marks the attachment unavailable), or 10 min after the
+  SIGTERM, whichever comes first.
+- A stop by the **caller** (bridge Close, Unpair, a new generation) still
+  gets only 3 s. Those stops wait for the receive loop.
+- The drain beats the poller every 5 s while bytes arrive. Without the beat,
+  the supervisor's liveness probe (2 min, then a 30 s probe) would retire the
+  generation, and that would kill the download.
+- **Sends during a drain fail at once as not dispatched.** The dispatcher
+  then retries them about every 5 s. The dispatcher sends every platform's
+  messages one at a time, so blocking would stall WhatsApp and Google too.
+  Otherwise a send waits up to 10 s for the command gate, and its 20 s
+  timeout starts only once it holds the gate. A quoted reply to an author
+  the contact cache lacks can first wait for a contact refresh too, about
+  50 s in the worst case, still under the dispatcher's 60 s text limit. Before this change the wait
+  counted against that timeout, so a send whose timeout ran out before
+  signal-cli started could be marked uncertain.
+  Attachment fetches (`getAttachment`), and the contact refresh a send runs
+  to name a quoted or reacted-to author it doesn't know, give up the same
+  way; the author then goes to signal-cli as an ACI. A send already waiting
+  when a drain begins gives up then. The legacy paths (web API on a
+  legacy-primary install, scheduled messages) get the same error; a
+  scheduled message goes back to pending **without** spending one of its 5
+  attempts (`signallive.IsReceiveDrainingError`).
+
+Log lines (backend os_log):
+
+- `Holding a stopped Signal receive call open while it finishes an attachment download`
+- `Stopped Signal receive call exited after finishing its attachment download`
+- `Killed a Signal receive call with an attachment download in flight; ... that message is lost`
+  means the stall window or the 10 min limit was hit.
+- `Killed a Signal receive call that had not exited after SIGTERM` means
+  signal-cli was busy with something other than a download. That may have
+  been an envelope (now lost) or only post-print work such as receipts.
+
+Losses still possible: a caller stop during a download; non-download
+handling that takes more than 3 s after the SIGTERM (for example a slow
+group-state fetch); and the signal-cli races where a SIGTERM's stop request
+is lost or its interrupt fails an in-flight download. The last one keeps the
+message and loses only the attachment.
+
+**The native signal-cli and temp dirs.** Homebrew's `signal-cli` is a
+GraalVM native image (`file $(which signal-cli)` reports Mach-O). It ignores
+both `TMPDIR` and `SIGNAL_CLI_OPTS`, and takes `java.io.tmpdir` from
+`getconf DARWIN_USER_TEMP_DIR`. The bridge therefore passes
+`-Djava.io.tmpdir=<run dir>` as the first argument to a native binary
+(Mach-O or ELF), once a `-Djava.io.tmpdir=… --version` run of that build has
+succeeded. A JVM install keeps getting it through `SIGNAL_CLI_OPTS`, as
+before. A wrapper *script* around the native binary gets neither, so its
+ciphertext lands outside the run dir and the drain sees only the empty
+`attachments/*.tmp`. A wrapper that ends in `exec signal-cli "$@"` is then held
+for the 45 s stall window at most. One that doesn't `exec` dies on SIGTERM and
+leaves signal-cli running as an orphan, and the call holds the command gate
+until that orphan exits (10 min backstop), so point `OPENMESSAGES_SIGNAL_CLI`
+only at the binary or an `exec` wrapper. Builds before #259 had each
+call extract libsignal (29 MB) into the Darwin temp dir, and a killed call
+left it there as `libsignal<digits>/`. The periodic sweep looks only in the
+daemon's own temp dir, which is `/tmp`: the app starts the backend with an
+environment that has no `TMPDIR` (`BackendLauncherCore.swift`). So those
+leftovers stay until removed by hand: `find "$(getconf DARWIN_USER_TEMP_DIR)" -maxdepth 1 -name
+'libsignal*' -mtime +1`, with no signal-cli running. A killed call's empty
+`attachments/<name>.<digits>.tmp` is swept after 30 min; a stored attachment
+whose sender named it `.tmp` (`<id>.tmp`) is not.
 
 ### Signal quote-replies on v2-primary
 
@@ -1906,6 +2153,91 @@ target author is unavailable`). Before, both went out with an empty sender
 and addressed a message of this account's that does not exist. Unlike a Signal
 reaction whose target cannot be named (above), which keeps retrying, this one
 is not retried: if the message is later stored with its sender, react again.
+In a group, a stored sender that is neither a sender's JID (on the
+phone-number, LID, hosted or bot server) nor a phone number (digits, with or
+without a leading `+`) is refused the same way; that includes the group's own
+JID, which the history decoder stores as the sender of a group message that
+names no participant. In a 1:1 chat such a sender is replaced by the chat, as
+a missing one is.
+
+In a group the sender is sent in the form the message arrived with, the form
+whatsmeow puts in the keys it builds for a received message
+(`MessageInfo.Sender`): the member's LID (`<digits>@lid`) when the message was
+addressed by LID, the phone number otherwise. Live ingest stores the phone
+number whenever whatsmeow knew the LID's number when the message arrived, and
+`<digits>@lid` when it did not; history sync stores the phone number when the
+sync's own number mappings name it, and otherwise the form the phone's history
+gives. So `SendReactionRequest` sends a stored LID as it is, and maps a stored
+phone number back to its LID (whatsmeow's LID store, then the session store's
+`whatsmeow_lid_map`) when the group addresses members by LID. The store does
+not record each message's addressing, so the group's current addressing stands
+in for it: a message from before the group moved to LID addressing is named by
+its LID too. The addressing comes from the whatsmeow group cache that
+`SendMessage` reads to choose the identity it sends with; when the cache does
+not hold the group, the lookup fetches it and `SendMessage` then uses that
+copy. A phone number whose LID is not known, or a group whose addressing cannot
+be read, goes out as stored (and `SendMessage` repeats the lookup and reports a
+group it cannot read, as before). Before, a stored LID went out as
+`<digits>@lid@s.whatsapp.net`, which names no member, and a stored phone number
+went out as the phone number in a LID group. whatsmeow's own message-secret
+lookup accepts a key's sender in either form, so the phone number may have
+matched too; the LID is the form the message carries. 1:1 chats with a phone
+number or a LID were never affected: whatsmeow puts no participant in their
+messages' keys (a bot's chat, for one, does get one).
+
+Messages migrated from the legacy store, or imported from WhatsApp Desktop,
+before the fix in "WhatsApp LIDs stored as phone numbers" above can name a LID
+sender by the LID's digits as a phone number (`+<lid digits>`). Such a sender
+looks like a phone number here and goes out as `<lid digits>@s.whatsapp.net`
+until `openmessage repair whatsapp-lid` rewrites it.
+
+A WhatsApp send goes out under an ID derived from its request ID
+(`whatsapplive.deriveWebMessageID`), and its message is renamed to that ID
+when the send is confirmed. Until then the message is still named by the
+request ID itself, an ID WhatsApp never sees. So a reaction to a WhatsApp
+message of yours that has not been sent yet is held, and one to a message
+whose send was canceled or rejected is rejected (see "Reactions stuck
+retrying" below), rather than addressed to that ID. One sent but `uncertain` or `store_failed`
+is still named by the request ID, and a reaction to it is still addressed to
+that ID, which no WhatsApp message has.
+
+**WhatsApp read-receipt senders.** A WhatsApp read receipt names the messages
+it covers by their chat and IDs, and in a group by their sender too:
+whatsmeow's `MarkRead` puts the sender in the receipt's `participant` attribute
+(its documentation requires one in a group) and names one sender for every
+message a receipt covers. `whatsapplive.MarkReadRequest` names a group sender
+the way a reaction names it (above): a stored LID as stored, and a stored phone
+number as its LID when the group addresses members by LID. That is also the
+form whatsmeow's own delivery receipt for the message named, since it copies
+the participant the message arrived with. Reading the group's addressing
+fetches the group from WhatsApp if whatsmeow's cache does not hold it (which
+also stores the LID of each member the response names by both number and LID,
+so it is read before the number's LID is looked up). For a read receipt that
+fetch has 10 s of the receipt's 45 s; if it fails or runs out, the receipt goes
+out naming the stored phone number (`MarkRead` does not read the group cache).
+The 10 s does not cover waiting for whatsmeow's group cache lock, which another
+caller holds across its own fetch. A group receipt whose stored sender is
+neither a sender's JID nor a phone number (the same test as for reactions) is
+refused before anything is sent: the row ends `rejected` (`error_class:
+unsupported`, `error_code: mark_read`, `error_detail` `mark_read: unsupported:
+whatsapp read receipt sender is not a user's JID or phone number`), and the
+read cursor keeps its new position. A message with no stored sender is not
+refused. This account's own messages have none (neither the send path, ingest
+nor migration gives an outgoing message a sender identity), so a receipt for
+one goes out with no participant, as before. Before, a stored LID went out as
+`<digits>@lid@s.whatsapp.net`, and any other value went out as
+`<value>@s.whatsapp.net` (less a leading `+`; a bare `+` went out with no
+participant). In a 1:1 chat `MarkRead` sends no participant, so nothing changed
+there. When a request covers messages from several stored senders, the WhatsApp
+adapter sends one receipt per sender, in the order each first appears. Before,
+one receipt named the first message's author for all of them. A refused sender
+does not hold up the others' receipts; the refusal is reported after they are
+sent. A transport failure ends the request, and so does the end of its context:
+the 60 s `callTransport` bound covers the whole request. The dispatcher puts
+one message, the read cursor's, in each request. As of 2026-10-21 no production
+path queues a v2 read receipt: nothing outside tests calls
+`messaging.MessageService.MarkRead`, and `/api/mark-read` only moves the
+cursor. So none of this has reached a live install yet.
 
 **Reactions stuck retrying.** A reaction the transport cannot deliver yet goes
 `not_dispatched` and retries (every 5 s by default) with no cap; a Signal

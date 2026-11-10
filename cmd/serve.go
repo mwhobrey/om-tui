@@ -276,6 +276,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 		newGoogleSupervisor := func() (*bridge.Supervisor, error) {
 			supervisorOptions := []bridge.SupervisorOption{
 				bridge.WithCredentialRepairer(repairer),
+				bridge.WithSnapshotObserver(googleSupervisorObserver(logger, publishOverallStatus)),
 			}
 			if stack != nil {
 				supervisorOptions = append(supervisorOptions, bridge.WithConnectionSink(stack.Sink))
@@ -295,6 +296,13 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 			return fmt.Errorf("init Google Messages supervisor: %w", err)
 		}
 		googleControl = newGoogleSupervisorControl(googleSupervisor, a.SessionPath, newGoogleSupervisor, logger, publishOverallStatus)
+		a.SetGoogleSupervisorStatus(func() (app.GoogleSupervisorStatus, bool) {
+			snapshot, ok := googleControl.Snapshot()
+			if !ok {
+				return app.GoogleSupervisorStatus{}, false
+			}
+			return googleSupervisorStatus(snapshot), true
+		})
 		googleStartupCtx, cancelGoogleStartup := context.WithCancel(context.Background())
 		var googleStartupWG sync.WaitGroup
 		defer func() {
@@ -508,7 +516,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 						return
 					}
 				}
-				host.ObserveIngress(func(frame whatsapplive.IngressFrame) {
+				host.ObserveIngress(func(frame whatsapplive.IngressFrame) error {
 					if err := stack.Sink.AppendIngress(context.Background(), bridge.RawIngressRecord{
 						AccountID:    riverID,
 						Generation:   0,
@@ -520,8 +528,10 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 					}); err != nil {
 						stack.Sink.RecordIngressError(riverID)
 						host.LogIngressError(err, riverID, 0)
+						return err
 					}
-				})
+					return nil
+				}, true)
 			}
 			a.OnExtraSignalRiverReady = func(riverID string, host *signallive.Bridge) {
 				if host == nil {
@@ -1380,12 +1390,19 @@ var refreshGoogleSessionCookies = func(ctx context.Context, sessionPath string) 
 	if !googlecookies.NativeSupported() {
 		return nil
 	}
-	if err := googlecookies.Refresh(ctx, googlecookies.DefaultChromeProfile(), sessionPath); err != nil {
+	stats, err := googlecookies.RefreshWithStats(ctx, googlecookies.DefaultChromeProfile(), sessionPath)
+	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("refresh Google cookies timed out after %s", googleCookieRefreshTimeout)
 		}
 		return fmt.Errorf("refresh Google cookies: %w", err)
 	}
+	// Counts only, never values. changed=0 means Chrome holds the very
+	// cookies Google just rejected, so the reconnect will likely fail too.
+	zerolog.Ctx(ctx).Info().
+		Int("cookies", stats.Cookies).
+		Int("changed", stats.Changed).
+		Msg("Refreshed Google session cookies from Chrome")
 	return nil
 }
 

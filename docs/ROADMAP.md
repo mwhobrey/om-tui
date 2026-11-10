@@ -10,15 +10,15 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 |---|---|---|---|---|---|
 | **P0-1** | **P0** | Google | Validate send recipient against stale thread bindings (Upstream #271) | `Completed` | Prevents misdirecting sends after phone swap/restore |
 | **P0-2** | **P0** | Outbox | Outbox lease failure head-of-line unblocking (Upstream #278, #274) | `Completed` | Prevents 1 failed lease from freezing all outbox sends |
-| **P0-3** | **P0** | WhatsApp | Fix WhatsApp disconnect message loss race during teardown (Upstream #236) | `Open` | Prevents lost messages during disconnect/reconnect |
+| **P0-3** | **P0** | WhatsApp | Fix WhatsApp disconnect message loss race during teardown (Upstream #236) | `Completed` | Prevents lost messages during disconnect/reconnect |
 | **P0-4** | **P0** | Media | Handle late-named Google media without permanent failure (Upstream #263) | `Completed` | Prevents images from getting stuck as "Image unavailable" |
 | **P1-1** | **P1** | Storage/Perf | Optimize FTS indexing to skip unchanged message updates (Upstream #273) | `Completed` | 99% reduction in message write latency (15ms -> 0.08ms) |
-| **P1-2** | **P1** | Google | Auto-retry failed Google cookie repairs with backoff (Upstream #260) | `Open` | Eliminates false `Blocked` supervisor parks |
-| **P1-3** | **P1** | Signal | Drain Signal receive calls stopped mid-download (Upstream #259) | `Open` | Prevents corrupted/dropped attachments on 5s timeout |
+| **P1-2** | **P1** | Google | Auto-retry failed Google cookie repairs with backoff (Upstream #260) | `Completed` | Eliminates false `Blocked` supervisor parks |
+| **P1-3** | **P1** | Signal | Drain Signal receive calls stopped mid-download (Upstream #259) | `Completed` | Prevents corrupted/dropped attachments on 5s timeout |
 | **P1-4** | **P1** | Signal | Mark missing Signal attachments as 410 & enable import (Upstream #258) | `Completed` | Accurate attachment availability state and manual recovery |
 | **P1-5** | **P1** | Outbox | Bound transport calls to 60s in dispatcher (Upstream #248) | `Completed` | Prevents outbox dispatch lockups on hanging transports |
-| **P2-1** | **P2** | WhatsApp | Stop storing WhatsApp LIDs as phone numbers & repair V2 (Upstream #256) | `Open` | Stops identity corruption and synthetic number pollution |
-| **P2-2** | **P2** | WhatsApp | Match group read receipt sender form to incoming message (Upstream #255) | `Open` | Read receipt sender consistency |
+| **P2-1** | **P2** | WhatsApp | Stop storing WhatsApp LIDs as phone numbers & repair V2 (Upstream #256) | `Completed` | Stops identity corruption and synthetic number pollution |
+| **P2-2** | **P2** | WhatsApp | Match group read receipt sender form to incoming message (Upstream #255) | `Completed` | Read receipt sender consistency |
 | **P2-3** | **P2** | Google | Hold Google intents during phone silence & back off (Upstream #254) | `Open` | Eliminates CPU/request churn when phone is offline |
 | **P2-4** | **P2** | Google | Detect and alert when SMS stops while RCS still flows (Upstream #191, #197) | `Open` | Early warning of carrier/transport desync |
 | **P3-1** | **P3** | Platform | Implement Linux desktop notifications via `notify-send` | `Open` | Closes notification gap on Linux |
@@ -180,11 +180,12 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 - [x] **P1-5:** Bound transport calls in outbox worker to 60s (Upstream #248).
 - [x] Route v2-primary reactions through the outbox (Upstream #227).
 
-### Phase 2: Transports & Connection Recovery
-- [ ] **P1-2:** Port Google cookie repair auto-recovery with backoff (Upstream #260).
-- [ ] **P1-3:** Port Signal receive download drain (Upstream #259).
-- [ ] **P0-3:** Port WhatsApp disconnect message loss race fix (Upstream #236).
-- [ ] **P2-1:** Port WhatsApp LID identity cleanup and repair command (Upstream #256).
+### Phase 2: Transports & Connection Recovery (Completed)
+- [x] **P1-2:** Port Google cookie repair auto-recovery with backoff (Upstream #260).
+- [x] **P1-3:** Port Signal receive download drain (Upstream #259).
+- [x] **P0-3:** Port WhatsApp disconnect message loss race fix (Upstream #236).
+- [x] **P2-1:** Port WhatsApp LID identity cleanup and repair command (Upstream #256).
+- [x] **P2-2:** Port WhatsApp group read receipt sender matching (Upstream #255).
 
 ### Phase 3: Cross-Platform Parity
 - [ ] **P3-1:** Implement Linux desktop notifications (`notify-send`).

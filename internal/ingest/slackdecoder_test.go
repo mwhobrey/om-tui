@@ -279,33 +279,38 @@ func TestSlackWorkerProjectsChannelMessage(t *testing.T) {
 		t.Fatalf("AppendIngress(): %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
+	var (
+		convo  sqlite.Conversation
+		got    sqlite.Message
+		extras map[string]sqlite.MessageExtras
+	)
 	for {
 		pending, err := messages.Unprocessed(context.Background())
 		if err == nil && len(pending) == 0 {
-			break
+			var convErr, msgErr, extraErr error
+			convo, convErr = store.GetConversationByRemote("slack-T1", "C1")
+			if convErr == nil {
+				got, msgErr = messages.GetMessageByRemote(context.Background(), "slack-T1", convo.ConversationID, "1700000001.000001")
+				if msgErr == nil {
+					extras, extraErr = store.MessageExtrasFor(context.Background(), []string{got.MessageID})
+					if extraErr == nil {
+						if extra, ok := extras[got.MessageID]; ok && strings.Contains(string(extra.Payload.Blocks), `"type":"header"`) {
+							break
+						}
+					}
+				}
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("inbox not processed: pending=%d err=%v", len(pending), err)
+			t.Fatalf("inbox not processed or extras not applied: pending=%d extras=%+v", len(pending), extras)
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	convo, err := store.GetConversationByRemote("slack-T1", "C1")
-	if err != nil {
-		t.Fatalf("GetConversationByRemote(): %v", err)
 	}
 	if convo.Kind != sqlite.ConversationKindGroup || convo.Title != "general" {
 		t.Fatalf("conversation = %+v", convo)
 	}
-	got, err := messages.GetMessageByRemote(context.Background(), "slack-T1", convo.ConversationID, "1700000001.000001")
-	if err != nil {
-		t.Fatalf("GetMessageByRemote(): %v", err)
-	}
 	if got.Body != "hello v2" {
 		t.Fatalf("projected body = %q", got.Body)
-	}
-	extras, err := store.MessageExtrasFor(context.Background(), []string{got.MessageID})
-	if err != nil {
-		t.Fatalf("MessageExtrasFor(): %v", err)
 	}
 	if extra, ok := extras[got.MessageID]; !ok || !strings.Contains(string(extra.Payload.Blocks), `"type":"header"`) {
 		t.Fatalf("extras = %+v", extras)
