@@ -19,8 +19,8 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 | **P1-5** | **P1** | Outbox | Bound transport calls to 60s in dispatcher (Upstream #248) | `Completed` | Prevents outbox dispatch lockups on hanging transports |
 | **P2-1** | **P2** | WhatsApp | Stop storing WhatsApp LIDs as phone numbers & repair V2 (Upstream #256) | `Completed` | Stops identity corruption and synthetic number pollution |
 | **P2-2** | **P2** | WhatsApp | Match group read receipt sender form to incoming message (Upstream #255) | `Completed` | Read receipt sender consistency |
-| **P2-3** | **P2** | Google | Hold Google intents during phone silence & back off (Upstream #254) | `Open` | Eliminates CPU/request churn when phone is offline |
-| **P2-4** | **P2** | Google | Detect and alert when SMS stops while RCS still flows (Upstream #191, #197) | `Open` | Early warning of carrier/transport desync |
+| **P2-3** | **P2** | Google | Hold Google intents during phone silence & back off (Upstream #254) | `Completed` | Eliminates CPU/request churn when phone is offline |
+| **P2-4** | **P2** | Google | Detect and alert when SMS stops while RCS still flows (Upstream #191, #197) | `Completed` | Early warning of carrier/transport desync |
 | **P3-1** | **P3** | Platform | Implement Linux desktop notifications via `notify-send` | `Open` | Closes notification gap on Linux |
 | **P3-2** | **P3** | Platform | Implement macOS/Linux native file pickers for `Ctrl+A` | `Open` | Replaces stub with `osascript` / `zenity` |
 | **P3-3** | **P3** | Platform | Implement non-Windows clipboard image paste for `Ctrl+V` | `Open` | Enables image clipboard paste via `pbpaste` / `wl-paste` |

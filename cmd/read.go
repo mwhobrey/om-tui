@@ -16,6 +16,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
 	"github.com/maxghenis/openmessage/internal/export"
+	"github.com/maxghenis/openmessage/internal/ingest"
 	"github.com/maxghenis/openmessage/internal/readsource"
 	"github.com/maxghenis/openmessage/internal/storage/sqlite"
 	"github.com/maxghenis/openmessage/internal/v2read"
@@ -23,6 +24,7 @@ import (
 
 type commandReadSession struct {
 	Reads     readsource.ReadSource
+	V2Store   ingest.GoogleInboxReader
 	DataDir   string
 	StorePath string
 	close     func()
@@ -54,6 +56,7 @@ func openCommandReadSource(
 		}
 		return &commandReadSession{
 			Reads:     v2read.New(store),
+			V2Store:   store,
 			DataDir:   dataDir,
 			StorePath: storePath,
 			close: func() {

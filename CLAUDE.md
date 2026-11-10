@@ -108,8 +108,48 @@ om-tui status [--json]                                       # per-platform coun
 om-tui export <conversation> [--format json|yaml|csv] [--since D] [--until D] [--out PATH|-]  # one thread/channel to a file
 ```
 
-`status` is the fast way to check coverage before trusting a search. Date
-filtering lives in the store via `SearchFilter`/`SearchMessagesFiltered`.
+`status` is the fast way to check coverage before trusting a search: it lists
+each platform's message count and latest sent/received timestamps, and flags a
+platform that has stopped syncing in the AGE column. "Nd behind": its latest
+message trails the newest overall by ≥3 days. "silent Nh": its transport has
+delivered nothing for N hours, longer than its own baseline explains. That is
+the `internal/freshness` silence rule behind `/api/status`
+`freshness.<platform>.silence`, and it also catches a stall of the newest
+platform, which the relative rule never can (Google, 2026-10-06). When the
+running app serves the same data dir and reports a verdict measured on the
+source this command reads, `status` shows the app's (daemon truth, as for
+sends). Otherwise it judges locally with `freshness.EvaluateSilence` on the
+source the daemon would read: the v2 inbox when reads come from the v2 store,
+the legacy store's incoming messages otherwise. It reuses the stores it already
+opened. The text under the table says who judged and why (the app isn't
+running or didn't answer within 3s, serves another data dir, predates the
+check, or measures v2 while the CLI reads legacy), and names any verdict
+judged without a baseline (only the 72h floor applies) or platform with no
+recorded activity. `--json` adds each row's `behind_days`, `silence` (the
+daemon's field names, built by `freshness.SilenceBlock`) and
+`silence_judged_by` (`daemon` | `local`), plus `silence_note`. sms and rcs rows
+both carry Google's verdict. A stale row means the daemon isn't syncing that
+platform, or the phone behind it has stopped delivering; searches over that
+window will miss messages.
+
+On a v2-primary store `status` also prints a "Google SMS:" line: a ⚠ there
+means no incoming SMS for longer than usual while RCS still arrives, which
+per-platform freshness cannot see; on 2026-10-07 it was the phone's IMS stack
+(runbook: "SMS stopped while RCS works"). `--json` carries it as
+`google_sms_path`. It is judged locally from the v2 inbox, so it never reports
+`google_unreachable`; `/api/status` is the authority.
+
+"Read-only" here means no startup repair sweeps (`repairStartupArtifacts`) and
+no transports. The v2 store is opened with `sqlite.OpenWithoutMigrating`, which
+never migrates: a binary at a different schema version than the store refuses
+it (an older one reports the store as newer than supported; a newer one asks
+you to reopen the app).
+
+`read` resolves each hit's sender (name → number → conversation id) so results
+are legible without a second lookup, and accepts
+`--since`/`--until` (YYYY-MM-DD, local time; `--until` is inclusive to end of
+day) to scope a search to a date window. Date filtering lives in the store via
+`SearchFilter`/`SearchMessagesFiltered`.
 
 ## Multi-platform import
 

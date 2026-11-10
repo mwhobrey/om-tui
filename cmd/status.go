@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -11,8 +13,20 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/maxghenis/openmessage/internal/app"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/freshness"
+	"github.com/maxghenis/openmessage/internal/localapi"
 )
+
+// statusDeps is what runStatus reads besides the store, so tests can pin the
+// clock and output writer.
+type statusDeps struct {
+	daemon *localapi.Client
+	now    func() time.Time
+	demo   bool
+	output io.Writer
+}
 
 // RunStatus handles "openmessage status [--json]".
 //
@@ -21,20 +35,30 @@ import (
 // any live transports. Use it to spot a platform that has silently stopped
 // syncing: its row falls behind the others and is flagged "Nd behind".
 func RunStatus(logger zerolog.Logger, args ...string) error {
-	asJSON := hasFlag(args, "--json")
-
 	session, err := openCommandReadSource(logger, os.Stderr)
 	if err != nil {
 		return err
 	}
 	defer session.Close()
 
+	return runStatus(context.Background(), session, statusDeps{
+		daemon: localapi.NewClient("", localapi.LoadControlToken(session.DataDir)),
+		now:    time.Now,
+		demo:   app.DemoMode(),
+		output: os.Stdout,
+	}, hasFlag(args, "--json"))
+}
+
+func runStatus(ctx context.Context, session *commandReadSession, deps statusDeps, asJSON bool) error {
 	stats, err := session.Reads.PlatformStats()
 	if err != nil {
 		return fmt.Errorf("platform stats: %w", err)
 	}
 
 	now := time.Now()
+	if deps.now != nil {
+		now = deps.now()
+	}
 	var total int
 	var newestOverall int64
 	for _, st := range stats {
@@ -45,19 +69,32 @@ func RunStatus(logger zerolog.Logger, args ...string) error {
 	}
 
 	dbPath := session.StorePath
+	out := deps.output
+	if out == nil {
+		out = os.Stdout
+	}
+
+	// Only the v2 inbox can tell SMS from RCS; a legacy-mode session skips it.
+	var smsPath *freshness.SMSPathReport
+	if session.V2Store != nil && !deps.demo {
+		smsPath = statusSMSPath(ctx, session.V2Store, now)
+	}
 
 	if asJSON {
-		return writeStatusJSON(dbPath, session.DataDir, total, stats)
+		return writeStatusJSON(out, dbPath, session.DataDir, total, stats, smsPath)
 	}
 
-	fmt.Printf("OM-TUI store — %s\n", dbPath)
+	fmt.Fprintf(out, "OM-TUI store — %s\n", dbPath)
 	if len(stats) == 0 {
-		fmt.Println("\nNo messages stored yet. Pair and serve, or run an `openmessage import …`.")
+		fmt.Fprintln(out, "\nNo messages stored yet. Pair and serve, or run an `openmessage import …`.")
+		if smsPath != nil {
+			fmt.Fprintln(out, smsPathStatusLine(*smsPath))
+		}
 		return nil
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "PLATFORM\tMESSAGES\tLATEST\tLAST RECEIVED\tAGE")
 	for _, st := range stats {
 		age := humanAge(st.LatestMS, now)
@@ -69,14 +106,23 @@ func RunStatus(logger zerolog.Logger, args ...string) error {
 	}
 	w.Flush()
 
-	fmt.Printf("\nTotal: %s messages across %d platform(s).\n", commaInt(total), len(stats))
+	fmt.Fprintf(out, "\nTotal: %s messages across %d platform(s).\n", commaInt(total), len(stats))
 	if newestOverall > 0 {
-		fmt.Printf("Newest message overall: %s (%s).\n", fmtTS(newestOverall), humanAge(newestOverall, now))
+		fmt.Fprintf(out, "Newest message overall: %s (%s).\n", fmtTS(newestOverall), humanAge(newestOverall, now))
+	}
+	if smsPath != nil {
+		fmt.Fprintln(out, smsPathStatusLine(*smsPath))
 	}
 	return nil
 }
 
-func writeStatusJSON(dbPath, dataDir string, total int, stats []db.PlatformStat) error {
+func writeStatusJSON(
+	out io.Writer,
+	dbPath, dataDir string,
+	total int,
+	stats []db.PlatformStat,
+	smsPath *freshness.SMSPathReport,
+) error {
 	type platformJSON struct {
 		Platform         string `json:"platform"`
 		Count            int    `json:"count"`
@@ -85,12 +131,13 @@ func writeStatusJSON(dbPath, dataDir string, total int, stats []db.PlatformStat)
 		Latest           string `json:"latest,omitempty"`
 		LatestReceived   string `json:"latest_received,omitempty"`
 	}
-	out := struct {
-		DataDir   string         `json:"data_dir"`
-		DBPath    string         `json:"db_path"`
-		Total     int            `json:"total_messages"`
-		Platforms []platformJSON `json:"platforms"`
-	}{DataDir: dataDir, DBPath: dbPath, Total: total}
+	payload := struct {
+		DataDir   string                   `json:"data_dir"`
+		DBPath    string                   `json:"db_path"`
+		Total     int                      `json:"total_messages"`
+		Platforms []platformJSON           `json:"platforms"`
+		SMSPath   *freshness.SMSPathReport `json:"google_sms_path,omitempty"`
+	}{DataDir: dataDir, DBPath: dbPath, Total: total, SMSPath: smsPath}
 
 	for _, st := range stats {
 		pj := platformJSON{
@@ -103,12 +150,12 @@ func writeStatusJSON(dbPath, dataDir string, total int, stats []db.PlatformStat)
 		if st.LatestRecvMS > 0 {
 			pj.LatestReceived = time.UnixMilli(st.LatestRecvMS).Format(time.RFC3339)
 		}
-		out.Platforms = append(out.Platforms, pj)
+		payload.Platforms = append(payload.Platforms, pj)
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return enc.Encode(payload)
 }
 
 // fmtTS renders a millisecond timestamp in local time, or an em dash if zero.

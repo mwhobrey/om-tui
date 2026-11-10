@@ -128,37 +128,107 @@ the v2 store one outbox row sits in `dispatching` with `transport_called_at_ms`
 set and `lease_expires_at_ms` long past; later rows stay `queued`.
 
 **Cause:** the dispatch loop (`MessageService.Run` → `DispatchDue`) makes one
-transport call at a time and waits for it. libgm waits for the phone's answer
-to a request with no timeout (`waitForResponse` in the fork's
+transport call at a time and waits for it. libgm used to wait for the phone's
+answer to a request with no timeout (`waitForResponse` in the fork's
 `pkg/libgm/session_handler.go`: "TODO hard timeout?"). On 10/20 a Google text
 send at 15:55 got no answer, so the loop waited three and a half hours and a
 19:17 text sat queued until the app restarted. Lease recovery could not help:
 it runs at startup and between the calls of a batch, never while the loop is
 blocked.
 
-**Fix:** each transport call (text, media, reaction, read receipt; any
-platform) has a hard bound: 60 s, or 5 minutes for media, whose call includes
-the upload. A call past its bound is abandoned. Its intent becomes `uncertain`
-with error code `transport_timeout`, and the loop moves on. Nothing retries an
-uncertain intent, because the request may have reached the phone; the user can
-send it again. That includes a hang before the request left (Google's send
-first asks the phone for the conversation) and a hung read receipt: retrying
-them would hold the loop for another full bound each time. The abandoned
-call's goroutine, and its dispatch lease and media reader, live until the
-transport returns (for libgm, when the phone answers, if it ever does). At
-shutdown a canceled call gets 2 s to return its own result before it is
-abandoned the same way.
+**Fix, in two layers.**
 
-The bound limits the freeze; it does not remove it. One loop serves every
-account, so while the phone is not answering, each queued Google intent holds
-the loop for up to its bound before the next one, on any platform, goes out.
+1. **libgm gives up after 35 s** (`client.RequestTimeout`, set on every libgm
+   client OpenMessage builds; the fork's own default is 60 s). The wait starts
+   once the request has been sent, and the fork's HTTP client allows 20 s for
+   the response headers, so 35 s keeps an unanswered lookup inside the
+   dispatcher's 60 s bound. See "Requests the phone never answers" for the
+   patch. The Google adapter classifies the failure, because it knows whether
+   anything was sent:
+   - The conversation lookup that every Google send, reaction and media send
+     makes first (media looks up before it uploads): nothing was sent, so the
+     intent stays retryable (`not_dispatched`).
+   - The send, reaction, media send or caption itself, and a read receipt:
+     the phone may still act on it, so it becomes `uncertain` and is never
+     sent again. If the phone does send it, its echo confirms the row. A send
+     cut off by a disconnect is `uncertain` too. A read receipt cut off by a
+     disconnect stays retryable, since repeating it costs nothing.
+   - If the dispatcher gave up on the call while the lookup or upload ran, the
+     adapter stops there and sends nothing. The row is still `uncertain`
+     (`transport_timeout`), because the dispatcher can't know that, but such
+     a message has not gone out: if no echo appears in its thread, send it
+     again.
+2. **Each transport call (text, media, reaction, read receipt; any platform)
+   has a hard bound in the dispatcher:** 60 s, or 5 minutes for media, whose
+   call includes the upload. It is the backstop for what libgm's bound can't
+   cover: a stalled HTTP send, a Google send whose two requests together run
+   past 60 s, and every other platform. A call past its bound is abandoned.
+   Its intent becomes `uncertain` with error code `transport_timeout`, and the
+   loop moves on. Nothing retries an uncertain intent, because the request may
+   have reached the phone; the user can send it again. The abandoned call's
+   goroutine, and its dispatch lease and media reader, live until the
+   transport returns; for Google that is now at most 35 s after its last
+   request was sent. At shutdown a canceled call gets 2 s to return its own
+   result before it is abandoned the same way.
+
+**A silent phone holds the loop once per window, not once per retry.** One
+loop serves every account, so each unanswered Google request holds every other
+intent, on any platform, for the whole timeout. The outbox retries a
+`not_dispatched` intent every 5 s with no cap, so without more, a retried
+lookup would keep the loop waiting on the phone almost all the time, and every
+queued Google intent would add its own timeout to each round. The Google
+adapter therefore holds its intents while the phone is silent
+(`internal/bridgeadapters/google/phone_silence.go`):
+
+- After any send-path request goes unanswered, every Google intent on that
+  account (text, media, reaction, read receipt) fails at once without reaching
+  the phone. It stays `not_dispatched` and is retried within 30 s, or when the
+  window ends if sooner. Media is neither read nor uploaded.
+- The first intent due after the window probes the phone. The window is 30 s
+  after the first unanswered request and doubles with each one after it, to
+  at most 5 minutes. A test with libgm's timing and seven queued Google
+  intents measures an hour of silence at 13 phone requests, with the loop
+  waiting on the phone 13% of the hour; without the hold it waits almost the
+  whole hour. A read receipt that happens to be the probe becomes `uncertain`
+  (see above), so a long silence can drop about one queued receipt per window.
+- A lookup that goes unanswered is retried a little after the window ends, so
+  the intents held meanwhile probe first. If the phone answered something
+  else since that intent's previous unanswered lookup, its own delay doubles
+  too, so one lookup the phone never answers can't hold the loop at every
+  window while everything else goes through. Its sixth such lookup refuses
+  the intent (`rejected`, class `unsupported`; nothing was sent), rather than
+  retrying it for ever.
+- An answer to a send-path request (a lookup, send, reaction or read receipt)
+  ends the hold. So do libgm's pinger reporting the phone responding again
+  (`Phone responding again` in the log) and a new Google generation (a
+  reconnect or re-pair). After that, held intents go out within 30 s. An
+  intent whose own lookup went unanswered goes at the retry it was given
+  then, after the window. Catch-up and backfill answers don't end the hold.
+
+What you see while the phone is silent:
+
+- The backend logs `Google Messages phone did not answer; holding Google
+  sends until the next probe` (a zerolog warning, with `held_until`) once
+  per window, and `... releasing held Google sends` when the hold ends. The
+  app forwards every backend line to os_log at Info, which macOS keeps only
+  in memory, so capture them live with `/usr/bin/log stream --level info`
+  (see "Reading the backend's os_log"), or use `log show --info` while they
+  are still in memory.
+- `GET /api/v1/outbox` lists the held intents as `not_dispatched`, with
+  `error_class` `transient` and `error_code` the operation (`send_text`,
+  `send_media`, `send_reaction`, `mark_read`). `next_attempt_at_ms` is at most
+  30 s out, and `attempt_count` climbs by about 100 an hour, since each held
+  recheck counts as an attempt. The stored error text (`error_detail`, which
+  the API doesn't return) begins `google_phone_not_answering:` for a held
+  intent and `google_conversation_get_unanswered:` for an unanswered lookup.
 
 `/api/status` `v2_dispatch` shows the loop's calls: `in_flight` (`outbox_id`,
 `account_id`, `operation`, `started_at_ms`, `elapsed_ms`, `timeout_ms`) while
 one is out, plus `abandoned_calls`, `abandoned_still_running` and
 `last_abandoned` (`reason` `timeout` or `shutdown`). An
-`abandoned_still_running` that keeps growing means the platform is not
-answering at all.
+`abandoned_still_running` that keeps growing means a platform is not
+returning at all. For Google, libgm now ends an abandoned call within its
+35 s timeout, so that count falls back on its own.
 
 **On a build without the fix:** quit and reopen the app. Startup lease recovery
 marks the stuck row `uncertain` (its call was made, so it is not resent) and
@@ -488,6 +558,198 @@ sqlite3 -readonly "$HOME/Library/Application Support/OpenMessage/v2/store.sqlite
 All of this needs the request/response path to work. If the fetch replies are
 empty (`Fetched conversations count=0` while the store holds history), nothing
 can be recovered until that is fixed.
+
+### Requests the phone never answers
+
+libgm (the fork's third carried patch) gives up on a request the phone hasn't
+answered within its request timeout. Its default (`libgm.DefaultRequestTimeout`)
+is 60 s; OpenMessage sets 35 s on every client it builds
+(`client.RequestTimeout`), inside the outbox's 60 s bound on a transport call.
+The timeout starts once the request has been sent. It also fails every
+request still waiting when the client disconnects, which happens on unpair, on
+a reconnect that replaces the client, and at shutdown. The first kind fails
+with an error matching `libgm.ErrPhoneNotResponding`, the second with one
+matching `libgm.ErrConnectionClosed`. Before that patch such a request waited
+forever. A catch-up blocked on one held the backfill guard until the process
+restarted, so every later backfill, recent reconcile and pending-media refresh
+was refused (`backfill already running`).
+
+- **A catch-up stops after its first unanswered request.** Every later
+  request in the same run fails at once without reaching the phone, with
+  `skipped: an earlier request in this Google catch-up got no answer`
+  wrapping the first error. A run against a silent phone therefore ends about
+  35 s after its first unanswered request and releases the guard.
+  - Startup, deep and window backfills count each skipped fetch in
+    `/api/backfill/status` `errors` / `error_details`.
+  - The recent reconcile and the pending-media refresh log it.
+  - Run a backfill again once the phone answers. When the ditto pinger sees
+    the phone respond again, it starts a recent reconcile on its own
+    (`phone_responding_again`).
+- **Sends.** A send the phone never answers now fails after 35 s, in the
+  Google adapter, instead of being abandoned by the dispatcher's 60 s bound.
+  The server had already accepted it, so the phone may still deliver it: the
+  outbox records it as `uncertain` and never sends it again. The legacy HTTP
+  send keeps its idempotency claim, so a retry with the same key gets 409.
+  The legacy scheduler (legacy-primary daemons) treats a scheduled SMS the
+  same way: any SendMessage error other than an auth rejection or no client
+  (an unanswered request, a disconnect, a network or server error) marks it
+  `failed`, noting it may have gone out, instead of re-sending it with a new
+  TmpID. A timed-out conversation lookup before a send has no effect on the
+  phone and stays retryable, in the scheduler too. While the phone stays
+  silent, outbox intents are held, so the dispatch loop waits on the phone
+  at most once per window (see "Every send stuck behind one that never
+  returned").
+- **What you see.**
+  - libgm logs `Phone did not answer the request in time; giving up on it`
+    with `request_action` and `timeout`.
+  - A timed-out INBOX listing shows in `google.pull_health` as
+    `last_outcome: error` with `last_error` ending
+    `phone did not respond to request after 35s`.
+  - A request the phone answered only with the Google-account notice still
+    fails as `no_payload` (see "Pulls that return nothing"), even when the
+    timeout cuts it off.
+
+## SMS stopped while RCS works: the phone's SMS path
+
+**Symptom:** from 2026-10-03 16:16 to 2026-10-07 15:29 EDT the user's Pixel
+received and sent no ordinary SMS, while RCS chats over data kept arriving. It
+surfaced days later, when verification codes never came. The cause was on the
+phone: its IMS stack lost its SMS layer
+(`ImsStack: [GII-ImsSmsImpl]sendSms failed: mReady=true, mSmsTL is null: true`).
+**A full phone restart fixed it; "Reset mobile network settings" does not**,
+because that restarts `com.android.phone` and `rild` but not
+`com.android.imsstack`.
+
+Per-platform freshness could not see it: SMS and RCS both land as Google
+Messages traffic, RCS kept Google the newest platform, and `behind_days` stayed
+0. `/api/status` now judges the SMS path on its own:
+
+```bash
+curl -s http://127.0.0.1:7007/api/status | jq '.freshness.google.sms_path, .freshness.sms_path_stalled'
+```
+
+`stalled: true` (reason `sms_silent_rcs_flowing`) means three things hold:
+
+- **SMS silent past its usual pace:** no incoming SMS or MMS for at least 24
+  hours, and long enough that at this phone's usual pace about six separate
+  arrivals would have come (`expected_arrivals` of 6 or more).
+  - The pace (`arrivals_per_day`) counts texts within 30 minutes of each other
+    as one arrival, so a burst of codes counts once.
+  - It is measured over the 28 days before the last SMS.
+  - For the install it was calibrated on, the pace is about 5.8 a day, so the
+    bar is about 25 hours.
+- **The phone's texting is regular enough to judge:**
+  - In those 28 days the phone went a whole 24 hours without any incoming SMS
+    at most once (`long_gaps` of 0 or 1).
+  - The shorter gaps, the time it kept its usual rhythm, add up to at least 21
+    days (`regular_span_ms`), with at least 10 arrivals. A long gap never
+    counts toward the 21 days.
+  - The one allowance keeps an earlier outage of up to about a week from
+    blocking the next. A longer earlier outage, or a second one within the 28
+    days, withholds judgment (`thin_baseline`) until it leaves the baseline.
+  - No calendar or time zone enters, so travel and daylight-saving changes
+    cannot move the verdict.
+  - A phone that gets texts only on weekdays goes two days without one every
+    weekend, and is never judged (`thin_baseline`). Nor is a phone whose
+    clusters of texts give it less than 21 regular days in the 28.
+  - A phone that gets one text a day at a random time of day goes a whole day
+    without one at about half its gaps, and is then not judged. If at most one
+    gap reaches 24 hours it is judged, and at one arrival a day a stall takes
+    about six days to flag.
+- **RCS is flowing now:** at least 3 incoming RCS messages in the last 24 hours,
+  the newest within 3 hours.
+
+`last_sms_ms` stays fixed for the whole outage, so it identifies the episode.
+The verdict can switch between `sms_silent_rcs_flowing` and `rcs_quiet` during
+an outage when RCS pauses for a few hours (overnight, say). Alert once per
+`last_sms_ms`, not on each switch.
+
+The other reasons:
+
+- `sms_recent`
+- `within_usual_pace`: silent past 24 hours, but not yet unusual for this phone.
+- `rcs_quiet`: RCS stopped too, so it cannot be pinned on SMS. The relay-silence
+  check in `freshness.google.silence` (section "Google Messages silent while
+  'connected'") covers that case.
+- `google_unreachable`: the daemon itself is disconnected from the phone, or
+  the phone is not responding.
+- `history_stale`: the inbox could not be reloaded for 15 minutes.
+- `thin_baseline`
+- `no_sms_history`: the block is then left out.
+
+It never sets `stale`: the macOS app reads a stale Google entry as "needs
+re-pairing", and this called for a phone restart.
+
+How it classifies, and why. The v2 `inbox` keeps every Google frame's raw
+protobuf, and only there does the transport survive (the projected tables and
+the legacy store label all Google traffic `sms`). Each incoming message
+(`MessageStatus` `INCOMING_*`, not from the account owner) is labelled by its
+own type, `Message.Type` (field 11: 1 SMS, 2 and 3 MMS, 4 RCS), and only when
+that is missing by its conversation's type, `Conversation.Type` (field 22: 1
+SMS, 2 RCS). The conversation type is the weaker signal: on 2026-10-05 a new
+one-to-one chat reported SMS for its first 36 seconds before switching to RCS,
+and its first message (type 4) would otherwise have read as SMS recovering in
+the middle of the outage. RCS chats also fall back to SMS for single messages.
+Each message counts once, at its own timestamp capped at receipt, because
+Google re-sends months-old messages when a thread refreshes; frames with no
+timestamp and contentless stubs are skipped, and frames sharing IDs but timed
+more than an hour apart are separate messages (Google IDs are device-local,
+and a phone swap reuses them). Calibration on that install, replayed as live checks saw it (a frame counts
+only once received):
+
+- **9/4 to 10/4:** quiet. The longest normal gap between incoming SMS over that
+  stretch was 19.2 hours.
+- **10/4 17:10 EDT:** flags the outage, 24.9 hours after the last SMS.
+
+Simulated with texts in waking hours and RCS hourly (seeded tests in
+`internal/freshness/smspath_test.go`):
+
+- **Weekday-only texters:** it never fired over 26 weeks, holidays included.
+- **Clustered texters** (nine busy days in every 27): it never fired over 135
+  days (five cycles).
+- **Daily texters whose texts come at random:** at most two false alerts in
+  330 days at one to ten arrivals a day. That is the statistical floor: a long
+  random lull looks like an outage.
+
+Only daemons running v2 ingest (`OPENMESSAGES_V2_INGEST=1`, implied by
+v2-primary) publish the block.
+
+Known limits:
+
+- **Pooled carriers:** SMS and MMS are pooled, and so are the SIMs of a
+  dual-SIM phone, so one SIM losing SMS while the other still gets texts goes
+  unseen.
+- **Quiet RCS:** nothing can be judged while RCS is quiet too.
+- **Regular quiet spells:** a quiet spell that follows 21 days of regular
+  texting (time covered by gaps under a day) looks the same as an outage, so
+  it is judged and can alarm: a monthly lull of a few days, or 22 busy days
+  followed by quiet ones (intended; tested).
+- **Relay stalls:** the monitor reads only live frames (codec
+  `google.protobuf`), not catch-up history (`google.protobuf.history`, see
+  "Catch-up history reaches v2"). Messages the server replays after a
+  reconnect (`is_old`) arrive as live frames and count at their own times, so
+  they fill the gap. When the live channel never re-delivers what a relay
+  stall of a day or more held back (see "What a stall leaves behind"), the
+  stall leaves a long gap in the baseline, which uses up the one allowance
+  for the next 28 days.
+- **Lookback:** the daemon reads 42 days of frames, so an outage longer than
+  about two weeks loses part of its baseline and can stop being judged.
+- **Deliberately offline phones:** a phone kept off the cellular network on
+  purpose (abroad without roaming, for example) looks the same as a broken SMS
+  path.
+- **Exact replays:** event times alone cannot replay history exactly. A
+  faithful replay must also drop frames not yet received at each instant.
+
+`openmessage status`, run with `OPENMESSAGES_V2_PRIMARY=1` and
+`OPENMESSAGES_DATA_DIR` pointing at the app's data dir, prints the verdict as a
+"Google SMS:" line and as `google_sms_path` in `--json`. It reads the inbox
+directly, so it cannot tell whether the daemon reaches the phone right now and
+never reports `google_unreachable`; `/api/status` is the authority.
+
+**What to do when it fires:** unless the phone is off the cellular network on
+purpose, restart it. If texts still fail, read the phone's own logs over adb (`dumpsys isms`, and
+`logcat -b all | grep -E 'mSmsTL|onSendSmsResult|SEND_SMS|InboundSmsHandler'`)
+before blaming the carrier or the signal.
 
 ## MCP serving — exactly one process may own live transports
 
@@ -1468,10 +1730,10 @@ Without it, a single transient network blip during a scheduled token refresh
 permanently killed the session.
 
 The replacement in `go.mod` pins fork commit
-[`100192cb3078`](https://github.com/MaxGhenis/gmessages/commit/100192cb3078739f7ed925730f7248eb18b6c340).
+[`6495a585293d`](https://github.com/MaxGhenis/gmessages/commit/6495a585293d59a48984c50d63c8c4c11b425877).
 It is upstream `mautrix/gmessages` base
 [`3433cc07d5ea`](https://github.com/mautrix/gmessages/commit/3433cc07d5ea9522309adad3a8c92ed5b08dc11d),
-which contains the auth-refresh retry, plus two carried patches, oldest first:
+which contains the auth-refresh retry, plus three carried patches, oldest first:
 
 1. `Add ListConversationsWithCursor for paginated conversation listing`. That
    method is required by OpenMessage's backfill and reconciliation paths.
@@ -1483,16 +1745,33 @@ which contains the auth-refresh retry, plus two carried patches, oldest first:
    `libgm.ErrNoResponsePayload` instead of returning an empty success. A bare
    header answering a listing is still an empty result. See "Pulls that
    return nothing" below. Upstream still has the old behaviour.
+3. `libgm: fail phone requests after a hard timeout and on disconnect`
+   ([MaxGhenis/gmessages#1](https://github.com/MaxGhenis/gmessages/pull/1)).
+   A request the phone doesn't answer within its request timeout
+   (`DefaultRequestTimeout`, 60 s; OpenMessage sets 35 s with
+   `Client.SetRequestTimeout`) fails with `libgm.ErrPhoneNotResponding`; a
+   late answer is logged (`Received response with no pending request`) and
+   dropped.
+   `Client.Disconnect` fails every waiting request with
+   `libgm.ErrConnectionClosed`. See "Requests the phone never answers"
+   above. Upstream made the same change in
+   [`c0a2d38`](https://github.com/mautrix/gmessages/commit/c0a2d38a24dc187e135aad60cc35a4f840954905)
+   with the same sentinel names and default. Its version also adds a
+   `context.Context` parameter to every public method. A rebase past
+   `c0a2d38` drops this patch for upstream's and moves OpenMessage's call
+   sites to the context API.
 
 **Keep the fork rebased on upstream.** The weekly
 `gmessages-fork-drift.yml` workflow records the base and patch set (count and
 subjects) and fails as soon as upstream `main` advances. When rebasing, replay
-both carried patches, verify the auth-refresh retry is still present, and
+the carried patches, verify the auth-refresh retry is still present, and
 update the fork pin, `EXPECTED_PATCHES`, and recorded SHAs together. The pinned
-commit must be on the fork's `main`. `TestGMessagesForkRejectsPayloadlessResponses`
-runs the pinned fork's own response-acceptance tests, so it fails if a rebase
-drops the second patch or keeps its exported names without the rejection. The
-durable architectural fix (move SMS/RCS onto an Android companion) is issue #75.
+commit must be on the fork's `main`. Two tests run the pinned fork's own tests
+by name and require each to pass: `TestGMessagesForkRejectsPayloadlessResponses`
+(second patch) and `TestGMessagesForkTimesOutUnansweredRequests` (third
+patch). Each fails if a rebase drops its patch, or keeps the exported names
+without the behaviour. The durable architectural fix (move SMS/RCS onto an
+Android companion) is issue #75.
 
 ### Pulls that return nothing (phone switched to Google-account pairing)
 
