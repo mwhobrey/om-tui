@@ -8,11 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
-
-var clipboardCachePurgeOnce sync.Once
 
 func init() {
 	openFileImpl = openFileWindows
@@ -89,15 +86,6 @@ func clipboardMediaPath() (string, bool, error) {
 		return "", false, fmt.Errorf("clipboard media missing: %w", err)
 	}
 	return result, true, nil
-}
-
-func clipboardCacheDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), "OpenMessage", "clipboard")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	clipboardCachePurgeOnce.Do(func() { purgeOldCacheFiles(dir, mediaCacheMaxAge) })
-	return dir, nil
 }
 
 func openFileDialogScript() string {

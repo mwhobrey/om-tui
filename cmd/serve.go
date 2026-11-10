@@ -225,6 +225,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	identityName := app.LocalIdentityName()
 	macNotifier := notify.NewMacOSNotifier(logger, macOSNotificationsEnabled(interactiveTerminal), baseURL, a.Store, identityName)
 	winNotifier := notify.NewWindowsNotifier(logger, windowsNotificationsEnabled(), a.Store, identityName)
+	linuxNotifier := notify.NewLinuxNotifier(logger, linuxNotificationsEnabled(), a.Store, identityName)
 	switch {
 	case macNotifier.Enabled():
 		logger.Info().Msg("Native macOS notifications enabled for fresh inbound messages")
@@ -232,6 +233,9 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 	case winNotifier.Enabled():
 		logger.Info().Msg("Native Windows toast notifications enabled for fresh inbound messages")
 		a.OnIncomingMessage = winNotifier.NotifyIncomingMessage
+	case linuxNotifier.Enabled():
+		logger.Info().Msg("Native Linux desktop notifications enabled for fresh inbound messages")
+		a.OnIncomingMessage = linuxNotifier.NotifyIncomingMessage
 	}
 
 	var googleLifecycle *googleadapter.Adapter
@@ -1445,6 +1449,23 @@ func windowsNotificationsEnabled() bool {
 		return false
 	}
 	return isWindows()
+}
+
+// linuxNotificationsEnabled defaults on for Linux serve. Override with
+// OPENMESSAGES_LINUX_NOTIFICATIONS=0/1.
+func linuxNotificationsEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("OPENMESSAGES_LINUX_NOTIFICATIONS")))
+	switch mode {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return isLinux()
+}
+
+func isLinux() bool {
+	return strings.EqualFold(runtimeGOOS(), "linux")
 }
 
 func isWindows() bool {

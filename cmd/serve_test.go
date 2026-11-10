@@ -322,6 +322,45 @@ func TestWindowsNotificationsEnabled(t *testing.T) {
 	})
 }
 
+func TestLinuxNotificationsEnabled(t *testing.T) {
+	originalGOOS := runtimeGOOS
+	t.Cleanup(func() {
+		runtimeGOOS = originalGOOS
+	})
+
+	t.Run("defaults on for linux", func(t *testing.T) {
+		runtimeGOOS = func() string { return "linux" }
+		t.Setenv("OPENMESSAGES_LINUX_NOTIFICATIONS", "")
+		if !linuxNotificationsEnabled() {
+			t.Fatal("expected notifications enabled on Linux")
+		}
+	})
+
+	t.Run("defaults off outside linux", func(t *testing.T) {
+		runtimeGOOS = func() string { return "windows" }
+		t.Setenv("OPENMESSAGES_LINUX_NOTIFICATIONS", "")
+		if linuxNotificationsEnabled() {
+			t.Fatal("expected notifications disabled outside Linux")
+		}
+	})
+
+	t.Run("env can force on outside linux", func(t *testing.T) {
+		runtimeGOOS = func() string { return "windows" }
+		t.Setenv("OPENMESSAGES_LINUX_NOTIFICATIONS", "true")
+		if !linuxNotificationsEnabled() {
+			t.Fatal("expected env override to force notifications on")
+		}
+	})
+
+	t.Run("env can force off on linux", func(t *testing.T) {
+		runtimeGOOS = func() string { return "linux" }
+		t.Setenv("OPENMESSAGES_LINUX_NOTIFICATIONS", "0")
+		if linuxNotificationsEnabled() {
+			t.Fatal("expected env override to disable notifications")
+		}
+	})
+}
+
 func TestIMessageSyncSupported(t *testing.T) {
 	originalGOOS := runtimeGOOS
 	t.Cleanup(func() {

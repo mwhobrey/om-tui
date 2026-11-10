@@ -21,9 +21,9 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 | **P2-2** | **P2** | WhatsApp | Match group read receipt sender form to incoming message (Upstream #255) | `Completed` | Read receipt sender consistency |
 | **P2-3** | **P2** | Google | Hold Google intents during phone silence & back off (Upstream #254) | `Completed` | Eliminates CPU/request churn when phone is offline |
 | **P2-4** | **P2** | Google | Detect and alert when SMS stops while RCS still flows (Upstream #191, #197) | `Completed` | Early warning of carrier/transport desync |
-| **P3-1** | **P3** | Platform | Implement Linux desktop notifications via `notify-send` | `Open` | Closes notification gap on Linux |
-| **P3-2** | **P3** | Platform | Implement macOS/Linux native file pickers for `Ctrl+A` | `Open` | Replaces stub with `osascript` / `zenity` |
-| **P3-3** | **P3** | Platform | Implement non-Windows clipboard image paste for `Ctrl+V` | `Open` | Enables image clipboard paste via `pbpaste` / `wl-paste` |
+| **P3-1** | **P3** | Platform | Implement Linux desktop notifications via `notify-send` | `Completed` | Closes notification gap on Linux |
+| **P3-2** | **P3** | Platform | Implement macOS/Linux native file pickers for `Ctrl+A` | `Completed` | Replaces stub with `osascript` / `zenity` |
+| **P3-3** | **P3** | Platform | Implement non-Windows clipboard image paste for `Ctrl+V` | `Completed` | Enables image clipboard paste via `pbpaste` / `wl-paste` |
 | **P3-4** | **P3** | Platform | Smoke-test Keychain (macOS) & Secret Service (Linux) vault backends | `Open` | Runtime validation of credential sealing on real hardware |
 | **P4-1** | **P4** | TUI/UX | Activate Klipy GIF search & send in TUI (`>gif <query>`) | `Open` | Surfaces dormant `/api/gifs` endpoints in TUI |
 | **P4-2** | **P4** | TUI/UX | Render Link Previews in chat thread view | `Open` | Surfaces dormant `/api/link-preview` extraction |
@@ -188,9 +188,9 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 - [x] **P2-2:** Port WhatsApp group read receipt sender matching (Upstream #255).
 
 ### Phase 3: Cross-Platform Parity
-- [ ] **P3-1:** Implement Linux desktop notifications (`notify-send`).
-- [ ] **P3-2:** Implement macOS & Linux file pickers (`osascript` & `zenity`).
-- [ ] **P3-3:** Implement macOS & Linux clipboard media paste.
+- [x] **P3-1:** Implement Linux desktop notifications (`notify-send`).
+- [x] **P3-2:** Implement macOS & Linux file pickers (`osascript` & `zenity`).
+- [x] **P3-3:** Implement macOS & Linux clipboard media paste.
 
 ### Phase 4: TUI Feature Enhancements
 - [ ] **P4-1:** Wire `>gif` palette search command to `internal/web/gifs.go`.
