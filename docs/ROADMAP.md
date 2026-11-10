@@ -187,12 +187,14 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 - [x] **P2-1:** Port WhatsApp LID identity cleanup and repair command (Upstream #256).
 - [x] **P2-2:** Port WhatsApp group read receipt sender matching (Upstream #255).
 
-### Phase 3: Cross-Platform Parity
+### Phase 3: Cross-Platform Parity (Completed)
 - [x] **P3-1:** Implement Linux desktop notifications (`notify-send`).
 - [x] **P3-2:** Implement macOS & Linux file pickers (`osascript` & `zenity`).
 - [x] **P3-3:** Implement macOS & Linux clipboard media paste.
 
-### Phase 4: TUI Feature Enhancements
-- [ ] **P4-1:** Wire `>gif` palette search command to `internal/web/gifs.go`.
-- [ ] **P4-3:** Implement inline quote-reply for Google, WhatsApp, Signal.
-- [ ] **P4-5:** Wire persistent drafts to V2 `drafts` table.
+### Phase 4: TUI Feature Enhancements (Completed)
+- [x] **P4-1:** Wire `>gif` palette search command to Klipy API client.
+- [x] **P4-2:** Render OpenGraph link previews in chat thread view.
+- [x] **P4-3:** Implement inline quote-reply (`r` / `Ctrl+Q`) for Google Messages, WhatsApp, Signal.
+- [x] **P4-4:** Expanded emoji reaction picker with `:shortcode:` and unicode glyph resolution.
+- [x] **P4-5:** Wire persistent drafts across river switching and restarts.

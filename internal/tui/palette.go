@@ -26,6 +26,7 @@ const (
 	paletteKindConv     = "conv"
 	paletteKindAction   = "action"
 	paletteKindCustom   = "custom"
+	paletteKindGIF      = "gif"
 )
 
 type paletteItem struct {
@@ -38,6 +39,7 @@ type paletteItem struct {
 	ActionID string
 	CustomID string
 	Args     string
+	GIF      *localapi.GIFResult
 }
 
 type commandPalette struct {
@@ -184,6 +186,9 @@ func (m Model) fetchPaletteConvsCmd() tea.Cmd {
 }
 
 func (m *Model) refreshPaletteMatches() {
+	if m.palette.mode == "gif" {
+		return
+	}
 	mode, query := parsePaletteQuery(m.palette.filter.Value())
 	m.palette.mode = mode
 	var items []paletteItem
@@ -624,12 +629,17 @@ func (m Model) runPaletteAction(item paletteItem) (tea.Model, tea.Cmd) {
 		}
 		m.err = "custom command not found"
 		return m, nil
+	case paletteKindGIF:
+		return m.runSendOrInsertGIF(item.GIF)
 	case paletteKindAction:
 		if item.ActionID == "quick-msg" {
 			return m.runQuickMsg(item.Args)
 		}
 		if item.ActionID == "export" {
 			return m.runExport(item.Args)
+		}
+		if item.ActionID == "gif" {
+			return m.runGIFSearch(item.Args)
 		}
 		for _, a := range allActions() {
 			if a.ID == item.ActionID && a.Run != nil {
@@ -638,6 +648,31 @@ func (m Model) runPaletteAction(item paletteItem) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) runGIFSearch(args string) (tea.Model, tea.Cmd) {
+	query := strings.TrimSpace(args)
+	if query == "" {
+		m.err = "usage: >gif <search terms>"
+		return m, nil
+	}
+	m.info = fmt.Sprintf("Searching GIFs for %q…", query)
+	return m, m.searchGIFsCmd(query)
+}
+
+func (m Model) runSendOrInsertGIF(gif *localapi.GIFResult) (tea.Model, tea.Cmd) {
+	if gif == nil || gif.URL == "" {
+		return m, nil
+	}
+	if m.activeID != "" && m.canSend() {
+		m.info = fmt.Sprintf("Sending GIF: %s…", gif.Title)
+		m.sending = true
+		return m, m.sendCmd(m.activeID, gif.URL, m.threadRootID)
+	}
+	m.compose.SetValue(gif.URL)
+	m.focus = focusCompose
+	m.info = "GIF URL inserted into composer"
+	return m, m.compose.Focus()
 }
 
 func (m Model) runQuickMsg(args string) (tea.Model, tea.Cmd) {
@@ -804,6 +839,9 @@ func (m Model) renderPaletteOverlay() string {
 	hint := "enter open  > cmds  esc close"
 	if m.palette.mode == "commands" {
 		hint = "enter run  esc close"
+	}
+	if m.palette.mode == "gif" {
+		hint = "enter send  esc close"
 	}
 	rows = append(rows, paintLine(mutedStyle, hint, innerW))
 

@@ -70,6 +70,18 @@ func allActions() []tuiAction {
 			},
 		},
 		{
+			ID:       "gif",
+			Label:    "Search GIFs",
+			Keys:     []string{">gif"},
+			Keywords: []string{"gif", "klipy", "tenor", "giphy", "image", "meme"},
+			Group:    "global",
+			When:     func(m Model) bool { return !m.reactPalette },
+			Run: func(m Model) (tea.Model, tea.Cmd) {
+				m.info = "usage: >gif <query>"
+				return m, nil
+			},
+		},
+		{
 			ID:       "export",
 			Label:    "Export conversation",
 			Keys:     []string{">export [selected|last N|FROM..TO]"},
@@ -384,6 +396,25 @@ func allActions() []tuiAction {
 			Run: func(m Model) (tea.Model, tea.Cmd) { return m.openReactPalette() },
 		},
 		{
+			ID:       "reply",
+			Label:    "Quote reply",
+			Keys:     []string{"r", "ctrl+q"},
+			Keywords: []string{"reply", "quote", "respond"},
+			Group:    "thread",
+			InHelp:   true,
+			When: func(m Model) bool {
+				if m.reactPalette || m.blockPalette || m.activeID == "" {
+					return false
+				}
+				if m.focus != focusThread && m.focus != focusCompose {
+					return false
+				}
+				_, ok := selectedMessage(m.messages, m.selectedMsg)
+				return ok
+			},
+			Run: func(m Model) (tea.Model, tea.Cmd) { return m.startQuoteReply() },
+		},
+		{
 			ID:       "block-kit",
 			Label:    "Block Kit actions",
 			Keys:     []string{"ctrl+b"},
@@ -523,6 +554,9 @@ func contextHelpParts(m Model) []helpPart {
 		return []helpPart{{chord: "1-9", label: "block"}, {chord: "esc", label: "cancel"}}
 	}
 	if ctx.reactPalette {
+		if m.reactCustom {
+			return []helpPart{{chord: "enter", label: "send"}, {chord: "esc", label: "cancel"}}
+		}
 		return []helpPart{{chord: "1-9", label: "react"}, {chord: "esc", label: "cancel"}}
 	}
 

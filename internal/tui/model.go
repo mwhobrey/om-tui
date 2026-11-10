@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,8 +151,11 @@ type Model struct {
 	sending             bool              // true while a sendCmd/sendMediaCmd/sendBroadcastCmd is in flight
 	selectedMsg         int               // index into messages; clamped to latest when out of range
 	threadRootID        string            // non-empty while a dedicated Slack thread is open
+	replyTarget         *localapi.Message // active quote/reply-to target
 	channelMessages     []localapi.Message
 	reactPalette        bool   // thread-focus emoji picker open
+	reactCustom         bool   // custom emoji input open
+	reactInput          textinput.Model
 	blockPalette        bool   // Slack Block Kit action picker open
 	convRefreshGen      uint64 // debounce token for conversation list reloads
 	pendingConvs        []localapi.Conversation
@@ -163,6 +167,8 @@ type Model struct {
 	frecency            *frecencyStore
 	customCmds          []customCommand
 	customCmdsModTime   time.Time
+	linkPreviews        map[string]*localapi.LinkPreview
+	previewsInFlight    map[string]bool
 	pair                pairOverlay
 	newChat             newChatOverlay
 
@@ -219,13 +225,15 @@ func NewModel(session *Session) Model {
 		viewport:          vp,
 		compose:           compose,
 		query:             query,
-		drafts:            make(map[string]string),
+		drafts:            loadDrafts(dataDir),
 		composeHeight:     composeMinHeight,
 		activeRiverID:     "messages-default",
 		palette:           newCommandPalette(),
 		frecency:          loadFrecency(dataDir),
 		customCmds:        customCmds,
 		customCmdsModTime: customCmdsModTime,
+		linkPreviews:      make(map[string]*localapi.LinkPreview),
+		previewsInFlight:  make(map[string]bool),
 	}
 	if customCmdsErr != nil {
 		m.err = customCmdsErr.Error()
@@ -400,7 +408,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = msg.messages
 		m.selectedMsg = clampMessageIndex(len(m.messages), m.selectedMsg)
 		m.setThreadContentFollow(m.renderActiveThread())
+		return m, m.dispatchMissingLinkPreviewsCmd()
+
+	case linkPreviewLoadedMsg:
+		if m.linkPreviews == nil {
+			m.linkPreviews = make(map[string]*localapi.LinkPreview)
+		}
+		if m.previewsInFlight != nil {
+			delete(m.previewsInFlight, msg.url)
+		}
+		m.linkPreviews[msg.url] = msg.preview
+		m.setThreadContent(m.renderActiveThread())
 		return m, nil
+
+	case gifSearchResultsMsg:
+		if msg.err != nil {
+			m.err = fmt.Sprintf("GIF search failed: %v", msg.err)
+			return m, nil
+		}
+		if len(msg.results) == 0 {
+			m.info = fmt.Sprintf("No GIFs found for %q", msg.query)
+			return m, nil
+		}
+		items := make([]paletteItem, len(msg.results))
+		for i := range msg.results {
+			title := strings.TrimSpace(msg.results[i].Title)
+			if title == "" {
+				title = fmt.Sprintf("GIF %d", i+1)
+			}
+			items[i] = paletteItem{
+				Key:   "gif:" + msg.results[i].URL,
+				Kind:  paletteKindGIF,
+				Label: title,
+				Sub:   msg.results[i].URL,
+				GIF:   &msg.results[i],
+			}
+		}
+		m.palette.prevFocus = m.focus
+		m.palette.open = true
+		m.palette.mode = "gif"
+		m.palette.matches = items
+		m.palette.cursor = 0
+		m.palette.filter.SetValue(fmt.Sprintf(">gif %s", msg.query))
+		m.info = fmt.Sprintf("%d GIFs found for %q. Select with Enter to send.", len(items), msg.query)
+		return m, m.palette.filter.Focus()
 
 	case slackThreadMsg:
 		if msg.conversationID != m.activeID || msg.rootMessageID != m.threadRootID {
@@ -410,7 +461,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedMsg = clampMessageIndex(len(m.messages), len(m.messages)-1)
 		m.setThreadContentFollow(m.renderActiveThread())
 		m.info = "Slack thread"
-		return m, nil
+		return m, m.dispatchMissingLinkPreviewsCmd()
 
 	case olderMessagesMsg:
 		return m.handleOlderMessages(msg)
@@ -816,9 +867,50 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.reactPalette {
+		if m.reactCustom {
+			switch key {
+			case "esc":
+				m.reactPalette = false
+				m.reactCustom = false
+				m.info = ""
+				return m, nil
+			case "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				val := strings.TrimSpace(m.reactInput.Value())
+				emoji := resolveEmoji(val)
+				if emoji == "" {
+					m.err = fmt.Sprintf("unknown emoji %q", val)
+					return m, nil
+				}
+				target, ok := selectedMessage(m.messages, m.selectedMsg)
+				if !ok || strings.TrimSpace(target.MessageID) == "" || m.activeID == "" {
+					m.err = "no message selected"
+					m.reactPalette = false
+					m.reactCustom = false
+					return m, nil
+				}
+				if !m.canSend() {
+					m.err = m.sendBlockedReason()
+					return m, nil
+				}
+				action := reactionAction(target.Reactions, emoji)
+				m.reactPalette = false
+				m.reactCustom = false
+				m.info = "Sending reaction…"
+				return m, m.reactCmd(m.activeID, target.MessageID, emoji, action)
+			default:
+				var cmd tea.Cmd
+				m.reactInput, cmd = m.reactInput.Update(msg)
+				m.info = "React: " + m.reactInput.View()
+				return m, cmd
+			}
+		}
+
 		switch key {
 		case "esc":
 			m.reactPalette = false
+			m.reactCustom = false
 			m.blockPalette = false
 			m.info = ""
 			return m, nil
@@ -833,6 +925,7 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !ok || strings.TrimSpace(target.MessageID) == "" || m.activeID == "" {
 				m.err = "no message selected"
 				m.reactPalette = false
+				m.reactCustom = false
 				m.blockPalette = false
 				return m, nil
 			}
@@ -843,9 +936,37 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			emoji := reactPaletteEmojis[idx]
 			action := reactionAction(target.Reactions, emoji)
 			m.reactPalette = false
+			m.reactCustom = false
 			m.blockPalette = false
 			m.info = "Sending reaction…"
 			return m, m.reactCmd(m.activeID, target.MessageID, emoji, action)
+		case ":", "c":
+			m.reactCustom = true
+			ti := textinput.New()
+			ti.Prompt = "React: "
+			ti.Placeholder = "emoji or :shortcode: (e.g. fire, rocket, tada)"
+			ti.CharLimit = 64
+			ti.Focus()
+			if key == ":" {
+				ti.SetValue(":")
+				ti.CursorEnd()
+			}
+			m.reactInput = ti
+			m.info = "Enter emoji or :shortcode: (Enter to send, Esc to cancel)"
+			return m, m.reactInput.Focus()
+		}
+		if len(msg.Runes) > 0 && (msg.Runes[0] > 127 || msg.Runes[0] == ':') {
+			m.reactCustom = true
+			ti := textinput.New()
+			ti.Prompt = "React: "
+			ti.Placeholder = "emoji or :shortcode: (e.g. fire, rocket, tada)"
+			ti.CharLimit = 64
+			ti.SetValue(string(msg.Runes))
+			ti.CursorEnd()
+			ti.Focus()
+			m.reactInput = ti
+			m.info = "Enter emoji or :shortcode: (Enter to send, Esc to cancel)"
+			return m, m.reactInput.Focus()
 		}
 		return m, nil
 	}
@@ -921,9 +1042,11 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeID != "" {
 			return m.beginAttach(true)
 		}
-	case "r", "ctrl+r":
+	case "ctrl+r":
 		m.info = "Reconnecting…"
 		return m, m.reconnectCmd()
+	case "r", "ctrl+q":
+		return m.startQuoteReply()
 	case "p":
 		if m.riverNeedsPair() {
 			return m.openPairOverlay()
@@ -946,6 +1069,11 @@ func (m Model) updateThreadKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		if m.replyTarget != nil {
+			m.replyTarget = nil
+			m.layout()
+			return m, nil
+		}
 		m.focus = focusList
 		m.compose.Blur()
 		m.err = ""
@@ -1031,6 +1159,12 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeID == "" {
 			return m, nil
 		}
+		replyToID := m.threadRootID
+		if m.replyTarget != nil {
+			replyToID = m.replyTarget.MessageID
+			m.replyTarget = nil
+			m.layout()
+		}
 		if path, ok := looksLikeExistingFile(body); ok {
 			m.info = "Sending media…"
 			m.sending = true
@@ -1039,7 +1173,7 @@ func (m Model) updateComposeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.sending = true
-		cmd := m.sendCmd(m.activeID, body, m.threadRootID)
+		cmd := m.sendCmd(m.activeID, body, replyToID)
 		m.clearComposeOptimistically()
 		return m, cmd
 	case "ctrl+c":
@@ -1254,6 +1388,7 @@ func (m Model) openConversation(id, name, participants string) (tea.Model, tea.C
 	m.threadRootID = ""
 	m.channelMessages = nil
 	m.selectedMsg = -1
+	m.replyTarget = nil
 	m.reactPalette = false
 	m.blockPalette = false
 	m.focus = focusCompose
@@ -1286,9 +1421,12 @@ func (m *Model) saveComposeDraft() {
 	text := m.compose.Value()
 	if strings.TrimSpace(text) == "" {
 		delete(m.drafts, id)
-		return
+	} else {
+		m.drafts[id] = text
 	}
-	m.drafts[id] = text
+	if m.session != nil {
+		_ = saveDrafts(m.session.DataDir, m.drafts)
+	}
 }
 
 func (m *Model) setThreadContent(content string) {
@@ -1339,11 +1477,22 @@ func (m Model) View() string {
 	// typing switched textarea off the placeholder path.
 	threadVP := padViewBox(m.viewport.View(), innerW, d.viewportH)
 	composer := padViewBox(m.compose.View(), innerW, d.composeH)
-	threadBody := lipgloss.JoinVertical(lipgloss.Left,
-		m.renderThreadTitleLine(threadTitle, innerW),
-		threadVP,
-		composer,
-	)
+	var threadBody string
+	if m.replyTarget != nil {
+		replyBar := m.renderReplyPreviewLine(innerW)
+		threadBody = lipgloss.JoinVertical(lipgloss.Left,
+			m.renderThreadTitleLine(threadTitle, innerW),
+			threadVP,
+			replyBar,
+			composer,
+		)
+	} else {
+		threadBody = lipgloss.JoinVertical(lipgloss.Left,
+			m.renderThreadTitleLine(threadTitle, innerW),
+			threadVP,
+			composer,
+		)
+	}
 	right := rightBorder.Width(d.rightW).Height(d.mainH).MaxHeight(paneMaxH).Render(threadBody)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
@@ -1425,7 +1574,11 @@ func (m Model) paneDims() paneDims {
 	if composeH < 1 {
 		composeH = 3
 	}
-	viewportH := mainH - 1 - composeH // thread title + compose
+	replyH := 0
+	if m.replyTarget != nil {
+		replyH = 1
+	}
+	viewportH := mainH - 1 - composeH - replyH // thread title + compose + reply preview
 	if viewportH < 3 {
 		viewportH = 3
 	}
@@ -1508,6 +1661,12 @@ func (m *Model) syncComposeHeight() {
 // text if the send actually fails.
 func (m *Model) clearComposeOptimistically() {
 	m.compose.SetValue("")
+	if id := strings.TrimSpace(m.activeID); id != "" && m.drafts != nil {
+		delete(m.drafts, id)
+		if m.session != nil {
+			_ = saveDrafts(m.session.DataDir, m.drafts)
+		}
+	}
 	m.syncComposeHeight()
 	m.syncComposeViewport()
 }
@@ -1671,6 +1830,7 @@ func (m Model) createLiveRiverCmd(provider string) tea.Cmd {
 }
 
 func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
+	m.saveComposeDraft()
 	if len(m.rivers) == 0 {
 		return m, m.refreshRiversCmd()
 	}
@@ -1691,6 +1851,7 @@ func (m Model) cycleRiver(dir int) (tea.Model, tea.Cmd) {
 	m.info = fmt.Sprintf("River: %s", m.rivers[idx].DisplayName)
 	m.activeID = ""
 	m.activeName = ""
+	m.replyTarget = nil
 	m.messages = nil
 	m.threadRootID = ""
 	m.channelMessages = nil
@@ -1777,6 +1938,45 @@ func (m Model) refreshMessagesCmd(conversationID string, generation uint64) tea.
 	}
 }
 
+func (m Model) startQuoteReply() (tea.Model, tea.Cmd) {
+	target, ok := selectedMessage(m.messages, m.selectedMsg)
+	if !ok || strings.TrimSpace(target.MessageID) == "" {
+		m.err = "no message selected to reply to"
+		return m, nil
+	}
+	m.replyTarget = &target
+	m.focus = focusCompose
+	m.err = ""
+	m.layout()
+	return m, m.compose.Focus()
+}
+
+func (m Model) renderReplyPreviewLine(width int) string {
+	if m.replyTarget == nil || width < 1 {
+		return ""
+	}
+	sender := strings.TrimSpace(m.replyTarget.SenderName)
+	if sender == "" {
+		sender = strings.TrimSpace(m.replyTarget.SenderNumber)
+	}
+	if m.replyTarget.IsFromMe {
+		sender = "you"
+	}
+	if sender == "" {
+		sender = "them"
+	}
+	sender = shortDisplayName(sender)
+	snippet := strings.TrimSpace(m.replyTarget.Body)
+	if snippet == "" && (m.replyTarget.MediaID != "" || m.replyTarget.MimeType != "") {
+		snippet = mediaLabel(*m.replyTarget)
+	}
+	if len(snippet) > 35 {
+		snippet = snippet[:35] + "…"
+	}
+	text := fmt.Sprintf("┌─ Replying to %s: %q (esc to cancel)", sender, snippet)
+	return paintLine(lipgloss.NewStyle().Foreground(lipgloss.Color("81")), text, width)
+}
+
 func (m Model) openReactPalette() (tea.Model, tea.Cmd) {
 	if _, ok := selectedMessage(m.messages, m.selectedMsg); !ok {
 		m.err = "no message to react to"
@@ -1786,8 +1986,9 @@ func (m Model) openReactPalette() (tea.Model, tea.Cmd) {
 	m.compose.Blur()
 	m.blockPalette = false
 	m.reactPalette = true
+	m.reactCustom = false
 	m.err = ""
-	m.info = "React: " + reactPaletteHelp()
+	m.info = "React: " + reactPaletteHelp() + "  (: custom)"
 	return m, nil
 }
 
@@ -1838,6 +2039,78 @@ func (m Model) fetchOlderSlackHistoryCmd(conversationID string) tea.Cmd {
 		}
 		return olderSlackHistoryMsg{conversationID: conversationID, messages: msgs}
 	}
+}
+
+type gifSearchResultsMsg struct {
+	query   string
+	results []localapi.GIFResult
+	err     error
+}
+
+func (m Model) searchGIFsCmd(query string) tea.Cmd {
+	if m.session == nil || m.session.Client == nil {
+		return func() tea.Msg {
+			return gifSearchResultsMsg{query: query, err: errors.New("daemon client not connected")}
+		}
+	}
+	client := m.session.Client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		results, err := client.SearchGIFs(ctx, query, 20)
+		return gifSearchResultsMsg{query: query, results: results, err: err}
+	}
+}
+
+type linkPreviewLoadedMsg struct {
+	url     string
+	preview *localapi.LinkPreview
+}
+
+func (m Model) fetchLinkPreviewCmd(rawURL string) tea.Cmd {
+	if m.session == nil || m.session.Client == nil {
+		return nil
+	}
+	client := m.session.Client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		p, err := client.FetchLinkPreview(ctx, rawURL)
+		if err != nil {
+			return linkPreviewLoadedMsg{url: rawURL, preview: nil}
+		}
+		return linkPreviewLoadedMsg{url: rawURL, preview: p}
+	}
+}
+
+func (m *Model) dispatchMissingLinkPreviewsCmd() tea.Cmd {
+	if m.session == nil || m.session.Client == nil || len(m.messages) == 0 {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, msg := range m.messages {
+		rawURL := extractFirstURL(msg.Body)
+		if rawURL == "" {
+			continue
+		}
+		if _, known := m.linkPreviews[rawURL]; known {
+			continue
+		}
+		if m.previewsInFlight[rawURL] {
+			continue
+		}
+		if m.previewsInFlight == nil {
+			m.previewsInFlight = make(map[string]bool)
+		}
+		m.previewsInFlight[rawURL] = true
+		if cmd := m.fetchLinkPreviewCmd(rawURL); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) markReadCmd(conversationID string) tea.Cmd {
@@ -2070,7 +2343,7 @@ func (m Model) waitSSECmd() tea.Cmd {
 func (m Model) renderActiveThread() string {
 	resolve := reactionResolver(m.activeParticipants, m.activeName, m.messages)
 	peer := reactionPeerFallback(m.activeParticipants, m.activeName)
-	return renderMessages(m.messages, m.viewportWidth, m.selectedMsg, resolve, peer)
+	return renderMessages(m.messages, m.viewportWidth, m.selectedMsg, resolve, peer, m.linkPreviews)
 }
 
 // sameThreadTurn reports whether msg continues the same visual "turn" as
@@ -2113,7 +2386,11 @@ func dayDividerText(t time.Time, width int) string {
 	return strings.Repeat("─", side) + label + strings.Repeat("─", width-labelW-side)
 }
 
-func renderMessages(msgs []localapi.Message, width, selected int, resolve func(string) string, peerName string) string {
+func renderMessages(msgs []localapi.Message, width, selected int, resolve func(string) string, peerName string, previewsOpt ...map[string]*localapi.LinkPreview) string {
+	var previews map[string]*localapi.LinkPreview
+	if len(previewsOpt) > 0 {
+		previews = previewsOpt[0]
+	}
 	if width < 16 {
 		width = 16
 	}
@@ -2198,6 +2475,23 @@ func renderMessages(msgs []localapi.Message, width, selected int, resolve func(s
 			}
 			b.WriteString(paintLine(style, line, width))
 			b.WriteByte('\n')
+		}
+		if previews != nil {
+			if rawURL := extractFirstURL(msg.Body); rawURL != "" {
+				if prev, ok := previews[rawURL]; ok && prev != nil {
+					previewLines := formatLinkPreview(prev, bodyWidth)
+					for _, pl := range previewLines {
+						var line string
+						if prefixW > 0 {
+							line = strings.Repeat(" ", prefixW) + pl
+						} else {
+							line = pl
+						}
+						b.WriteString(paintLine(lipgloss.NewStyle(), line, width))
+						b.WriteByte('\n')
+					}
+				}
+			}
 		}
 	}
 	return b.String()

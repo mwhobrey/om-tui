@@ -14,6 +14,88 @@ var reactPaletteEmojis = []string{
 	"👍", "❤️", "😂", "😮", "😥", "😠", "👎", "🤔", "😢",
 }
 
+// Common shortcodes mapped to unicode emojis.
+var shortcodeToEmoji = map[string]string{
+	"+1":                    "👍",
+	"thumbsup":              "👍",
+	"-1":                    "👎",
+	"thumbsdown":            "👎",
+	"heart":                 "❤️",
+	"love":                  "❤️",
+	"joy":                   "😂",
+	"laugh":                 "😂",
+	"laughing":              "😂",
+	"rofl":                  "🤣",
+	"open_mouth":            "😮",
+	"surprised":             "😮",
+	"wow":                   "😮",
+	"disappointed_relieved": "😥",
+	"sweat":                 "😥",
+	"angry":                 "😠",
+	"rage":                  "😡",
+	"thinking_face":         "🤔",
+	"thinking":              "🤔",
+	"think":                 "🤔",
+	"cry":                   "😢",
+	"sob":                   "😭",
+	"fire":                  "🔥",
+	"flame":                 "🔥",
+	"lit":                   "🔥",
+	"rocket":                "🚀",
+	"party":                 "🎉",
+	"tada":                  "🎉",
+	"celebrate":             "🎉",
+	"eyes":                  "👀",
+	"100":                   "💯",
+	"hundred":               "💯",
+	"check":                 "✅",
+	"white_check_mark":      "✅",
+	"yes":                   "✅",
+	"x":                     "❌",
+	"cross":                 "❌",
+	"no":                    "❌",
+	"clap":                  "👏",
+	"pray":                  "🙏",
+	"praying":               "🙏",
+	"sparkles":              "✨",
+	"star":                  "⭐",
+	"smile":                 "😄",
+	"grin":                  "😁",
+	"sunglasses":            "😎",
+	"cool":                  "😎",
+	"poop":                  "💩",
+	"wave":                  "👋",
+	"salute":                "🫡",
+	"skull":                 "💀",
+	"dead":                  "💀",
+}
+
+// resolveEmoji maps an emoji shortcode (e.g. ":fire:", "rocket") or direct unicode glyph to an emoji string.
+func resolveEmoji(input string) string {
+	raw := strings.TrimSpace(input)
+	if raw == "" {
+		return ""
+	}
+	for _, e := range reactPaletteEmojis {
+		if raw == e {
+			return e
+		}
+	}
+	clean := strings.Trim(strings.ToLower(raw), ":")
+	if e, ok := shortcodeToEmoji[clean]; ok {
+		return e
+	}
+	runes := []rune(raw)
+	if len(runes) > 0 {
+		first := runes[0]
+		if first > 127 || (!unicode.IsLetter(first) && !unicode.IsDigit(first)) {
+			return raw
+		}
+	}
+	return ""
+}
+
+
 type reactionEntry struct {
 	Emoji  string   `json:"emoji"`
 	Count  int      `json:"count"`

@@ -360,3 +360,71 @@ func TestReactDecodesTheQueuedAnswer(t *testing.T) {
 		t.Fatalf("React(rejected) = %+v, %v; want the stored intent with its error class and code", stored, err)
 	}
 }
+
+func TestFetchLinkPreview(t *testing.T) {
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/link-preview" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("url") != "https://example.com" {
+			t.Fatalf("unexpected url query: %s", r.URL.Query().Get("url"))
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"url":         "https://example.com",
+			"title":       "Example Domain",
+			"description": "This is example domain.",
+			"domain":      "example.com",
+		})
+	}))
+
+	preview, err := client.FetchLinkPreview(context.Background(), "https://example.com")
+	if err != nil {
+		t.Fatalf("FetchLinkPreview: %v", err)
+	}
+	if preview == nil || preview.Title != "Example Domain" || preview.Domain != "example.com" {
+		t.Fatalf("unexpected preview: %+v", preview)
+	}
+
+	// Empty result handling
+	emptyClient := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	emptyPrev, err := emptyClient.FetchLinkPreview(context.Background(), "https://empty.com")
+	if err != nil {
+		t.Fatalf("FetchLinkPreview(empty): %v", err)
+	}
+	if emptyPrev != nil {
+		t.Fatalf("expected nil for empty preview, got: %+v", emptyPrev)
+	}
+}
+
+func TestSearchGIFs(t *testing.T) {
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/gifs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "dancing" {
+			t.Fatalf("unexpected q: %s", r.URL.Query().Get("q"))
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"id":          "gif-1",
+					"title":       "Dancing Cat",
+					"preview_url": "https://klipy.com/tiny.gif",
+					"url":         "https://klipy.com/full.gif",
+					"mime_type":   "image/gif",
+				},
+			},
+		})
+	}))
+
+	results, err := client.SearchGIFs(context.Background(), "dancing", 10)
+	if err != nil {
+		t.Fatalf("SearchGIFs: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Dancing Cat" || results[0].URL != "https://klipy.com/full.gif" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
