@@ -80,10 +80,12 @@ type ConversationRef struct {
 }
 
 type MessageRef struct {
-	RemoteID string
-	AuthorID string
-	SentAt   time.Time
-	Text     string
+	RemoteID            string
+	AuthorID            string
+	Outgoing            bool
+	ProvisionalRemoteID bool
+	SentAt              time.Time
+	Text                string
 }
 
 type SendResult struct {
