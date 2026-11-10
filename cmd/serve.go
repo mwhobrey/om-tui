@@ -516,7 +516,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 						return
 					}
 				}
-				host.ObserveIngress(func(frame whatsapplive.IngressFrame) {
+				host.ObserveIngress(func(frame whatsapplive.IngressFrame) error {
 					if err := stack.Sink.AppendIngress(context.Background(), bridge.RawIngressRecord{
 						AccountID:    riverID,
 						Generation:   0,
@@ -528,8 +528,10 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 					}); err != nil {
 						stack.Sink.RecordIngressError(riverID)
 						host.LogIngressError(err, riverID, 0)
+						return err
 					}
-				})
+					return nil
+				}, true)
 			}
 			a.OnExtraSignalRiverReady = func(riverID string, host *signallive.Bridge) {
 				if host == nil {

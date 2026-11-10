@@ -1680,6 +1680,84 @@ the handler context both detached and cancelled, on v2-ingest and
 legacy-only installs. It also covers an
 app-state patch interrupted between its version and MAC writes.
 
+## WhatsApp LIDs stored as phone numbers
+
+A WhatsApp LID (`<digits>@lid`) has an all-digit user part, like a phone
+number (`<digits>@s.whatsapp.net`), so its digits alone never say which it
+is. Until this fix both `jidToPhone` helpers turned any all-digit user into
+`+<digits>`: the legacy bridge stored a LID whose number `canonicalJID` did not
+know that way, and the WhatsApp Desktop importer every LID sender. Migration
+then minted an `e164` identity for the LID's digits. In v2 such a sender shows
+a phone number that is no one's, matches phone searches, and a reaction or read
+receipt to their group message names `<lid digits>@s.whatsapp.net`. The same
+check passed new-style group JIDs (`120363…@g.us`) and newsletters for phone
+numbers, so a legacy group with no subject was named `+120363…`, and a
+newsletter's posts named it as their sender by that number.
+
+What each path stores now:
+
+- **v2 live ingest** (unchanged): the phone number when whatsmeow knows the
+  LID's number, else `<digits>@lid` (`ingest.whatsAppIdentity`).
+- **Legacy bridge**: the same value (`whatsapplive.StoredAddress`), so a
+  migrated row names the identity a live frame does: the phone number, else
+  the sender's JID (a LID, a hosted or bot JID, a newsletter), and nothing for
+  a group or broadcast list. A chat with no name yet is named by its JID,
+  which a real name replaces when one arrives. `phoneForJID` no longer falls
+  back to a contact's `RedactedPhone` (the masked `+1 ••• ••21` a LID group
+  shows a non-contact by): once a LID gets no number from `jidToPhone`, that
+  fallback would store the mask's digits as one. It stays a display name.
+- **Desktop importer**: the number Desktop pairs the LID with (the chat's or
+  member's `ZCONTACTIDENTIFIER` when it is a phone-number JID or `+<digits>`,
+  or `LID.sqlite`), else `<digits>@lid`.
+
+**Repairing existing v2 identities** (the dry run may run beside the app;
+`--apply` needs the daemon down, takes the instance lock, refuses while
+`/api/status` answers, and copies `v2/store.sqlite3*` to
+`v2/repair-backups/<stamp>/` first; park the watchdog before applying):
+
+```bash
+OPENMESSAGES_DATA_DIR="$HOME/Library/Application Support/OpenMessage" \
+  openmessage repair whatsapp-lid --report lid-repair.json   # dry run
+# review, then add --apply
+```
+
+The repair rewrites an `e164` identity of the WhatsApp account only when a
+record that keeps the JID's server names its digits as a LID and no record
+names them as a phone number. It reads, read-only: the whatsmeow session store
+(`whatsapp-session.db`: `whatsmeow_lid_map`, the device row, contacts),
+WhatsApp Desktop (`ChatStorage.sqlite` chats, members and senders, and
+`LID.sqlite`; `--desktop-db ''` skips it), and the v2 store itself (the
+account's `<digits>@lid` identities and chats, its own number, and every
+number on another platform's account). Each source's line in the report says
+whether it was read, missing or failed; a source that fails only means less
+evidence, so fewer identities change. Digit length is never evidence. A LID
+becomes the form v2 ingest gives a LID: its phone number when the records pair
+it with exactly one (and nothing names that number a LID), otherwise
+`<digits>@lid`. The repair can know a number live ingest does not yet:
+`canonicalJID` asks only whatsmeow and the session store's LID map, not
+Desktop. Until whatsmeow learns that pair, a new live message from the LID
+names it `<digits>@lid`, a second identity beside the number; any LID whose
+number becomes known after its first message gets the same split today.
+When that identity exists the two merge: messages,
+roster rows, reactions (the newer per person and message) and the person link
+move, and display names that only repeat the LID's digits are cleared. It
+refuses, and reports, an identity also named as a phone number
+(`also-a-phone-number`), this account's own (`own-identity`), one whose LID
+pairs with this account's own number (`target-is-own-identity`), and one whose
+target links to a different person (`target-links-another-person`). Running it
+again plans nothing new. It changes only the v2 store; the legacy
+`messages.db` keeps its old rows. It rewrites only LIDs: a group's or
+newsletter's digits stored as `+<digits>` before the fix (a group title, a
+newsletter's sender) stay as they are, since no record names those digits a
+LID.
+
+Read receipts parse their stored sender apart from reactions
+(`whatsapplive.MarkReadRequest`, which still reads `<digits>@lid` as
+`<digits>@lid@s.whatsapp.net`). So after the repair a group receipt for a
+LID's message names a malformed JID instead of a wrong number, until that
+parse is fixed. No production path queues a v2 read receipt yet: nothing
+outside tests calls `messaging.MessageService.MarkRead`.
+
 ## signal-cli
 
 Require **signal-cli ≥ 0.14.5**. 0.14.1 throws
@@ -2075,6 +2153,53 @@ target author is unavailable`). Before, both went out with an empty sender
 and addressed a message of this account's that does not exist. Unlike a Signal
 reaction whose target cannot be named (above), which keeps retrying, this one
 is not retried: if the message is later stored with its sender, react again.
+In a group, a stored sender that is neither a sender's JID (on the
+phone-number, LID, hosted or bot server) nor a phone number (digits, with or
+without a leading `+`) is refused the same way; that includes the group's own
+JID, which the history decoder stores as the sender of a group message that
+names no participant. In a 1:1 chat such a sender is replaced by the chat, as
+a missing one is.
+
+In a group the sender is sent in the form the message arrived with, the form
+whatsmeow puts in the keys it builds for a received message
+(`MessageInfo.Sender`): the member's LID (`<digits>@lid`) when the message was
+addressed by LID, the phone number otherwise. Live ingest stores the phone
+number whenever whatsmeow knew the LID's number when the message arrived, and
+`<digits>@lid` when it did not; history sync stores the phone number when the
+sync's own number mappings name it, and otherwise the form the phone's history
+gives. So `SendReactionRequest` sends a stored LID as it is, and maps a stored
+phone number back to its LID (whatsmeow's LID store, then the session store's
+`whatsmeow_lid_map`) when the group addresses members by LID. The store does
+not record each message's addressing, so the group's current addressing stands
+in for it: a message from before the group moved to LID addressing is named by
+its LID too. The addressing comes from the whatsmeow group cache that
+`SendMessage` reads to choose the identity it sends with; when the cache does
+not hold the group, the lookup fetches it and `SendMessage` then uses that
+copy. A phone number whose LID is not known, or a group whose addressing cannot
+be read, goes out as stored (and `SendMessage` repeats the lookup and reports a
+group it cannot read, as before). Before, a stored LID went out as
+`<digits>@lid@s.whatsapp.net`, which names no member, and a stored phone number
+went out as the phone number in a LID group. whatsmeow's own message-secret
+lookup accepts a key's sender in either form, so the phone number may have
+matched too; the LID is the form the message carries. 1:1 chats with a phone
+number or a LID were never affected: whatsmeow puts no participant in their
+messages' keys (a bot's chat, for one, does get one).
+
+Messages migrated from the legacy store, or imported from WhatsApp Desktop,
+before the fix in "WhatsApp LIDs stored as phone numbers" above can name a LID
+sender by the LID's digits as a phone number (`+<lid digits>`). Such a sender
+looks like a phone number here and goes out as `<lid digits>@s.whatsapp.net`
+until `openmessage repair whatsapp-lid` rewrites it.
+
+A WhatsApp send goes out under an ID derived from its request ID
+(`whatsapplive.deriveWebMessageID`), and its message is renamed to that ID
+when the send is confirmed. Until then the message is still named by the
+request ID itself, an ID WhatsApp never sees. So a reaction to a WhatsApp
+message of yours that has not been sent yet is held, and one to a message
+whose send was canceled or rejected is rejected (see "Reactions stuck
+retrying" below), rather than addressed to that ID. One sent but `uncertain` or `store_failed`
+is still named by the request ID, and a reaction to it is still addressed to
+that ID, which no WhatsApp message has.
 
 **Reactions stuck retrying.** A reaction the transport cannot deliver yet goes
 `not_dispatched` and retries (every 5 s by default) with no cap; a Signal

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -172,4 +173,13 @@ func firstNonEmpty(vals ...string) string {
 // that day rather than stopping at midnight.
 func parseDayBound(s string, endOfDay bool) (int64, error) {
 	return export.ParseBound(s, endOfDay)
+}
+
+// clientStoreOpenError explains the refusal a read client gets when this
+// binary is newer than the store the app last upgraded.
+func clientStoreOpenError(err error) error {
+	if errors.Is(err, sqlite.ErrMigrationPending) {
+		return fmt.Errorf("%w (quit and reopen the OpenMessage app so it upgrades the store, then retry)", err)
+	}
+	return err
 }
