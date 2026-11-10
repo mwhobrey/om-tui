@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/maxghenis/openmessage/internal/localapi"
 )
 
@@ -139,3 +140,89 @@ func TestReactionSettledMsgUpdatesStatus(t *testing.T) {
 		t.Fatalf("unexpected info message: %q", m2.info)
 	}
 }
+
+func TestResolveEmoji(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{":fire:", "🔥"},
+		{"fire", "🔥"},
+		{"rocket", "🚀"},
+		{":tada:", "🎉"},
+		{":100:", "💯"},
+		{"eyes", "👀"},
+		{"+1", "👍"},
+		{":+1:", "👍"},
+		{"heart", "❤️"},
+		{"👍", "👍"},
+		{"🔥", "🔥"},
+		{"invalidxyz123", ""},
+		{"", ""},
+		{":", ""},
+		{":unknown:", ""},
+		{"unknown", ""},
+		{"?", ""},
+		{"abc", ""},
+		{"123", ""},
+	}
+
+	for _, tc := range cases {
+		got := resolveEmoji(tc.input)
+		if got != tc.want {
+			t.Errorf("resolveEmoji(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestCustomReactionPicker(t *testing.T) {
+	m := NewModel(&Session{Client: localapi.NewClient("http://127.0.0.1:1", "")})
+	m.ready = true
+	m.width = 80
+	m.height = 24
+	m.activeID = "conv-1"
+	m.status.Google.Paired = true
+	m.status.Google.Connected = true
+	m.messages = []localapi.Message{
+		{MessageID: "msg-1", Body: "Awesome news!"},
+	}
+	m.selectedMsg = 0
+	m.focus = focusThread
+
+	// 1. Open react palette
+	m1, _ := m.openReactPalette()
+	model1 := m1.(Model)
+	if !model1.reactPalette || model1.reactCustom {
+		t.Fatalf("expected reactPalette=true reactCustom=false, got palette=%v custom=%v", model1.reactPalette, model1.reactCustom)
+	}
+
+	// 2. Press ':' to enter custom emoji input
+	m2, _ := model1.updateThreadKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	model2 := m2.(Model)
+	if !model2.reactCustom {
+		t.Fatal("expected reactCustom=true after typing ':'")
+	}
+
+	// 3. Type 'fire' and enter
+	model2.reactInput.SetValue("fire")
+	m3, cmd := model2.updateThreadKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	model3 := m3.(Model)
+	if model3.reactPalette || model3.reactCustom {
+		t.Fatal("expected react palette and custom mode to close after sending")
+	}
+	if cmd == nil {
+		t.Fatal("expected reaction command to be returned")
+	}
+
+	// 4. Test cancel with esc
+	m4, _ := m.openReactPalette()
+	model4 := m4.(Model)
+	m5, _ := model4.updateThreadKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	model5 := m5.(Model)
+	m6, _ := model5.updateThreadKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	model6 := m6.(Model)
+	if model6.reactPalette || model6.reactCustom {
+		t.Fatal("expected esc to cancel custom reaction picker")
+	}
+}
+

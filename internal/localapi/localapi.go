@@ -1191,3 +1191,57 @@ func (c *Client) Events(ctx context.Context) (<-chan StreamEvent, error) {
 	}()
 	return out, nil
 }
+
+// LinkPreview describes the OpenGraph / metadata preview extracted for a URL.
+type LinkPreview struct {
+	URL         string `json:"url,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+}
+
+// FetchLinkPreview retrieves OpenGraph metadata for the given URL.
+func (c *Client) FetchLinkPreview(ctx context.Context, rawURL string) (*LinkPreview, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, errors.New("url is required")
+	}
+	path := "/api/link-preview?url=" + url.QueryEscape(rawURL)
+	var preview LinkPreview
+	if _, err := c.getJSON(ctx, path, &preview); err != nil {
+		return nil, err
+	}
+	if preview.URL == "" && preview.Title == "" && preview.Description == "" {
+		return nil, nil
+	}
+	return &preview, nil
+}
+
+// GIFResult describes a single Klipy GIF search hit.
+type GIFResult struct {
+	ID         string `json:"id,omitempty"`
+	Title      string `json:"title,omitempty"`
+	PreviewURL string `json:"preview_url"`
+	URL        string `json:"url"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	MimeType   string `json:"mime_type"`
+}
+
+// SearchGIFs searches Klipy GIFs via the daemon's /api/gifs endpoint.
+func (c *Client) SearchGIFs(ctx context.Context, query string, limit int) ([]GIFResult, error) {
+	if limit <= 0 {
+		limit = 24
+	}
+	path := fmt.Sprintf("/api/gifs?q=%s&limit=%d", url.QueryEscape(strings.TrimSpace(query)), limit)
+	var out struct {
+		Results []GIFResult `json:"results"`
+	}
+	if _, err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out.Results, nil
+}
+
