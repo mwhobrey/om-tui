@@ -18,11 +18,16 @@ func TestOpenFileDialogScriptMacOS(t *testing.T) {
 }
 
 func TestClipboardMediaScriptMacOSEscapesPath(t *testing.T) {
-	script := clipboardMediaScriptMacOS(`/tmp/test"quotes/clip.png`)
-	if !strings.Contains(script, `test\"quotes`) {
-		t.Fatalf("expected escaped double quote in AppleScript: %s", script)
+	script := clipboardMediaScriptMacOS(`/tmp/test\path"quotes/clip.png`)
+	if !strings.Contains(script, `test\\path\"quotes`) {
+		t.Fatalf("expected escaped backslash and double quote in AppleScript: %s", script)
 	}
-	if !strings.Contains(script, "class PNG") || !strings.Contains(script, "class furl") {
+	furlIdx := strings.Index(script, "class furl")
+	pngIdx := strings.Index(script, "class PNG")
+	if furlIdx < 0 || pngIdx < 0 {
 		t.Fatal("missing clipboard PNG and furl checks in AppleScript")
+	}
+	if furlIdx > pngIdx {
+		t.Fatal("expected class furl check to precede class PNG check")
 	}
 }

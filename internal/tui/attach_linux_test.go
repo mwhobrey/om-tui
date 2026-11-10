@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -60,14 +58,13 @@ func TestPickMediaFileZenityCancel(t *testing.T) {
 	linuxCommandRunner = func(name string, args ...string) ([]byte, error) {
 		// Zenity exits with code 1 on Cancel
 		cmd := exec.Command("sh", "-c", "exit 1")
-		_ = cmd.Run()
-		return nil, cmd.ProcessState.Sys().(error)
+		err := cmd.Run()
+		return nil, err
 	}
 
 	path, err := pickMediaFile()
-	// Should treat exit code 1 as cancellation (empty path, no error)
-	if err != nil && path != "" {
-		t.Fatalf("expected cancel, got path=%q err=%v", path, err)
+	if err != nil || path != "" {
+		t.Fatalf("expected cancel with empty path and nil error, got path=%q err=%v", path, err)
 	}
 }
 

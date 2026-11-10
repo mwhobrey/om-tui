@@ -83,9 +83,14 @@ func clipboardMediaPath() (string, bool, error) {
 }
 
 func clipboardMediaScriptMacOS(savePNGPath string) string {
-	escaped := strings.ReplaceAll(savePNGPath, `"`, `\"`)
+	escaped := strings.ReplaceAll(savePNGPath, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	return `try
 set clipInfo to (clipboard info) as string
+if clipInfo contains "«class furl»" then
+	set f to (the clipboard as «class furl»)
+	tell application "System Events" to return POSIX path of disk item (f as text)
+end if
 if clipInfo contains "class PNG " or clipInfo contains "TIFF picture" or clipInfo contains "«class PNG »" then
 	set pngData to the clipboard as «class PNG »
 	set fp to open for access POSIX file "` + escaped + `" with write permission
@@ -93,10 +98,6 @@ if clipInfo contains "class PNG " or clipInfo contains "TIFF picture" or clipInf
 	write pngData to fp
 	close access fp
 	return "` + escaped + `"
-end if
-if clipInfo contains "«class furl»" then
-	set f to (the clipboard as «class furl»)
-	tell application "System Events" to return POSIX path of disk item (f as text)
 end if
 on error
 	try

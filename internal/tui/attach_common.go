@@ -28,7 +28,7 @@ func parseFirstURI(uriList string) string {
 			continue
 		}
 		if strings.HasPrefix(line, "file://") {
-			if u, err := url.Parse(line); err == nil {
+			if u, err := url.Parse(line); err == nil && (u.Host == "" || u.Host == "localhost") {
 				return u.Path
 			}
 		}

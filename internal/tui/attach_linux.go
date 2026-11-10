@@ -74,7 +74,7 @@ func pickMediaFile() (string, error) {
 		return strings.TrimSpace(string(out)), nil
 	}
 
-	return "", fmt.Errorf("no supported file picker found (please install zenity or kdialog)")
+	return "", fmt.Errorf("no supported file picker found (please install zenity, kdialog, or qarma)")
 }
 
 func clipboardMediaPath() (string, bool, error) {
@@ -152,7 +152,7 @@ func clipboardText() (string, error) {
 		if path, err := lookPathLinux("wl-paste"); err == nil {
 			out, err := linuxCommandRunner(path, "--no-newline", "--type", "text/plain")
 			if err == nil {
-				return string(out), nil
+				return strings.TrimRight(string(out), "\r\n"), nil
 			}
 		}
 	}
