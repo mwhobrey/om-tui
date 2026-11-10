@@ -31,6 +31,7 @@ import (
 	whatsappadapter "github.com/maxghenis/openmessage/internal/bridgeadapters/whatsapp"
 	"github.com/maxghenis/openmessage/internal/cookiebridge"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/freshness"
 	"github.com/maxghenis/openmessage/internal/googlecookies"
 	"github.com/maxghenis/openmessage/internal/importer"
 	"github.com/maxghenis/openmessage/internal/ingest"
@@ -106,6 +107,16 @@ func v2SendWebOptions(stack *v2Stack, enabled bool) *web.V2Options {
 	}
 }
 
+// googleSMSPathMonitor judges whether carrier SMS has stopped reaching the
+// phone while RCS flows. Only the v2 inbox keeps the protobuf type that tells
+// SMS from RCS, and only v2 ingest writes it, so without both there is
+// nothing to judge.
+func googleSMSPathMonitor(stack *v2Stack, ingestEnabled bool) *freshness.SMSPathMonitor {
+	if stack == nil || stack.Store == nil || !ingestEnabled {
+		return nil
+	}
+	return freshness.NewSMSPathMonitor(ingest.GoogleSMSPathLoader(stack.Store))
+}
 func v2IngestCountersProvider(stack *v2Stack) func() map[string]ingest.CounterSnapshot {
 	if stack == nil {
 		return nil
@@ -814,6 +825,7 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				Auth:                  controlAuth,
 				V2:                    v2Options,
 				V2IngestCounters:      v2IngestCounters,
+				GoogleSMSPath:         googleSMSPathMonitor(stack, v2Ingest),
 				Reads:                 reads,
 				V2Primary:             v2Primary,
 				Client:                a.GetClient,

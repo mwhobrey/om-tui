@@ -29,6 +29,7 @@ import (
 	"github.com/maxghenis/openmessage/internal/client"
 	"github.com/maxghenis/openmessage/internal/cookiebridge"
 	"github.com/maxghenis/openmessage/internal/db"
+	"github.com/maxghenis/openmessage/internal/freshness"
 	"github.com/maxghenis/openmessage/internal/ingest"
 	"github.com/maxghenis/openmessage/internal/media"
 	"github.com/maxghenis/openmessage/internal/messaging"
@@ -166,6 +167,10 @@ type APIOptions struct {
 	// RefreshGoogleCookies triggers the same self-heal path as credential
 	// repair (script → bridge → native decrypt).
 	RefreshGoogleCookies   func(ctx context.Context) error
+
+	// GoogleSMSPath judges whether carrier SMS has stopped reaching the phone
+	// while RCS still flows (freshness.google.sms_path). Nil skips the check.
+	GoogleSMSPath *freshness.SMSPathMonitor
 }
 
 type SearchResult struct {
@@ -274,6 +279,19 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		freshnessComputed time.Time
 		freshnessValue    map[string]any
 	)
+	// googleReachable reports whether the daemon can reach the phone right
+	// now: connected to Google, and the phone answering.
+	googleReachable := func() bool {
+		if !googlePhoneResponding() {
+			return false
+		}
+		if opts.GoogleStatus != nil {
+			if status, ok := opts.GoogleStatus().(app.GoogleStatusSnapshot); ok {
+				return status.Connected
+			}
+		}
+		return true
+	}
 	computeFreshness := func() map[string]any {
 		freshnessMu.Lock()
 		defer freshnessMu.Unlock()
@@ -282,7 +300,11 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 		}
 		stats, err := reads.PlatformStats()
 		if err != nil {
-			return freshnessValue // keep last good value on error
+			// Keep the last good value on error, except the SMS path: it
+			// reads the inbox, not these stats, and a cached stall must not
+			// outlive the phone becoming unreachable or its history going
+			// stale.
+			return withFreshGoogleSMSPath(freshnessValue, opts.GoogleSMSPath, time.Now(), googleReachable)
 		}
 		var newest int64
 		for _, st := range stats {
@@ -314,6 +336,10 @@ func APIHandlerWithOptions(store *db.Store, cli *client.Client, logger zerolog.L
 				out[key] = entry
 			}
 		}
+		// A phone can lose carrier SMS while RCS keeps arriving over data
+		// (2026-10-03 to 10-07: 95 hours). Google stays the newest platform the
+		// whole time, so judge its SMS path on its own.
+		addGoogleSMSPath(out, opts.GoogleSMSPath, time.Now(), googleReachable)
 		freshnessValue = out
 		freshnessComputed = time.Now()
 		return out
