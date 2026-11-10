@@ -57,6 +57,25 @@ func TestFormatLinkPreview(t *testing.T) {
 	}
 }
 
+func TestSanitizePreviewText(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"Hello World", "Hello World"},
+		{"Line 1\nLine 2\tEnd", "Line 1 Line 2 End"},
+		{"\x1b]0;Title\x07Malicious", "]0;TitleMalicious"},
+		{"\x00\x01\x1fNull bytes and controls", "Null bytes and controls"},
+		{"Safe emoji: 🚀 and text", "Safe emoji: 🚀 and text"},
+	}
+	for _, tc := range cases {
+		got := sanitizePreviewText(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizePreviewText(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestRenderMessagesWithLinkPreview(t *testing.T) {
 	msgs := []localapi.Message{
 		{

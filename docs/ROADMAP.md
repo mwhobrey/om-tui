@@ -25,11 +25,11 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 | **P3-2** | **P3** | Platform | Implement macOS/Linux native file pickers for `Ctrl+A` | `Completed` | Replaces stub with `osascript` / `zenity` |
 | **P3-3** | **P3** | Platform | Implement non-Windows clipboard image paste for `Ctrl+V` | `Completed` | Enables image clipboard paste via `pbpaste` / `wl-paste` |
 | **P3-4** | **P3** | Platform | Smoke-test Keychain (macOS) & Secret Service (Linux) vault backends | `Open` | Runtime validation of credential sealing on real hardware |
-| **P4-1** | **P4** | TUI/UX | Activate Klipy GIF search & send in TUI (`>gif <query>`) | `Open` | Surfaces dormant `/api/gifs` endpoints in TUI |
-| **P4-2** | **P4** | TUI/UX | Render Link Previews in chat thread view | `Open` | Surfaces dormant `/api/link-preview` extraction |
-| **P4-3** | **P4** | TUI/UX | Add inline quote / reply-to for Google, WhatsApp, Signal | `Open` | Brings Slack-like `Ctrl+T` / quote reply to all rivers |
-| **P4-4** | **P4** | TUI/UX | Expand emoji reaction palette beyond fixed digits 1–9 | `Open` | Allows arbitrary reaction emojis |
-| **P4-5** | **P4** | TUI/UX | Persistent drafts across river switching and restarts | `Open` | Prevents losing in-progress composer text |
+| **P4-1** | **P4** | TUI/UX | Activate Klipy GIF search & send in TUI (`>gif <query>`) | `Completed` | Surfaces dormant `/api/gifs` endpoints in TUI |
+| **P4-2** | **P4** | TUI/UX | Render Link Previews in chat thread view | `Completed` | Surfaces dormant `/api/link-preview` extraction |
+| **P4-3** | **P4** | TUI/UX | Add inline quote / reply-to for Google, WhatsApp, Signal | `Completed` | Brings Slack-like `Ctrl+T` / quote reply to all rivers |
+| **P4-4** | **P4** | TUI/UX | Expand emoji reaction palette beyond fixed digits 1–9 | `Completed` | Allows arbitrary reaction emojis |
+| **P4-5** | **P4** | TUI/UX | Persistent drafts across river switching and restarts | `Completed` | Prevents losing in-progress composer text |
 
 ---
 
@@ -187,10 +187,11 @@ This document tracks all triaged issues, missing features, upstream fixes, and c
 - [x] **P2-1:** Port WhatsApp LID identity cleanup and repair command (Upstream #256).
 - [x] **P2-2:** Port WhatsApp group read receipt sender matching (Upstream #255).
 
-### Phase 3: Cross-Platform Parity (Completed)
+### Phase 3: Cross-Platform Parity
 - [x] **P3-1:** Implement Linux desktop notifications (`notify-send`).
 - [x] **P3-2:** Implement macOS & Linux file pickers (`osascript` & `zenity`).
 - [x] **P3-3:** Implement macOS & Linux clipboard media paste.
+- [ ] **P3-4:** Runtime smoke-testing of macOS & Linux vaults (Keychain & Secret Service).
 
 ### Phase 4: TUI Feature Enhancements (Completed)
 - [x] **P4-1:** Wire `>gif` palette search command to Klipy API client.

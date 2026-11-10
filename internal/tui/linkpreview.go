@@ -30,20 +30,41 @@ func extractFirstURL(text string) string {
 	return trimmed
 }
 
+// sanitizePreviewText strips ASCII and C0/C1 control characters (e.g. \x1b ESC, \x00-\x1f, \x7f, \x80-\x9f)
+// except tab/newlines (which become spaces) to prevent escape injection or terminal title manipulation.
+func sanitizePreviewText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\t' || r == '\n' || r == '\r' {
+			b.WriteRune(' ')
+			continue
+		}
+		if r < 32 || r == 127 || (r >= 0x80 && r <= 0x9f) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // formatLinkPreview formats a link preview as a clean 1-2 line summary box.
 func formatLinkPreview(preview *localapi.LinkPreview, width int) []string {
 	if preview == nil || width < 12 {
 		return nil
 	}
-	title := strings.TrimSpace(preview.Title)
-	desc := strings.TrimSpace(preview.Description)
-	site := strings.TrimSpace(preview.SiteName)
+	title := sanitizePreviewText(preview.Title)
+	desc := sanitizePreviewText(preview.Description)
+	site := sanitizePreviewText(preview.SiteName)
 	if site == "" {
-		site = strings.TrimSpace(preview.Domain)
+		site = sanitizePreviewText(preview.Domain)
 	}
 	if site == "" && preview.URL != "" {
 		if parsed, err := url.Parse(preview.URL); err == nil {
-			site = parsed.Host
+			site = sanitizePreviewText(parsed.Host)
 		}
 	}
 	if title == "" && desc == "" {

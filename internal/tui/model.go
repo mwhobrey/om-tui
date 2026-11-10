@@ -418,7 +418,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delete(m.previewsInFlight, msg.url)
 		}
 		m.linkPreviews[msg.url] = msg.preview
-		m.setThreadContent(m.renderActiveThread())
+		if m.viewport.AtBottom() {
+			m.setThreadContentFollow(m.renderActiveThread())
+		} else {
+			m.setThreadContent(m.renderActiveThread())
+		}
 		return m, nil
 
 	case gifSearchResultsMsg:
@@ -432,10 +436,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		items := make([]paletteItem, len(msg.results))
 		for i := range msg.results {
-			title := strings.TrimSpace(msg.results[i].Title)
+			title := sanitizePreviewText(msg.results[i].Title)
 			if title == "" {
 				title = fmt.Sprintf("GIF %d", i+1)
 			}
+			msg.results[i].Title = title
 			items[i] = paletteItem{
 				Key:   "gif:" + msg.results[i].URL,
 				Kind:  paletteKindGIF,

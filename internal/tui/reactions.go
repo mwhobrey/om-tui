@@ -73,7 +73,7 @@ var shortcodeToEmoji = map[string]string{
 // resolveEmoji maps an emoji shortcode (e.g. ":fire:", "rocket") or direct unicode glyph to an emoji string.
 func resolveEmoji(input string) string {
 	raw := strings.TrimSpace(input)
-	if raw == "" {
+	if raw == "" || raw == ":" {
 		return ""
 	}
 	for _, e := range reactPaletteEmojis {
@@ -81,16 +81,26 @@ func resolveEmoji(input string) string {
 			return e
 		}
 	}
+	isShortcode := strings.HasPrefix(raw, ":") || strings.HasSuffix(raw, ":")
 	clean := strings.Trim(strings.ToLower(raw), ":")
 	if e, ok := shortcodeToEmoji[clean]; ok {
 		return e
 	}
+	if isShortcode {
+		return ""
+	}
 	runes := []rune(raw)
-	if len(runes) > 0 {
-		first := runes[0]
-		if first > 127 || (!unicode.IsLetter(first) && !unicode.IsDigit(first)) {
-			return raw
-		}
+	if len(runes) == 0 {
+		return ""
+	}
+	first := runes[0]
+	// All raw emoji characters are non-ASCII unicode symbols or pictographs.
+	// Reject ASCII characters, control codes, punctuation, letters, digits, and whitespace.
+	if first <= 127 || unicode.IsControl(first) || unicode.IsSpace(first) {
+		return ""
+	}
+	if unicode.In(first, unicode.So, unicode.Sk, unicode.Sm) || (first >= 0x1F000 && first <= 0x1FAFF) || (first >= 0x2600 && first <= 0x27BF) {
+		return raw
 	}
 	return ""
 }

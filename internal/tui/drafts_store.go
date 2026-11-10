@@ -54,14 +54,33 @@ func saveDrafts(dataDir string, drafts map[string]string) error {
 		return fmt.Errorf("marshal drafts: %w", err)
 	}
 
-	target := filepath.Join(dataDir, draftsFileName)
-	tmp := fmt.Sprintf("%s.tmp.%d", target, os.Getpid())
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("write drafts temp file: %w", err)
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return fmt.Errorf("create drafts directory: %w", err)
 	}
 
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	tmpFile, err := os.CreateTemp(dataDir, "tui_drafts.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create drafts temp file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmpFile.Write(raw); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write drafts temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync drafts temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close drafts temp file: %w", err)
+	}
+
+	target := filepath.Join(dataDir, draftsFileName)
+	if err := os.Rename(tmpName, target); err != nil {
 		return fmt.Errorf("commit drafts file: %w", err)
 	}
 	return nil

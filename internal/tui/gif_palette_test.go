@@ -82,14 +82,39 @@ func TestGIFSearchPaletteFlow(t *testing.T) {
 		t.Fatal("expected model sending flag to be true")
 	}
 
-	// 5. Select GIF item without active chat -> pastes to composer
+	// 5. Select GIF item without active chat -> informs user
 	model3.activeID = ""
-	m5, focusCmd := model3.runPaletteAction(selectedItem)
+	m5, noCmd := model3.runPaletteAction(selectedItem)
 	model5 := m5.(Model)
+	if noCmd != nil {
+		t.Fatal("expected no command when activeID is empty")
+	}
+	if !strings.Contains(model5.info, "Open a conversation") {
+		t.Fatalf("expected open conversation info message, got %q", model5.info)
+	}
+
+	// 6. Select GIF item when chat is open but offline -> inserts/appends into composer
+	model3.activeID = "conv-1"
+	model3.status.Google.Connected = false
+	model3.compose.SetValue("Check this out:")
+	m6, focusCmd := model3.runPaletteAction(selectedItem)
+	model6 := m6.(Model)
 	if focusCmd == nil {
 		t.Fatal("expected focus command")
 	}
-	if model5.compose.Value() != "https://klipy.com/f1.gif" {
-		t.Fatalf("expected composer to have GIF URL, got %q", model5.compose.Value())
+	if model6.compose.Value() != "Check this out: https://klipy.com/f1.gif" {
+		t.Fatalf("expected composer to have appended GIF URL, got %q", model6.compose.Value())
+	}
+
+	// 7. Select GIF item with replyTarget -> clears replyTarget and sends
+	model3.status.Google.Connected = true
+	model3.replyTarget = &localapi.Message{MessageID: "target-123", SenderName: "Alice"}
+	m7, sendReplyCmd := model3.runPaletteAction(selectedItem)
+	model7 := m7.(Model)
+	if sendReplyCmd == nil {
+		t.Fatal("expected send command with reply target")
+	}
+	if model7.replyTarget != nil {
+		t.Fatal("expected reply target to be cleared after sending GIF")
 	}
 }

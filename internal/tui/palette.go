@@ -664,12 +664,27 @@ func (m Model) runSendOrInsertGIF(gif *localapi.GIFResult) (tea.Model, tea.Cmd) 
 	if gif == nil || gif.URL == "" {
 		return m, nil
 	}
-	if m.activeID != "" && m.canSend() {
+	if m.activeID == "" {
+		m.info = "Open a conversation to send or insert GIFs"
+		return m, nil
+	}
+	if m.canSend() {
+		replyToID := m.threadRootID
+		if m.replyTarget != nil {
+			replyToID = m.replyTarget.MessageID
+			m.replyTarget = nil
+			m.layout()
+		}
 		m.info = fmt.Sprintf("Sending GIF: %s…", gif.Title)
 		m.sending = true
-		return m, m.sendCmd(m.activeID, gif.URL, m.threadRootID)
+		return m, m.sendCmd(m.activeID, gif.URL, replyToID)
 	}
-	m.compose.SetValue(gif.URL)
+	current := strings.TrimSpace(m.compose.Value())
+	if current != "" {
+		m.compose.SetValue(current + " " + gif.URL)
+	} else {
+		m.compose.SetValue(gif.URL)
+	}
 	m.focus = focusCompose
 	m.info = "GIF URL inserted into composer"
 	return m, m.compose.Focus()
